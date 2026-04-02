@@ -36,10 +36,12 @@ class IndexState:
 
     def save(self, path: Path) -> None:
         state_path = path / STATE_FILE
-        state_path.write_text(json.dumps({
+        tmp_path = state_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps({
             "last_commit": self.last_commit,
             "file_hashes": self.file_hashes,
         }, indent=2))
+        tmp_path.replace(state_path)  # Atomic on POSIX
 
     @classmethod
     def load(cls, path: Path) -> IndexState:
@@ -178,14 +180,18 @@ async def index_repository(
         incremental=not full,
     )
 
-    documents: list[ChunkDocument] = []
     new_hashes: dict[str, str] = dict(state.file_hashes)
+    batch: list[ChunkDocument] = []
+    batch_size = 50
+    detected_langs: set[str] = set()
 
     for idx, file_path in enumerate(files_to_process):
         rel_path = str(file_path.relative_to(path))
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
             language = detect_language(rel_path)
+            if language:
+                detected_langs.add(language)
 
             chunks = chunk_code(content, rel_path, language)
 
@@ -195,11 +201,19 @@ async def index_repository(
                     chunk.enrich_metadata(test_files=test_files)
 
             for chunk in chunks:
-                documents.append(ChunkDocument(
+                batch.append(ChunkDocument(
                     content=chunk.content,
                     metadata=chunk.to_index_metadata(),
                     chunk_id=chunk.chunk_id,
                 ))
+
+            # Flush batch when it reaches threshold — avoids OOM on large repos
+            if len(batch) >= batch_size:
+                # LSP enrichment on batch
+                if settings.lsp.enabled:
+                    await _lsp_enrich_batch(batch, str(path), list(detected_langs))
+                result.chunks_indexed += await vectorstore.upsert(collection, batch)
+                batch = []
 
             new_hashes[rel_path] = _file_hash(file_path)
             result.files_processed += 1
@@ -211,6 +225,12 @@ async def index_repository(
             logger.warning("file_index_error", file=rel_path, error=str(e))
             result.errors.append(f"{rel_path}: {e}")
 
+    # Flush remaining batch
+    if batch:
+        if settings.lsp.enabled:
+            await _lsp_enrich_batch(batch, str(path), list(detected_langs))
+        result.chunks_indexed += await vectorstore.upsert(collection, batch)
+
     # Delete chunks for removed files
     indexed_files = set(new_hashes.keys())
     current_files = {str(f.relative_to(path)) for f in all_files}
@@ -219,22 +239,6 @@ async def index_repository(
         await vectorstore.delete_by_filter(collection, "file_path", removed_file)
         del new_hashes[removed_file]
         result.files_deleted += 1
-
-    # LSP enrichment (if enabled and servers available)
-    settings = get_settings()
-    if settings.lsp.enabled and documents:
-        from rag.core.lsp import enrich_chunks_with_lsp
-
-        detected_langs = list({doc.metadata.get("language", "") for doc in documents if doc.metadata.get("language")})
-        chunk_metas = [doc.metadata for doc in documents]
-        await enrich_chunks_with_lsp(str(path), chunk_metas, detected_langs)
-        # Update documents with enriched metadata
-        for doc, meta in zip(documents, chunk_metas):
-            doc.metadata = meta
-
-    # Upsert
-    if documents:
-        result.chunks_indexed = await vectorstore.upsert(collection, documents)
 
     # Save state
     state = IndexState(last_commit=current_commit, file_hashes=new_hashes)
@@ -251,6 +255,19 @@ async def index_repository(
     )
 
     return result
+
+
+async def _lsp_enrich_batch(batch: list[ChunkDocument], repo_path: str, languages: list[str]) -> None:
+    """Run LSP enrichment on a batch of documents."""
+    try:
+        from rag.core.lsp import enrich_chunks_with_lsp
+
+        chunk_metas = [doc.metadata for doc in batch]
+        await enrich_chunks_with_lsp(repo_path, chunk_metas, languages)
+        for doc, meta in zip(batch, chunk_metas):
+            doc.metadata = meta
+    except Exception as e:
+        logger.warning("lsp_enrich_batch_error", error=str(e))
 
 
 async def index_documents(

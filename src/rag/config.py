@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -25,19 +25,19 @@ DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config" / "default.toml"
 
 class ServerSettings(BaseModel):
     host: str = "127.0.0.1"
-    port: int = 7890
+    port: int = Field(default=7890, ge=1, le=65535)
 
 
 class EmbeddingSettings(BaseModel):
     model: str = "Qwen/Qwen3-Embedding-4B"
-    provider: str = "auto"
-    dim: int = 2560
+    provider: str = Field(default="auto", pattern=r"^(auto|ollama|fastembed)$")
+    dim: int = Field(default=2560, ge=32, le=8192)
 
 
 class RerankerSettings(BaseModel):
     model: str = "Qwen/Qwen3-Reranker-4B"
     enabled: bool = True
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=100)
 
 
 class SparseSettings(BaseModel):
@@ -55,8 +55,8 @@ class QdrantSettings(BaseModel):
 
 
 class IndexSettings(BaseModel):
-    max_chunk_chars: int = 8000
-    retrieval_top_k: int = 20
+    max_chunk_chars: int = Field(default=8000, ge=500, le=100000)
+    retrieval_top_k: int = Field(default=20, ge=1, le=500)
     skip_dirs: list[str] = [
         ".git", "node_modules", ".venv", "venv", "__pycache__",
         "build", "dist", ".tox", ".mypy_cache", ".ruff_cache",
@@ -67,11 +67,18 @@ class LLMSettings(BaseModel):
     ollama_url: str = "http://localhost:11434"
     agent_model: str = "qwen3:8b"
 
+    @field_validator("ollama_url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("ollama_url must start with http:// or https://")
+        return v.rstrip("/")
+
 
 class LSPSettings(BaseModel):
     enabled: bool = True
     auto_detect: bool = True
-    timeout: int = 5000
+    timeout: int = Field(default=5000, ge=1000, le=60000)
 
 
 class Settings(BaseModel):

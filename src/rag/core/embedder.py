@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,6 +55,15 @@ class OllamaEmbedder:
         async with httpx.AsyncClient(timeout=120) as client:
             results: list[list[float]] = []
             for text in texts:
+                embedding = await self._embed_single(client, text)
+                results.append(embedding)
+            return results
+
+    async def _embed_single(
+        self, client: httpx.AsyncClient, text: str, max_retries: int = 3
+    ) -> list[float]:
+        for attempt in range(max_retries):
+            try:
                 resp = await client.post(
                     f"{self._base_url}/api/embed",
                     json={"model": self._model, "input": text},
@@ -62,11 +72,18 @@ class OllamaEmbedder:
                 data = resp.json()
                 embeddings = data.get("embeddings", [])
                 if embeddings:
-                    results.append(embeddings[0])
+                    return embeddings[0]
+                logger.warning("empty_embedding", text_len=len(text))
+                return [0.0] * self._dim
+            except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
+                if attempt < max_retries - 1:
+                    wait = 2 ** attempt
+                    logger.warning("embed_retry", attempt=attempt + 1, wait=wait, error=str(e))
+                    await asyncio.sleep(wait)
                 else:
-                    logger.warning("empty_embedding", text_len=len(text))
-                    results.append([0.0] * self._dim)
-            return results
+                    logger.error("embed_failed", text_len=len(text), error=str(e))
+                    return [0.0] * self._dim
+        return [0.0] * self._dim
 
     async def health_check(self) -> bool:
         try:

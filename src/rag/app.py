@@ -104,8 +104,8 @@ class RAGApp(App):
             agent_card.update_info(
                 settings.llm.agent_model, "ollama", "unknown"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("tui_update_error", error=str(e))
 
     async def _update_lsp_status(self) -> None:
         """Detect LSP servers and update the panel."""
@@ -121,8 +121,8 @@ class RAGApp(App):
                 }
                 for s in servers
             ])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("tui_update_error", error=str(e))
 
     async def _update_index_stats(self) -> None:
         """Update index statistics."""
@@ -135,8 +135,8 @@ class RAGApp(App):
                 stats = await vectorstore.collection_info(settings.qdrant.code_collection)
                 stats_widget = self.query_one("#index-stats", IndexStatsWidget)
                 stats_widget.update_stats(stats)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("tui_update_error", error=str(e))
 
     async def _poll_status(self) -> None:
         """Periodically refresh index stats."""
@@ -153,13 +153,32 @@ class RAGApp(App):
         try:
             log = self.query_one("#query-log", QueryLogPanel)
             log.clear_log()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("tui_update_error", error=str(e))
 
     async def action_quit(self) -> None:
-        """Shut down server and exit."""
-        if self._server:
-            self._server.should_exit = True
+        """Shut down server and exit gracefully."""
+        self.notify("Shutting down...")
+
+        # Stop polling
         if self._poll_task:
             self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+
+        # Signal server to stop and wait for drain
+        if self._server:
+            self._server.should_exit = True
+            if self._server_task:
+                try:
+                    await asyncio.wait_for(self._server_task, timeout=5)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+        # Close SQLite
+        from rag.storage.db import close_connection
+        close_connection()
+
         self.exit()
