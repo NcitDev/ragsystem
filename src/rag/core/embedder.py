@@ -1,4 +1,8 @@
-"""Dense embeddings (Qwen3 via Ollama/FastEmbed) + sparse BM25 via FastEmbed."""
+"""Dense embeddings (Qwen3 via Ollama) + sparse BM25 via FastEmbed.
+
+Requires Ollama running with the configured embedding model.
+No fallback — fails fast if Ollama is unavailable.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ import httpx
 import structlog
 
 from rag.config import get_settings
+from rag.core.errors import EmbeddingError
 
 logger = structlog.get_logger()
 
@@ -51,13 +56,15 @@ class OllamaEmbedder:
         results = await self._embed_batch([prefixed])
         return results[0]
 
-    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_batch(self, texts: list[str], max_concurrent: int = 10) -> list[list[float]]:
+        """Embed texts in parallel with bounded concurrency."""
+        semaphore = asyncio.Semaphore(max_concurrent)
         async with httpx.AsyncClient(timeout=120) as client:
-            results: list[list[float]] = []
-            for text in texts:
-                embedding = await self._embed_single(client, text)
-                results.append(embedding)
-            return results
+            async def _bounded(text: str) -> list[float]:
+                async with semaphore:
+                    return await self._embed_single(client, text)
+
+            return list(await asyncio.gather(*[_bounded(t) for t in texts]))
 
     async def _embed_single(
         self, client: httpx.AsyncClient, text: str, max_retries: int = 3
@@ -73,17 +80,15 @@ class OllamaEmbedder:
                 embeddings = data.get("embeddings", [])
                 if embeddings:
                     return embeddings[0]
-                logger.warning("empty_embedding", text_len=len(text))
-                return [0.0] * self._dim
+                raise EmbeddingError(f"Empty embedding returned for text of length {len(text)}")
             except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
                 if attempt < max_retries - 1:
                     wait = 2 ** attempt
                     logger.warning("embed_retry", attempt=attempt + 1, wait=wait, error=str(e))
                     await asyncio.sleep(wait)
                 else:
-                    logger.error("embed_failed", text_len=len(text), error=str(e))
-                    return [0.0] * self._dim
-        return [0.0] * self._dim
+                    raise EmbeddingError(f"Embedding failed after {max_retries} retries: {e}") from e
+        raise EmbeddingError("Embedding failed: exhausted retries")
 
     async def health_check(self) -> bool:
         try:
@@ -96,52 +101,27 @@ class OllamaEmbedder:
         except Exception:
             return False
 
-
-class FastEmbedDenseEmbedder:
-    """Dense embeddings via FastEmbed (ONNX) — fallback when Ollama unavailable."""
-
-    def __init__(self, model: str | None = None) -> None:
-        settings = get_settings()
-        self._model_name = model or settings.embeddings.model
-        self._dim = settings.embeddings.dim
-        self._model: Any = None
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    def _get_model(self) -> Any:
-        if self._model is None:
-            self._init_model()
-        return self._model
-
-    def _init_model(self) -> None:
-        from fastembed import TextEmbedding
-
+    async def verify_model(self) -> None:
+        """Verify Ollama is running and model is available. Raises EmbeddingError if not."""
         try:
-            self._model = TextEmbedding(model_name=self._model_name)
-            # Detect actual dimension from a test embedding
-            test = list(self._model.embed(["test"]))[0]
-            self._dim = len(test)
-        except Exception:
-            fallback = "BAAI/bge-small-en-v1.5"
-            logger.warning(
-                "fastembed_model_fallback",
-                requested=self._model_name,
-                fallback=fallback,
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{self._base_url}/api/tags")
+                if resp.status_code != 200:
+                    raise EmbeddingError(
+                        f"Ollama not responding at {self._base_url}. Start it with: ollama serve"
+                    )
+                models = [m["name"] for m in resp.json().get("models", [])]
+                model_short = self._model.split("/")[-1].lower()
+                if not any(model_short in m.lower() for m in models):
+                    raise EmbeddingError(
+                        f"Model '{self._model}' not found in Ollama. "
+                        f"Pull it with: ollama pull {self._model}\n"
+                        f"Available models: {', '.join(models)}"
+                    )
+        except httpx.ConnectError:
+            raise EmbeddingError(
+                f"Cannot connect to Ollama at {self._base_url}. Start it with: ollama serve"
             )
-            self._model_name = fallback
-            self._model = TextEmbedding(model_name=fallback)
-            self._dim = 384
-        logger.info("fastembed_dense_loaded", model=self._model_name, dim=self._dim)
-
-    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        model = self._get_model()
-        return [emb.tolist() for emb in model.embed(texts)]
-
-    async def embed_query(self, text: str) -> list[float]:
-        results = await self.embed_documents([text])
-        return results[0]
 
 
 class SparseEmbedder:
@@ -174,15 +154,15 @@ class SparseEmbedder:
 
 
 class HybridEmbedder:
-    """Combines dense (Ollama or FastEmbed) + sparse (BM25) embeddings.
+    """Combines dense (Ollama) + sparse (BM25) embeddings.
 
-    Auto-detects Ollama at init; falls back to FastEmbed ONNX.
+    Requires Ollama with the configured model. Fails fast if unavailable.
     """
 
     def __init__(self) -> None:
-        self._dense: OllamaEmbedder | FastEmbedDenseEmbedder | None = None
+        self._dense: OllamaEmbedder | None = None
         self._sparse = SparseEmbedder()
-        self._provider: str = "unknown"
+        self._provider: str = "ollama"
 
     @property
     def dim(self) -> int:
@@ -195,52 +175,27 @@ class HybridEmbedder:
         return self._provider
 
     async def initialize(self) -> None:
-        """Probe Ollama and select dense backend. Eagerly loads model to detect dim."""
-        settings = get_settings()
-
-        if settings.embeddings.provider == "ollama":
-            self._dense = OllamaEmbedder()
-            self._provider = "ollama"
-        elif settings.embeddings.provider == "fastembed":
-            fe = FastEmbedDenseEmbedder()
-            fe._init_model()  # Eagerly load to detect actual dim
-            self._dense = fe
-            self._provider = "fastembed"
-        else:
-            # Auto-detect
-            ollama = OllamaEmbedder()
-            if await ollama.health_check():
-                self._dense = ollama
-                self._provider = "ollama"
-                logger.info("embedder_selected", provider="ollama", model=settings.embeddings.model)
-            else:
-                fe = FastEmbedDenseEmbedder()
-                fe._init_model()  # Eagerly load to detect actual dim
-                self._dense = fe
-                self._provider = "fastembed"
-                logger.info("embedder_selected", provider="fastembed", model=fe._model_name, dim=fe.dim)
+        """Verify Ollama is running with the required model."""
+        self._dense = OllamaEmbedder()
+        await self._dense.verify_model()
+        self._provider = "ollama"
+        logger.info("embedder_ready", provider="ollama", model=get_settings().embeddings.model)
 
     async def embed_documents(self, texts: list[str]) -> list[EmbeddingResult]:
         if self._dense is None:
             await self.initialize()
-        assert self._dense is not None
 
         dense_vecs = await self._dense.embed_documents(texts)
         sparse_vecs = self._sparse.embed_documents(texts)
 
-        results = []
-        for dense, sparse in zip(dense_vecs, sparse_vecs):
-            results.append(EmbeddingResult(
-                dense=dense,
-                sparse_indices=sparse["indices"],
-                sparse_values=sparse["values"],
-            ))
-        return results
+        return [
+            EmbeddingResult(dense=d, sparse_indices=s["indices"], sparse_values=s["values"])
+            for d, s in zip(dense_vecs, sparse_vecs)
+        ]
 
     async def embed_query(self, text: str) -> EmbeddingResult:
         if self._dense is None:
             await self.initialize()
-        assert self._dense is not None
 
         dense = await self._dense.embed_query(text)
         sparse = self._sparse.embed_query(text)

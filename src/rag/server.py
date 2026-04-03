@@ -43,11 +43,19 @@ class SearchResultItem(BaseModel):
     lines: str
     code: str
     score: float
+    matched_queries: list[int] = []
+
+
+class SearchPlanInfo(BaseModel):
+    strategy: str
+    queries: list[str]
+    filters: dict[str, Any] = {}
 
 
 class SearchResponse(BaseModel):
     results: list[SearchResultItem]
     query: str
+    plan: SearchPlanInfo | None = None
     total: int
     latency_ms: float
 
@@ -279,27 +287,35 @@ def create_app() -> FastAPI:
 
             plan = await plan_search(req.query)
 
-            all_results = []
-            for q in plan.queries:
+            # Track which query index matched each result
+            result_map: dict[str, tuple[Any, list[int]]] = {}  # point_id -> (result, [query_indices])
+            for qi, q in enumerate(plan.queries):
                 merged_filters = {**(plan.filters or {}), **(req.filters or {})}
-                results = await vectorstore.search(
+                query_results = await vectorstore.search(
                     collection=settings.qdrant.code_collection,
                     query=q,
                     top_k=req.top_k or plan.top_k,
                     filters=merged_filters if merged_filters else None,
                 )
-                all_results.extend(results)
+                for r in query_results:
+                    if r.point_id in result_map:
+                        result_map[r.point_id][1].append(qi)
+                    else:
+                        result_map[r.point_id] = (r, [qi])
 
-            # Deduplicate by point_id
-            seen = set()
-            results = []
-            for r in all_results:
-                if r.point_id not in seen:
-                    seen.add(r.point_id)
-                    results.append(r)
+            results = [r for r, _ in result_map.values()]
+            matched_queries_map = {pid: qis for pid, (_, qis) in result_map.items()}
 
             if req.rerank and results:
-                results = reranker.rerank(req.query, results)
+                try:
+                    results = reranker.rerank(req.query, results)
+                except Exception as e:
+                    logger.warning("rerank_degraded", error=str(e))
+                    # Graceful degradation: return unranked results
+
+            # Apply weighted relevance scoring
+            from rag.core.scoring import score_results
+            results = score_results(results, req.query)
 
             latency = (time.time() - start) * 1000
 
@@ -310,9 +326,22 @@ def create_app() -> FastAPI:
                 latency_ms=round(latency, 1),
             )
 
+            result_items = []
+            for r in results:
+                item = SearchResultItem(
+                    **r.slim(),
+                    matched_queries=matched_queries_map.get(r.point_id, []),
+                )
+                result_items.append(item)
+
             return SearchResponse(
-                results=[SearchResultItem(**r.slim()) for r in results],
+                results=result_items,
                 query=req.query,
+                plan=SearchPlanInfo(
+                    strategy=plan.strategy,
+                    queries=plan.queries,
+                    filters=plan.filters,
+                ),
                 total=len(results),
                 latency_ms=round(latency, 1),
             )

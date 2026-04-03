@@ -12,7 +12,8 @@ from textual.binding import Binding
 from rag.config import ensure_rag_home, get_settings
 from rag.core.lsp import detect_lsp_servers
 from rag.tui.dashboard import Dashboard
-from rag.tui.widgets import IndexStatsWidget, LSPStatusWidget, ModelCard, QueryLogPanel
+from rag.tui.dashboard import QueryLogPanel
+from rag.tui.widgets import IndexStatsWidget, LSPStatusWidget, ModelCard
 
 logger = structlog.get_logger()
 

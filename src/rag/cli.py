@@ -43,6 +43,66 @@ def _require_daemon() -> None:
 
 
 @app.command()
+def init(
+    path: str = typer.Argument(".", help="Repository path to initialize"),
+):
+    """Initialize RAG: create config, start daemon, index current directory."""
+    import subprocess
+    import sys
+    import time as _time
+
+    abs_path = str(Path(path).resolve())
+    ensure_rag_home()
+
+    # Create config if not exists
+    if not CONFIG_PATH.exists():
+        from shutil import copy2
+        from rag.config import DEFAULT_CONFIG
+        if DEFAULT_CONFIG.exists():
+            copy2(DEFAULT_CONFIG, CONFIG_PATH)
+    console.print(f"[green]Config:[/green] {CONFIG_PATH}")
+
+    # Start daemon in background
+    console.print("[green]Starting daemon...[/green]")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "rag", "start", "--headless"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    # Wait for daemon to be ready
+    for _ in range(20):
+        _time.sleep(0.5)
+        if _check_daemon():
+            break
+    else:
+        console.print("[red]Daemon failed to start. Check: rag diagnose[/red]")
+        return
+
+    console.print(f"[green]Daemon:[/green] running on {_base_url()}")
+
+    # Index
+    console.print(f"[green]Indexing:[/green] {abs_path}")
+    import httpx
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/index",
+            json={"repo_path": abs_path},
+            timeout=600,
+        )
+        data = resp.json()
+        console.print(f"[green]Done:[/green] {data.get('files_processed', 0)} files, {data.get('chunks_indexed', 0)} chunks")
+    except Exception as e:
+        console.print(f"[red]Index failed: {e}[/red]")
+        return
+
+    console.print("\n[bold]Ready! Try:[/bold]")
+    console.print("  rag search \"your query\"")
+    console.print("  rag overview")
+    console.print("  rag diagnose")
+
+
+@app.command()
 def start(
     headless: bool = typer.Option(False, "--headless", help="Run without TUI"),
     watch: bool = typer.Option(False, "--watch", "-w", help="Enable file watcher for auto re-index"),
@@ -401,3 +461,252 @@ def plugins():
     for p in found:
         table.add_row(p.name, p.version, str(len(p.patterns)), str(len(p.domain_keywords)))
     console.print(table)
+
+
+# --- Collection Management ---
+
+
+@app.command()
+def collections(
+    action: str = typer.Argument("list", help="Action: list or delete"),
+    name: str = typer.Argument(None, help="Collection name (for delete)"),
+):
+    """Manage Qdrant collections (list, delete)."""
+    import asyncio
+    from rag.core.vectorstore import QdrantVectorStore
+
+    async def _run():
+        vs = QdrantVectorStore()
+        client = await vs._get_client()
+
+        if action == "list":
+            colls = await client.get_collections()
+            if not colls.collections:
+                console.print("[yellow]No collections found.[/yellow]")
+                return
+            table = Table(title="Collections")
+            table.add_column("Name", style="cyan")
+            table.add_column("Points", style="green")
+            table.add_column("Status", style="dim")
+            for c in colls.collections:
+                info = await vs.collection_info(c.name)
+                table.add_row(c.name, str(info.get("points_count", "?")), info.get("status", "?"))
+            console.print(table)
+
+        elif action == "delete":
+            if not name:
+                console.print("[red]Specify collection name: rag collections delete <name>[/red]")
+                return
+            await client.delete_collection(name)
+            console.print(f"[green]Deleted collection: {name}[/green]")
+
+        else:
+            console.print(f"[red]Unknown action: {action}. Use 'list' or 'delete'.[/red]")
+
+        await vs.close()
+
+    asyncio.run(_run())
+
+
+# --- Verify + Repair ---
+
+
+@app.command()
+def verify(
+    path: str = typer.Argument(".", help="Repository path to verify"),
+):
+    """Check index integrity: orphaned chunks, duplicates, missing files."""
+    import asyncio
+    from rag.core.vectorstore import QdrantVectorStore
+
+    abs_path = str(Path(path).resolve())
+
+    async def _run():
+        vs = QdrantVectorStore()
+        client = await vs._get_client()
+        settings = get_settings()
+        collection = settings.qdrant.code_collection
+
+        try:
+            colls = await client.get_collections()
+            if collection not in [c.name for c in colls.collections]:
+                console.print(f"[yellow]Collection '{collection}' not found. Run 'rag index' first.[/yellow]")
+                return
+        except Exception:
+            console.print(f"[yellow]Collection '{collection}' not found. Run 'rag index' first.[/yellow]")
+            return
+
+        # Scroll all points
+        indexed_files: dict[str, int] = {}  # file_path -> chunk count
+        duplicates: dict[str, int] = {}  # content_hash -> count
+        total_points = 0
+
+        offset = None
+        while True:
+            points, offset = await client.scroll(
+                collection_name=collection,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            if not points:
+                break
+            for p in points:
+                total_points += 1
+                if p.payload:
+                    fp = p.payload.get("file_path", "")
+                    indexed_files[fp] = indexed_files.get(fp, 0) + 1
+                    ch = p.payload.get("content_hash", "")
+                    if ch:
+                        duplicates[ch] = duplicates.get(ch, 0) + 1
+            if offset is None:
+                break
+
+        # Check for orphans (indexed but file doesn't exist on disk)
+        orphans = []
+        for fp in indexed_files:
+            full = Path(abs_path) / fp
+            if not full.exists():
+                orphans.append(fp)
+
+        # Check for duplicates
+        dup_count = sum(1 for c in duplicates.values() if c > 1)
+
+        console.print(f"\n[bold]Index Verification: {abs_path}[/bold]\n")
+        console.print(f"  Total chunks: {total_points}")
+        console.print(f"  Unique files:  {len(indexed_files)}")
+        console.print(f"  Orphaned files (indexed but deleted): [{'red' if orphans else 'green'}]{len(orphans)}[/{'red' if orphans else 'green'}]")
+        if orphans:
+            for o in orphans[:10]:
+                console.print(f"    - {o}")
+            if len(orphans) > 10:
+                console.print(f"    ... and {len(orphans) - 10} more")
+        console.print(f"  Duplicate chunks: [{'yellow' if dup_count else 'green'}]{dup_count}[/{'yellow' if dup_count else 'green'}]")
+
+        if orphans or dup_count:
+            console.print("\n  [dim]Run 'rag repair' to fix issues.[/dim]")
+        else:
+            console.print("\n  [green]Index is healthy.[/green]")
+
+        await vs.close()
+
+    asyncio.run(_run())
+
+
+@app.command()
+def repair(
+    path: str = typer.Argument(".", help="Repository path"),
+    remove_orphans: bool = typer.Option(True, "--remove-orphans/--keep-orphans", help="Remove orphaned chunks"),
+):
+    """Repair index by removing orphaned chunks and duplicates."""
+    import asyncio
+    from rag.core.vectorstore import QdrantVectorStore
+
+    abs_path = str(Path(path).resolve())
+
+    async def _run():
+        vs = QdrantVectorStore()
+        client = await vs._get_client()
+        settings = get_settings()
+        collection = settings.qdrant.code_collection
+
+        removed = 0
+
+        if remove_orphans:
+            # Find orphaned files
+            offset = None
+            orphan_files: set[str] = set()
+            while True:
+                points, offset = await client.scroll(
+                    collection_name=collection,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                if not points:
+                    break
+                for p in points:
+                    if p.payload:
+                        fp = p.payload.get("file_path", "")
+                        if fp and not (Path(abs_path) / fp).exists():
+                            orphan_files.add(fp)
+                if offset is None:
+                    break
+
+            for fp in orphan_files:
+                await vs.delete_by_filter(collection, "file_path", fp)
+                removed += 1
+                console.print(f"  [dim]Removed orphan: {fp}[/dim]")
+
+        console.print(f"\n[green]Repair complete. Removed {removed} orphaned file groups.[/green]")
+        await vs.close()
+
+    asyncio.run(_run())
+
+
+# --- Diagnose ---
+
+
+@app.command()
+def diagnose():
+    """Run full system health check."""
+    import asyncio
+    import httpx
+
+    console.print("\n[bold]RAG System Diagnostics[/bold]\n")
+
+    # 1. Daemon
+    try:
+        resp = httpx.get(f"{_base_url()}/health", timeout=3)
+        data = resp.json()
+        components = data.get("components", {})
+        console.print(f"  Daemon:    [green]running[/green] on {_base_url()}")
+        for comp, status in components.items():
+            color = "green" if status in ("ok", "enabled") else "yellow" if status == "unavailable" else "red"
+            console.print(f"    {comp}: [{color}]{status}[/{color}]")
+    except Exception:
+        console.print("  Daemon:    [red]not running[/red]")
+        console.print("  [dim]Start with: rag start --headless[/dim]")
+        return
+
+    # 2. Ollama
+    settings = get_settings()
+    try:
+        resp = httpx.get(f"{settings.llm.ollama_url}/api/tags", timeout=3)
+        models = [m["name"] for m in resp.json().get("models", [])]
+        console.print(f"\n  Ollama:    [green]running[/green] ({len(models)} models)")
+        # Check for required models
+        embed_model = settings.embeddings.model.split("/")[-1].lower()
+        has_embed = any(embed_model in m.lower() for m in models)
+        has_agent = any(settings.llm.agent_model in m for m in models)
+        console.print(f"    Embedder ({settings.embeddings.model}): [{'green' if has_embed else 'red'}]{'found' if has_embed else 'not found'}[/{'green' if has_embed else 'red'}]")
+        console.print(f"    Agent ({settings.llm.agent_model}): [{'green' if has_agent else 'yellow'}]{'found' if has_agent else 'not found'}[/{'green' if has_agent else 'yellow'}]")
+    except Exception:
+        console.print(f"\n  Ollama:    [red]not running[/red] at {settings.llm.ollama_url}")
+        console.print("  [dim]Start with: ollama serve[/dim]")
+
+    # 3. LSP
+    from rag.core.lsp import detect_lsp_servers
+    servers = detect_lsp_servers()
+    found = [s for s in servers if s.found]
+    missing = [s for s in servers if not s.found]
+    console.print(f"\n  LSP:       [green]{len(found)} found[/green], [yellow]{len(missing)} missing[/yellow]")
+    for s in missing:
+        console.print(f"    [dim]{s.language}: {s.install_hint}[/dim]")
+
+    # 4. Config
+    console.print(f"\n  Config:    {CONFIG_PATH}")
+    console.print(f"  Data:      {settings.qdrant.resolved_path}")
+
+    # 5. Cache
+    try:
+        from rag.core.cache import EmbeddingCache
+        cache = EmbeddingCache()
+        stats = cache.stats()
+        console.print(f"  Cache:     {stats['total_entries']} entries, {stats['hit_count']} hits, {stats['miss_count']} misses")
+    except Exception:
+        console.print("  Cache:     [dim]not initialized[/dim]")
+
+    console.print()

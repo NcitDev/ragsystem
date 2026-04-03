@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -184,35 +185,44 @@ async def index_repository(
     batch: list[ChunkDocument] = []
     batch_size = 50
     detected_langs: set[str] = set()
+    pending_upsert: asyncio.Task | None = None
+
+    # Initialize embedding cache
+    from rag.core.cache import EmbeddingCache
+    embed_cache = EmbeddingCache()
+
+    async def _flush_batch(docs: list[ChunkDocument]) -> int:
+        if settings.lsp.enabled:
+            await _lsp_enrich_batch(docs, str(path), list(detected_langs))
+        return await vectorstore.upsert(collection, docs, cache=embed_cache)
+
+    def _process_file(fp: Path, rel: str) -> list[ChunkDocument]:
+        """CPU-bound: chunk + enrich a single file. Runs in thread pool."""
+        content = fp.read_text(encoding="utf-8", errors="replace")
+        language = detect_language(rel)
+        if language:
+            detected_langs.add(language)
+        chunks = chunk_code(content, rel, language)
+        if language == "python":
+            for chunk in chunks:
+                chunk.enrich_metadata(test_files=test_files)
+        return [
+            ChunkDocument(content=c.content, metadata=c.to_index_metadata(), chunk_id=c.chunk_id)
+            for c in chunks
+        ]
 
     for idx, file_path in enumerate(files_to_process):
         rel_path = str(file_path.relative_to(path))
         try:
-            content = file_path.read_text(encoding="utf-8", errors="replace")
-            language = detect_language(rel_path)
-            if language:
-                detected_langs.add(language)
+            # Run CPU-bound chunking in thread pool to avoid blocking event loop
+            docs = await asyncio.to_thread(_process_file, file_path, rel_path)
+            batch.extend(docs)
 
-            chunks = chunk_code(content, rel_path, language)
-
-            # Enrich Python chunks with pattern metadata
-            if language == "python":
-                for chunk in chunks:
-                    chunk.enrich_metadata(test_files=test_files)
-
-            for chunk in chunks:
-                batch.append(ChunkDocument(
-                    content=chunk.content,
-                    metadata=chunk.to_index_metadata(),
-                    chunk_id=chunk.chunk_id,
-                ))
-
-            # Flush batch when it reaches threshold — avoids OOM on large repos
+            # Pipeline: await previous upsert, start new one
             if len(batch) >= batch_size:
-                # LSP enrichment on batch
-                if settings.lsp.enabled:
-                    await _lsp_enrich_batch(batch, str(path), list(detected_langs))
-                result.chunks_indexed += await vectorstore.upsert(collection, batch)
+                if pending_upsert is not None:
+                    result.chunks_indexed += await pending_upsert
+                pending_upsert = asyncio.create_task(_flush_batch(list(batch)))
                 batch = []
 
             new_hashes[rel_path] = _file_hash(file_path)
@@ -225,7 +235,9 @@ async def index_repository(
             logger.warning("file_index_error", file=rel_path, error=str(e))
             result.errors.append(f"{rel_path}: {e}")
 
-    # Flush remaining batch
+    # Await pending + flush remaining
+    if pending_upsert is not None:
+        result.chunks_indexed += await pending_upsert
     if batch:
         if settings.lsp.enabled:
             await _lsp_enrich_batch(batch, str(path), list(detected_langs))
@@ -307,9 +319,13 @@ async def index_documents(
             chunks = chunk_document(content, rel_path, doc_type)
 
             for chunk in chunks:
+                meta = chunk.to_index_metadata()
+                # Enrich docs with cross-references to code symbols
+                from rag.core.crossref import enrich_doc_chunk_with_code_refs
+                enrich_doc_chunk_with_code_refs(meta, chunk.content)
                 documents.append(ChunkDocument(
                     content=chunk.content,
-                    metadata=chunk.to_index_metadata(),
+                    metadata=meta,
                     chunk_id=chunk.chunk_id,
                 ))
 

@@ -18,6 +18,8 @@ from typing import Any
 
 import structlog
 
+from rag.config import get_settings
+
 logger = structlog.get_logger()
 
 # Known LSP servers per language
@@ -358,8 +360,12 @@ async def enrich_chunks_with_lsp(
             continue
 
         try:
-            # Get references to this symbol (fan_in)
-            refs = await client.get_references(file_path, start_line, 4)
+            # Get references to this symbol (fan_in) — with timeout protection
+            lsp_timeout = get_settings().lsp.timeout / 1000  # ms → seconds
+            refs = await asyncio.wait_for(
+                client.get_references(file_path, start_line, 4),
+                timeout=lsp_timeout,
+            )
             chunk["fan_in"] = len(refs)
             chunk["called_by"] = [
                 f"{r.get('uri', '').replace('file://', '')}:{r.get('range', {}).get('start', {}).get('line', 0)}"
@@ -374,6 +380,8 @@ async def enrich_chunks_with_lsp(
 
             enriched += 1
 
+        except asyncio.TimeoutError:
+            logger.warning("lsp_enrich_timeout", file=file_path, name=name)
         except Exception as e:
             logger.debug("lsp_enrich_error", file=file_path, name=name, error=str(e))
 

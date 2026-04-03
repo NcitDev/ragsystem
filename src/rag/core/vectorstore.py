@@ -11,6 +11,7 @@ from qdrant_client import AsyncQdrantClient, models
 
 from rag.config import get_settings
 from rag.core.embedder import HybridEmbedder
+from rag.core.errors import VectorStoreError
 
 logger = structlog.get_logger()
 
@@ -126,6 +127,7 @@ class QdrantVectorStore:
     def __init__(self, embedder: HybridEmbedder | None = None) -> None:
         self._embedder = embedder or HybridEmbedder()
         self._client: AsyncQdrantClient | None = None
+        self._is_embedded = True  # Using path-based local mode
 
     @property
     def embedder(self) -> HybridEmbedder:
@@ -166,12 +168,16 @@ class QdrantVectorStore:
             },
         )
 
-        for field_name, field_type in PAYLOAD_INDEXES:
-            await client.create_payload_index(
-                collection_name=collection,
-                field_name=field_name,
-                field_schema=field_type,
-            )
+        # Payload indexes only work in server mode, skip for embedded
+        if not self._is_embedded:
+            for field_name, field_type in PAYLOAD_INDEXES:
+                await client.create_payload_index(
+                    collection_name=collection,
+                    field_name=field_name,
+                    field_schema=field_type,
+                )
+        else:
+            logger.debug("payload_indexes_skipped", reason="embedded mode")
 
         logger.info("collection_created", collection=collection)
 
@@ -180,17 +186,52 @@ class QdrantVectorStore:
         collection: str,
         documents: list[ChunkDocument],
         batch_size: int = 50,
+        cache: Any = None,
     ) -> int:
-        """Embed and upsert documents into Qdrant."""
+        """Embed and upsert documents into Qdrant.
+
+        Args:
+            cache: Optional EmbeddingCache to skip re-embedding unchanged chunks.
+        """
         await self.ensure_collection(collection)
         client = await self._get_client()
 
         total = 0
         for i in range(0, len(documents), batch_size):
             batch = documents[i : i + batch_size]
-            texts = [doc.content for doc in batch]
 
-            embeddings = await self._embedder.embed_documents(texts)
+            # Check cache for existing embeddings
+            embeddings = []
+            to_embed_indices: list[int] = []
+            to_embed_texts: list[str] = []
+
+            for j, doc in enumerate(batch):
+                cached_emb = None
+                if cache is not None:
+                    content_hash = doc.metadata.get("content_hash", "")
+                    if content_hash:
+                        cached_emb = cache.get(content_hash)
+
+                if cached_emb is not None:
+                    embeddings.append(cached_emb)
+                else:
+                    embeddings.append(None)
+                    to_embed_indices.append(j)
+                    to_embed_texts.append(doc.content)
+
+            # Embed only uncached
+            if to_embed_texts:
+                new_embeddings = await self._embedder.embed_documents(to_embed_texts)
+                for idx, emb in zip(to_embed_indices, new_embeddings):
+                    embeddings[idx] = emb
+                    # Store in cache
+                    if cache is not None:
+                        content_hash = batch[idx].metadata.get("content_hash", "")
+                        if content_hash:
+                            cache.put(content_hash, emb)
+
+            if to_embed_texts:
+                logger.debug("embed_cache_stats", total=len(batch), cached=len(batch) - len(to_embed_texts), embedded=len(to_embed_texts))
 
             points = []
             for doc, emb in zip(batch, embeddings):

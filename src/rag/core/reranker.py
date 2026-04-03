@@ -7,6 +7,7 @@ from typing import Any
 import structlog
 
 from rag.config import get_settings
+from rag.core.errors import RerankerError
 from rag.core.vectorstore import SearchResult
 
 logger = structlog.get_logger()
@@ -70,5 +71,5 @@ class Reranker:
             return [r for _, r in scored_results[:top_k]]
 
         except Exception as e:
-            logger.warning("rerank_failed", error=str(e))
-            return results[:top_k]
+            logger.warning("rerank_failed", error=str(e), error_type=type(e).__name__)
+            raise RerankerError(f"Reranking failed: {e}") from e
