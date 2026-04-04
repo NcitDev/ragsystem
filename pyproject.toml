@@ -44,6 +44,8 @@ dependencies = [
     "structlog>=24.0.0",
     # Plugin config parsing
     "pyyaml>=6.0",
+    # Code knowledge graph
+    "networkx>=3.0",
 ]
 
 [project.scripts]

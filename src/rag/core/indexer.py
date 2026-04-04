@@ -252,6 +252,12 @@ async def index_repository(
         del new_hashes[removed_file]
         result.files_deleted += 1
 
+    # Build code graph + communities + summaries
+    try:
+        await _build_graph_and_summaries(vectorstore, collection)
+    except Exception as e:
+        logger.warning("graph_build_error", error=str(e))
+
     # Save state
     state = IndexState(last_commit=current_commit, file_hashes=new_hashes)
     state.save(path)
@@ -267,6 +273,51 @@ async def index_repository(
     )
 
     return result
+
+
+async def _build_graph_and_summaries(
+    vectorstore: QdrantVectorStore,
+    collection: str,
+) -> None:
+    """Build knowledge graph, detect communities, generate summaries."""
+    from rag.core.graph import CodeGraph, get_graph
+    from rag.core.summaries import generate_community_summaries
+
+    # Collect all chunk payloads from Qdrant
+    client = await vectorstore._get_client()
+    all_chunks: list[dict] = []
+    offset = None
+    while True:
+        points, offset = await client.scroll(
+            collection_name=collection,
+            limit=200,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not points:
+            break
+        for p in points:
+            if p.payload:
+                all_chunks.append(dict(p.payload))
+        if offset is None:
+            break
+
+    if not all_chunks:
+        return
+
+    # Build graph from chunk metadata
+    graph = get_graph()
+    graph.build_from_chunks(all_chunks)
+
+    # Detect communities
+    graph.detect_communities()
+
+    # Generate summaries for each community
+    await generate_community_summaries(graph, vectorstore, all_chunks)
+
+    # Save graph to disk for query-time use
+    graph.save()
 
 
 async def _lsp_enrich_batch(batch: list[ChunkDocument], repo_path: str, languages: list[str]) -> None:

@@ -80,10 +80,12 @@ def _get_agent():
             '  - "top_k": number of results (default 20)',
             "",
             "Strategy guide:",
-            '  - "hybrid": default, uses dense + sparse vector search',
+            '  - "hybrid": default, uses dense + sparse vector search with reranking',
             '  - "filtered": when user asks for specific patterns/language/complexity',
             '  - "graph_walk": when user asks about call chains or relationships',
             '  - "aggregate": when user asks about codebase-level stats',
+            '  - "global": when user asks for overview/summary of a module or architecture',
+            '  - "naive": when user wants simple vector search without reranking',
             "",
             "Available filter fields: language, chunk_type, patterns, domains, layers,",
             "  is_async, complexity_cyclomatic, nesting_depth, has_docstring, decorator_tags",
@@ -176,14 +178,18 @@ def _fallback_plan(query: str) -> SearchPlan:
     if any(w in query_lower for w in ["complex", "complicated", "deeply nested"]):
         filters["complexity_cyclomatic"] = 10
 
-    # Strategy detection
+    # Strategy detection — now includes naive and global modes
     strategy = "hybrid"
     if filters:
         strategy = "filtered"
-    if any(w in query_lower for w in ["calls", "uses", "depends", "flow", "chain"]):
+    if any(w in query_lower for w in ["calls", "uses", "depends", "flow", "chain", "trace"]):
         strategy = "graph_walk"
     if any(w in query_lower for w in ["how many", "count", "all patterns", "statistics"]):
         strategy = "aggregate"
+    if any(w in query_lower for w in ["overview", "summary", "what does this", "architecture", "main purpose", "module"]):
+        strategy = "global"
+    if any(w in query_lower for w in ["exact", "literal", "raw search"]):
+        strategy = "naive"
 
     return SearchPlan(
         queries=expanded,

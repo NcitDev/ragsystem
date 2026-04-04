@@ -72,7 +72,18 @@ class SearchResult:
             "lines": f"{self.payload.get('start_line', '?')}-{self.payload.get('end_line', '?')}",
             "code": self.content,
             "score": round(self.score, 4),
+            "citation": self._make_citation(),
         }
+
+    def _make_citation(self) -> str:
+        """Generate human-readable source citation."""
+        fp = self.payload.get("file_path", "?")
+        name = self.payload.get("name", "")
+        parent = self.payload.get("parent_name", "")
+        start = self.payload.get("start_line", "?")
+        end = self.payload.get("end_line", "?")
+        symbol = f"{parent}.{name}" if parent else name
+        return f"{fp}:{start}-{end} ({symbol})" if symbol else f"{fp}:{start}-{end}"
 
 
 @dataclass

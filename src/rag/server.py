@@ -44,6 +44,7 @@ class SearchResultItem(BaseModel):
     code: str
     score: float
     matched_queries: list[int] = []
+    citation: str = ""  # Human-readable source reference
 
 
 class SearchPlanInfo(BaseModel):
@@ -287,31 +288,82 @@ def create_app() -> FastAPI:
 
             plan = await plan_search(req.query)
 
-            # Track which query index matched each result
-            result_map: dict[str, tuple[Any, list[int]]] = {}  # point_id -> (result, [query_indices])
-            for qi, q in enumerate(plan.queries):
-                merged_filters = {**(plan.filters or {}), **(req.filters or {})}
-                query_results = await vectorstore.search(
-                    collection=settings.qdrant.code_collection,
-                    query=q,
-                    top_k=req.top_k or plan.top_k,
-                    filters=merged_filters if merged_filters else None,
+            # Route by strategy
+            if plan.strategy == "global":
+                # Search module summaries collection
+                from rag.core.summaries import SUMMARY_COLLECTION
+                results = await vectorstore.search(
+                    collection=SUMMARY_COLLECTION,
+                    query=req.query,
+                    top_k=req.top_k or 5,
                 )
-                for r in query_results:
-                    if r.point_id in result_map:
-                        result_map[r.point_id][1].append(qi)
-                    else:
-                        result_map[r.point_id] = (r, [qi])
+                matched_queries_map = {}
 
-            results = [r for r, _ in result_map.values()]
-            matched_queries_map = {pid: qis for pid, (_, qis) in result_map.items()}
+            elif plan.strategy == "graph_walk":
+                # Use code graph for multi-hop traversal + vector search
+                from rag.core.graph import get_graph
+                graph = get_graph()
+                # Find entry point via vector search
+                seed_results = await vectorstore.search(
+                    collection=settings.qdrant.code_collection,
+                    query=req.query,
+                    top_k=3,
+                )
+                # Traverse graph from seed results
+                related_nodes: set[str] = set()
+                for sr in seed_results:
+                    node_id = f"{sr.payload.get('file_path', '')}:{sr.payload.get('parent_name', '')}.{sr.payload.get('name', '')}".replace(".:",":")
+                    connected = graph.traverse(node_id, max_hops=2)
+                    related_nodes.update(connected)
 
-            if req.rerank and results:
+                # Fetch chunks for related nodes via file_path filter
+                related_files = {n.split(":")[0] for n in related_nodes if ":" in n}
+                results = []
+                for fp in list(related_files)[:10]:
+                    file_results = await vectorstore.search(
+                        collection=settings.qdrant.code_collection,
+                        query=req.query,
+                        top_k=5,
+                        filters={"file_path": fp},
+                    )
+                    results.extend(file_results)
+
+                # Deduplicate
+                seen = set()
+                deduped = []
+                for r in results:
+                    if r.point_id not in seen:
+                        seen.add(r.point_id)
+                        deduped.append(r)
+                results = deduped[:req.top_k or plan.top_k]
+                matched_queries_map = {}
+
+            else:
+                # Standard: hybrid, filtered, naive, aggregate
+                result_map: dict[str, tuple[Any, list[int]]] = {}
+                for qi, q in enumerate(plan.queries):
+                    merged_filters = {**(plan.filters or {}), **(req.filters or {})}
+                    query_results = await vectorstore.search(
+                        collection=settings.qdrant.code_collection,
+                        query=q,
+                        top_k=req.top_k or plan.top_k,
+                        filters=merged_filters if merged_filters else None,
+                    )
+                    for r in query_results:
+                        if r.point_id in result_map:
+                            result_map[r.point_id][1].append(qi)
+                        else:
+                            result_map[r.point_id] = (r, [qi])
+
+                results = [r for r, _ in result_map.values()]
+                matched_queries_map = {pid: qis for pid, (_, qis) in result_map.items()}
+
+            # Rerank (skip for naive and global modes)
+            if req.rerank and results and plan.strategy not in ("naive", "global"):
                 try:
                     results = reranker.rerank(req.query, results)
                 except Exception as e:
                     logger.warning("rerank_degraded", error=str(e))
-                    # Graceful degradation: return unranked results
 
             # Apply weighted relevance scoring
             from rag.core.scoring import score_results
