@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -57,9 +58,31 @@ def init_db() -> None:
             duration_ms REAL
         );
 
+        CREATE TABLE IF NOT EXISTS overview_stats (
+            language TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            complexity_bucket TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (language, pattern, complexity_bucket)
+        );
+
+        CREATE TABLE IF NOT EXISTS rate_buckets (
+            token TEXT PRIMARY KEY,
+            tokens_remaining INTEGER NOT NULL,
+            refill_at REAL NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_query_log_ts ON query_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_index_runs_ts ON index_runs(timestamp);
     """)
+    conn.commit()
+
+
+def _ensure_table(table_sql: str) -> None:
+    """Create a table on demand. Cheap and idempotent."""
+    conn = _get_conn()
+    conn.execute(table_sql)
+    conn.commit()
 
 
 def log_query(query: str, results_count: int, latency_ms: float) -> None:
@@ -102,3 +125,193 @@ def recent_queries(limit: int = 20) -> list[dict]:
         ]
     except sqlite3.Error:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Overview stats — materialized counters keyed by (language, pattern, bucket)
+# ---------------------------------------------------------------------------
+
+
+_OVERVIEW_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS overview_stats ("
+    "language TEXT NOT NULL,"
+    "pattern TEXT NOT NULL,"
+    "complexity_bucket TEXT NOT NULL,"
+    "count INTEGER NOT NULL DEFAULT 0,"
+    "PRIMARY KEY (language, pattern, complexity_bucket))"
+)
+
+
+def _complexity_bucket(complexity: int | float | None) -> str:
+    """Bucket cyclomatic complexity into low/medium/high/unknown."""
+    if complexity is None:
+        return "unknown"
+    try:
+        c = int(complexity)
+    except (TypeError, ValueError):
+        return "unknown"
+    if c <= 0:
+        return "unknown"
+    if c <= 5:
+        return "low"
+    if c <= 10:
+        return "medium"
+    return "high"
+
+
+def incr_overview(language: str, patterns: list[str], complexity: int | float | None) -> None:
+    """Increment counters for a single chunk's metadata.
+
+    Writes one canonical row per chunk under pattern ``"_total"`` so the
+    language/bucket counters stay accurate, plus one row per pattern so
+    pattern frequency is countable too.
+    """
+    try:
+        _ensure_table(_OVERVIEW_TABLE_SQL)
+        conn = _get_conn()
+        bucket = _complexity_bucket(complexity)
+        lang = language or "unknown"
+        # Canonical per-chunk row.
+        rows = [(lang, "_total", bucket)]
+        # Plus one row per pattern for pattern frequency.
+        for pat in patterns or ():
+            rows.append((lang, pat, bucket))
+        for r in rows:
+            conn.execute(
+                "INSERT INTO overview_stats (language, pattern, complexity_bucket, count) "
+                "VALUES (?, ?, ?, 1) "
+                "ON CONFLICT(language, pattern, complexity_bucket) DO UPDATE SET count = count + 1",
+                r,
+            )
+        conn.commit()
+    except sqlite3.Error:
+        pass  # Non-critical — overview will fall back to scroll-based aggregation.
+
+
+def get_overview() -> dict:
+    """Return aggregated overview stats from the materialized table.
+
+    Shape matches the /overview route:
+        {languages: {lang: count}, patterns: {pat: count},
+         complexity: {average, max, high_count}, total_chunks: int}
+    Returns counters at zero if the table is empty.
+    """
+    try:
+        _ensure_table(_OVERVIEW_TABLE_SQL)
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT language, pattern, complexity_bucket, count FROM overview_stats"
+        ).fetchall()
+    except sqlite3.Error:
+        return {"languages": {}, "patterns": {}, "complexity": {"average": 0, "max": 0, "high_count": 0}, "total_chunks": 0}
+
+    languages: dict[str, int] = {}
+    patterns: dict[str, int] = {}
+    bucket_counts: dict[str, int] = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+    total_chunks = 0
+
+    for lang, pat, bucket, count in rows:
+        if pat == "_total":
+            languages[lang] = languages.get(lang, 0) + count
+            bucket_counts[bucket] = bucket_counts.get(bucket, 0) + count
+            total_chunks += count
+        else:
+            patterns[pat] = patterns.get(pat, 0) + count
+
+    high_count = bucket_counts.get("high", 0)
+    # Average complexity — coarse estimate from bucket midpoints (low=3,
+    # medium=8, high=15). Unknown bucket is excluded from the denominator.
+    weights = {"low": 3, "medium": 8, "high": 15}
+    weighted = sum(bucket_counts.get(b, 0) * w for b, w in weights.items())
+    denom = sum(bucket_counts.get(b, 0) for b in weights) or 0
+    avg = round(weighted / denom, 1) if denom else 0
+    # ``max`` is unknowable from buckets alone; report the upper bound of
+    # the highest non-empty bucket so the field stays meaningful.
+    if bucket_counts.get("high", 0) > 0:
+        max_complexity = 15
+    elif bucket_counts.get("medium", 0) > 0:
+        max_complexity = 10
+    elif bucket_counts.get("low", 0) > 0:
+        max_complexity = 5
+    else:
+        max_complexity = 0
+
+    return {
+        "languages": dict(sorted(languages.items(), key=lambda x: -x[1])),
+        "patterns": dict(sorted(patterns.items(), key=lambda x: -x[1])),
+        "complexity": {"average": avg, "max": max_complexity, "high_count": high_count},
+        "total_chunks": total_chunks,
+    }
+
+
+def reset_overview() -> None:
+    """Clear materialized overview counters (for full re-index)."""
+    try:
+        _ensure_table(_OVERVIEW_TABLE_SQL)
+        conn = _get_conn()
+        conn.execute("DELETE FROM overview_stats")
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Per-token rate buckets
+# ---------------------------------------------------------------------------
+
+
+_RATE_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS rate_buckets ("
+    "token TEXT PRIMARY KEY,"
+    "tokens_remaining INTEGER NOT NULL,"
+    "refill_at REAL NOT NULL)"
+)
+
+
+def check_rate_bucket(token: str, capacity: int = 120, refill_per_sec: float = 2.0) -> bool:
+    """Token-bucket rate limit per client.
+
+    Returns True if the request is allowed (and consumes one token);
+    False if the bucket is empty. Default settings allow ~120 burst with
+    a steady-state of ~120 req/min (2 per second), matching the previous
+    deque-based limit.
+    """
+    try:
+        _ensure_table(_RATE_TABLE_SQL)
+        conn = _get_conn()
+        now = time.time()
+        row = conn.execute(
+            "SELECT tokens_remaining, refill_at FROM rate_buckets WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if row is None:
+            # Fresh bucket — allow and store with one token consumed.
+            conn.execute(
+                "INSERT INTO rate_buckets (token, tokens_remaining, refill_at) VALUES (?, ?, ?)",
+                (token, capacity - 1, now),
+            )
+            conn.commit()
+            return True
+
+        remaining, refill_at = row
+        elapsed = max(0.0, now - refill_at)
+        refilled = remaining + int(elapsed * refill_per_sec)
+        if refilled > capacity:
+            refilled = capacity
+        if refilled <= 0:
+            # Still empty — update timestamp so refill keeps accruing.
+            conn.execute(
+                "UPDATE rate_buckets SET tokens_remaining = ?, refill_at = ? WHERE token = ?",
+                (0, now, token),
+            )
+            conn.commit()
+            return False
+        conn.execute(
+            "UPDATE rate_buckets SET tokens_remaining = ?, refill_at = ? WHERE token = ?",
+            (refilled - 1, now, token),
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        # Fail open on storage trouble.
+        return True

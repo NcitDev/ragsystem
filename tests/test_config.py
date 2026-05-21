@@ -7,7 +7,6 @@ def test_default_settings():
     s = Settings()
     assert s.server.port == 7890
     assert s.embeddings.dim == 2560
-    assert s.reranker.enabled is True
     assert s.qdrant.code_collection == "code_chunks"
 
 

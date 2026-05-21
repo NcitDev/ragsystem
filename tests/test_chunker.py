@@ -93,6 +93,32 @@ func main() {
     assert len(func_chunks) == 1
 
 
+def test_chunk_dart_class():
+    source = '''
+class Counter {
+  int _value = 0;
+  int get value => _value;
+  void increment() {
+    _value++;
+  }
+}
+'''
+    chunks = chunk_code(source, "lib/counter.dart", "dart")
+    assert len(chunks) >= 1
+    types = {c.chunk_type for c in chunks}
+    assert ChunkType.CLASS_DECLARATION in types or ChunkType.METHOD in types
+    names = {c.name for c in chunks if c.name}
+    assert "Counter" in names or "increment" in names
+
+
+def test_chunk_dart_top_level_function():
+    source = "void main() { print('hi'); }\n"
+    chunks = chunk_code(source, "main.dart", "dart")
+    func_chunks = [c for c in chunks if c.chunk_type == ChunkType.FUNCTION]
+    assert len(func_chunks) >= 1
+    assert any(c.name == "main" for c in func_chunks)
+
+
 def test_chunk_unknown_language_fallback():
     source = "line1\nline2\nline3\n"
     chunks = chunk_code(source, "file.xyz")

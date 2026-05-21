@@ -7,7 +7,6 @@ build/
 .venv/
 
 # RAG system data
-.rag_index_state.json
 *.db
 
 # IDE

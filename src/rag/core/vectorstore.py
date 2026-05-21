@@ -1,4 +1,8 @@
-"""Qdrant embedded vector store with hybrid search (dense + sparse + RRF fusion)."""
+"""Qdrant embedded vector store with dense vector search.
+
+Sparse BM25 vectors and RRF fusion were removed when FastEmbed was nuked.
+Search is now a single dense ``query_points`` call.
+"""
 
 from __future__ import annotations
 
@@ -95,8 +99,54 @@ class ChunkDocument:
     chunk_id: str | None = None
 
 
+def _build_qdrant_filter(filters: dict[str, Any]) -> models.Filter:
+    """Translate a {field: value} dict into a Qdrant ``models.Filter``.
+
+    Embedded Qdrant supports filters at query time even without payload indexes
+    (they just run unindexed/slower). For list-typed payload fields (e.g.
+    ``patterns``, ``domains``, ``layers``, ``decorator_tags``), Qdrant's
+    ``MatchValue`` automatically matches list-membership server-side.
+    """
+    conditions: list[models.FieldCondition] = []
+    for key, value in filters.items():
+        if isinstance(value, bool):
+            conditions.append(
+                models.FieldCondition(key=key, match=models.MatchValue(value=value))
+            )
+        elif isinstance(value, (int, float)):
+            conditions.append(
+                models.FieldCondition(key=key, range=models.Range(gte=float(value)))
+            )
+        elif isinstance(value, list):
+            # Agno often emits filters like {"language": ["dart"]}. Treat as
+            # "any of these values" via MatchAny — also handles list-typed
+            # payload fields (patterns, domains, layers, decorator_tags) since
+            # Qdrant matches list-membership for each candidate value.
+            if len(value) == 0:
+                continue
+            if len(value) == 1:
+                conditions.append(
+                    models.FieldCondition(key=key, match=models.MatchValue(value=value[0]))
+                )
+            else:
+                conditions.append(
+                    models.FieldCondition(key=key, match=models.MatchAny(any=value))
+                )
+        else:
+            conditions.append(
+                models.FieldCondition(key=key, match=models.MatchValue(value=value))
+            )
+    return models.Filter(must=conditions)
+
+
 def _apply_filters(results: list[SearchResult], filters: dict[str, Any]) -> list[SearchResult]:
-    """Apply payload filters in Python (for embedded Qdrant without payload indexes)."""
+    """Apply payload filters in Python.
+
+    NOTE: Kept for backward compatibility only. Filtering now happens
+    server-side in Qdrant via ``_build_qdrant_filter`` — see
+    ``QdrantVectorStore.search``. This function is no longer called from
+    the search path.
+    """
     filtered = []
     for r in results:
         match = True
@@ -130,9 +180,10 @@ def _apply_filters(results: list[SearchResult], filters: dict[str, Any]) -> list
 
 
 class QdrantVectorStore:
-    """Qdrant embedded vector store with hybrid search capabilities.
+    """Qdrant embedded vector store, dense-only.
 
-    Uses dual-vector search (dense + sparse) with Reciprocal Rank Fusion.
+    Sparse + RRF fusion was removed alongside FastEmbed. Search is a
+    single dense ``query_points`` call.
     """
 
     def __init__(self, embedder: HybridEmbedder | None = None) -> None:
@@ -170,11 +221,6 @@ class QdrantVectorStore:
                 "dense": models.VectorParams(
                     size=self._embedder.dim,
                     distance=models.Distance.COSINE,
-                ),
-            },
-            sparse_vectors_config={
-                "sparse": models.SparseVectorParams(
-                    modifier=models.Modifier.IDF,
                 ),
             },
         )
@@ -255,11 +301,6 @@ class QdrantVectorStore:
                     # Convert short hash to deterministic UUID
                     point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, raw_id))
                 vectors: dict[str, Any] = {"dense": emb.dense}
-                if emb.sparse_indices and emb.sparse_values:
-                    vectors["sparse"] = models.SparseVector(
-                        indices=emb.sparse_indices,
-                        values=emb.sparse_values,
-                    )
 
                 points.append(models.PointStruct(
                     id=point_id,
@@ -281,10 +322,13 @@ class QdrantVectorStore:
         top_k: int | None = None,
         filters: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
-        """Hybrid search with RRF fusion of dense + sparse results.
+        """Dense vector search.
 
-        For embedded Qdrant (no payload indexes), filters are applied
-        post-retrieval in Python. We fetch more results to compensate.
+        Filters are pushed into Qdrant via ``query_filter`` (works in
+        embedded mode too — payload indexes only affect speed, not
+        correctness). This avoids silent recall holes from post-filtering
+        a fixed-size candidate window. The previous sparse + RRF prefetch
+        was removed when FastEmbed was nuked.
         """
         settings = get_settings()
         top_k = top_k or settings.index.retrieval_top_k
@@ -292,35 +336,14 @@ class QdrantVectorStore:
 
         query_embedding = await self._embedder.embed_query(query)
 
-        # Fetch more if we need to post-filter
-        fetch_limit = top_k * 5 if filters else 50
-
-        # Prefetch: dense + sparse, then RRF fusion (no Qdrant-level filters for embedded mode)
-        prefetch = [
-            models.Prefetch(
-                query=query_embedding.dense,
-                using="dense",
-                limit=fetch_limit,
-            ),
-        ]
-
-        if query_embedding.sparse_indices and query_embedding.sparse_values:
-            prefetch.append(
-                models.Prefetch(
-                    query=models.SparseVector(
-                        indices=query_embedding.sparse_indices,
-                        values=query_embedding.sparse_values,
-                    ),
-                    using="sparse",
-                    limit=fetch_limit,
-                ),
-            )
+        qdrant_filter = _build_qdrant_filter(filters) if filters else None
 
         results = await client.query_points(
             collection_name=collection,
-            prefetch=prefetch,
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=fetch_limit,
+            query=query_embedding.dense,
+            using="dense",
+            query_filter=qdrant_filter,
+            limit=top_k,
         )
 
         search_results = [
@@ -332,10 +355,6 @@ class QdrantVectorStore:
             )
             for point in results.points
         ]
-
-        # Post-retrieval filtering (for embedded Qdrant without payload indexes)
-        if filters:
-            search_results = _apply_filters(search_results, filters)
 
         return search_results[:top_k]
 

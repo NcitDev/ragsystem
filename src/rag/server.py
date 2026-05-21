@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import secrets
 import time
-from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from rag.config import get_settings
+from rag.config import get_or_create_token, get_settings, reload_settings
 from rag.core.embedder import HybridEmbedder
-from rag.core.reranker import Reranker
 from rag.core.vectorstore import QdrantVectorStore
 
 logger = structlog.get_logger()
@@ -31,6 +31,8 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
     top_k: int | None = Field(None, ge=1, le=MAX_TOP_K)
     filters: dict[str, Any] | None = None
+    # ``rerank`` is kept for back-compat with existing clients but is
+    # ignored — the cross-encoder reranker was removed alongside FastEmbed.
     rerank: bool = True
 
 
@@ -88,6 +90,19 @@ class IndexResponse(BaseModel):
     errors: list[str]
 
 
+class ReloadRequest(BaseModel):
+    force: bool = False
+
+
+class ReloadResponse(BaseModel):
+    reloaded: bool
+    embedder_reinitialized: bool
+    # Always False — reranker was removed but the field is kept for
+    # response-schema back-compat with existing CLI clients.
+    reranker_reinitialized: bool = False
+    detail: str = ""
+
+
 class HealthResponse(BaseModel):
     status: str
     components: dict[str, str]
@@ -97,8 +112,10 @@ class StatusResponse(BaseModel):
     status: str
     embedder_provider: str
     embedder_model: str
-    reranker_model: str
-    reranker_enabled: bool
+    # ``reranker_*`` fields are vestigial — reranker was removed but the
+    # response schema is preserved so older clients keep parsing.
+    reranker_model: str = "disabled"
+    reranker_enabled: bool = False
     collections: list[dict[str, Any]]
     uptime_seconds: float
 
@@ -112,15 +129,35 @@ class ErrorResponse(BaseModel):
 # --- Shared State ---
 
 _state: dict[str, Any] = {}
-_request_times: deque = deque(maxlen=100)  # Simple rate limiting window
+
+
+def get_reranker():
+    return _state.get("reranker")
 
 
 def get_vectorstore() -> QdrantVectorStore:
     return _state["vectorstore"]
 
 
-def get_reranker() -> Reranker:
-    return _state["reranker"]
+# --- Auth dependency ---
+
+
+def _extract_bearer(request: Request) -> str | None:
+    auth = request.headers.get("Authorization") or request.headers.get("authorization")
+    if not auth:
+        return None
+    parts = auth.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip()
+
+
+def require_auth(request: Request) -> None:
+    """FastAPI dependency: enforce ``Authorization: Bearer <token>``."""
+    presented = _extract_bearer(request)
+    expected = get_or_create_token()
+    if not presented or not secrets.compare_digest(presented, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # --- Lifespan ---
@@ -138,14 +175,18 @@ async def lifespan(app: FastAPI):
 
         vectorstore = QdrantVectorStore(embedder=embedder)
         await vectorstore._get_client()
-        reranker = Reranker()
+
+        from rag.core.reranker import OllamaReranker
+        reranker = OllamaReranker()
+        # Fire-and-forget warmup — first /search shouldn't pay model-load cost.
+        asyncio.create_task(reranker.warmup())
 
         _state["vectorstore"] = vectorstore
-        _state["reranker"] = reranker
         _state["embedder"] = embedder
+        _state["reranker"] = reranker
         _state["start_time"] = time.time()
 
-        logger.info("server_ready", embedder_provider=embedder.provider)
+        logger.info("server_ready", embedder_provider=embedder.provider, reranker=reranker._model)
     except Exception as e:
         logger.error("server_init_failed", error=str(e))
         raise
@@ -185,20 +226,51 @@ def create_app() -> FastAPI:
             content={"error": exc.detail, "code": "HTTP_ERROR", "detail": None},
         )
 
-    # --- Rate limiting middleware ---
+    # --- Rate limiting middleware (per-token bucket) ---
 
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next):
-        now = time.time()
-        # Clean old entries (sliding window of 60 seconds)
-        while _request_times and _request_times[0] < now - 60:
-            _request_times.popleft()
-        if len(_request_times) >= 120:  # 120 requests per minute
+        from rag.storage import db as _db
+
+        token = _extract_bearer(request) or "anonymous"
+        try:
+            allowed = _db.check_rate_bucket(token)
+        except Exception as e:
+            # Fail open on storage errors — better than locking out the daemon.
+            logger.warning("rate_bucket_error", error=str(e))
+            allowed = True
+        if not allowed:
             return JSONResponse(
                 status_code=429,
-                content={"error": "Rate limit exceeded", "code": "RATE_LIMITED", "detail": "Max 120 req/min"},
+                content={"error": "Rate limit exceeded", "code": "RATE_LIMITED", "detail": "Token bucket exhausted"},
             )
-        _request_times.append(now)
+        return await call_next(request)
+
+    # --- CSRF guard middleware ---
+    #
+    # The daemon binds to localhost by default but a malicious page could still
+    # try to POST/DELETE to it. We require either a bearer token (already
+    # enforced on protected routes via ``require_auth``) OR — if an Origin
+    # header is present at all — that it be a localhost origin. This blocks
+    # cross-site form submissions that have no Authorization header.
+
+    @app.middleware("http")
+    async def csrf_guard_middleware(request: Request, call_next):
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("origin")
+            if origin:
+                low = origin.lower()
+                ok = (
+                    low.startswith("http://localhost:")
+                    or low.startswith("http://127.0.0.1:")
+                    or low == "http://localhost"
+                    or low == "http://127.0.0.1"
+                )
+                if not ok and not _extract_bearer(request):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": "Forbidden origin", "code": "CSRF_BLOCKED", "detail": origin},
+                    )
         return await call_next(request)
 
     # --- Request logging middleware ---
@@ -235,8 +307,9 @@ def create_app() -> FastAPI:
         embedder: HybridEmbedder = _state.get("embedder")
         components["embedder"] = embedder.provider if embedder else "not_initialized"
 
-        # Reranker
-        components["reranker"] = "enabled" if get_settings().reranker.enabled else "disabled"
+        # Reranker status
+        rr = get_reranker()
+        components["reranker"] = "enabled" if rr and rr.enabled else "disabled"
 
         # Ollama
         try:
@@ -251,7 +324,7 @@ def create_app() -> FastAPI:
 
     # --- Status ---
 
-    @app.get("/status", response_model=StatusResponse)
+    @app.get("/status", response_model=StatusResponse, dependencies=[Depends(require_auth)])
     async def status():
         try:
             settings = get_settings()
@@ -276,13 +349,12 @@ def create_app() -> FastAPI:
 
     # --- Search ---
 
-    @app.post("/search", response_model=SearchResponse)
+    @app.post("/search", response_model=SearchResponse, dependencies=[Depends(require_auth)])
     async def search(req: SearchRequest):
         start = time.time()
         try:
             settings = get_settings()
             vectorstore = get_vectorstore()
-            reranker = get_reranker()
 
             from rag.agents.retrieval import plan_search
 
@@ -309,17 +381,26 @@ def create_app() -> FastAPI:
                     query=req.query,
                     top_k=3,
                 )
-                # Traverse graph from seed results
-                related_nodes: set[str] = set()
+                # Traverse graph from each seed in score order (seed_results
+                # is already score-sorted). Collect related file paths in
+                # insertion order so the downstream slice [:10] is stable
+                # across runs — sets are hash-randomized in Python, so the
+                # previous ``set | list(...)[:10]`` truncation produced
+                # different results between processes.
+                ordered_files: dict[str, None] = {}
                 for sr in seed_results:
-                    node_id = f"{sr.payload.get('file_path', '')}:{sr.payload.get('parent_name', '')}.{sr.payload.get('name', '')}".replace(".:",":")
-                    connected = graph.traverse(node_id, max_hops=2)
-                    related_nodes.update(connected)
+                    node_id = f"{sr.payload.get('file_path', '')}:{sr.payload.get('parent_name', '')}.{sr.payload.get('name', '')}".replace(".:", ":")
+                    # ``traverse`` returns BFS-ordered neighbours; preserve it.
+                    for n in graph.traverse(node_id, max_hops=2):
+                        if ":" not in n:
+                            continue
+                        fp = n.split(":")[0]
+                        if fp:
+                            ordered_files.setdefault(fp, None)
 
-                # Fetch chunks for related nodes via file_path filter
-                related_files = {n.split(":")[0] for n in related_nodes if ":" in n}
+                related_files_ordered = list(ordered_files.keys())
                 results = []
-                for fp in list(related_files)[:10]:
+                for fp in related_files_ordered[:10]:
                     file_results = await vectorstore.search(
                         collection=settings.qdrant.code_collection,
                         query=req.query,
@@ -358,16 +439,26 @@ def create_app() -> FastAPI:
                 results = [r for r, _ in result_map.values()]
                 matched_queries_map = {pid: qis for pid, (_, qis) in result_map.items()}
 
-            # Rerank (skip for naive and global modes)
-            if req.rerank and results and plan.strategy not in ("naive", "global"):
+            # Rerank via Ollama Qwen3-Reranker (yes/no template). Skip for
+            # ``naive`` and ``global`` strategies (per planner contract) and
+            # when the client opts out via ``rerank=False``.
+            did_rerank = False
+            reranker = get_reranker()
+            if (
+                req.rerank
+                and results
+                and reranker is not None
+                and reranker.enabled
+                and plan.strategy not in ("naive", "global")
+            ):
                 try:
-                    results = reranker.rerank(req.query, results)
+                    results = await reranker.rerank(req.query, results)
+                    did_rerank = True
                 except Exception as e:
-                    logger.warning("rerank_degraded", error=str(e))
+                    logger.warning("rerank_degraded", error=repr(e))
 
-            # Apply weighted relevance scoring
             from rag.core.scoring import score_results
-            results = score_results(results, req.query)
+            results = score_results(results, req.query, reranked=did_rerank)
 
             latency = (time.time() - start) * 1000
 
@@ -403,7 +494,7 @@ def create_app() -> FastAPI:
 
     # --- Index ---
 
-    @app.post("/index", response_model=IndexResponse)
+    @app.post("/index", response_model=IndexResponse, dependencies=[Depends(require_auth)])
     async def index(req: IndexRequest):
         try:
             from rag.core.indexer import index_repository
@@ -428,10 +519,21 @@ def create_app() -> FastAPI:
 
     # --- Overview (P3-18: Codebase aggregation) ---
 
-    @app.get("/overview")
+    @app.get("/overview", dependencies=[Depends(require_auth)])
     async def overview():
-        """Aggregate codebase metadata: languages, patterns, complexity stats."""
+        """Aggregate codebase metadata: languages, patterns, complexity stats.
+
+        Prefers the materialized counters in SQLite (populated incrementally
+        by the indexer); falls back to a full Qdrant scroll if those are
+        empty (e.g. the index pre-dates the counter table) and seeds them
+        from the scroll so subsequent calls stay cheap.
+        """
         try:
+            from rag.storage import db as _db
+            cached = _db.get_overview()
+            if cached.get("total_chunks", 0) > 0:
+                return cached
+
             settings = get_settings()
             vectorstore = get_vectorstore()
             client = await vectorstore._get_client()
@@ -459,11 +561,18 @@ def create_app() -> FastAPI:
                     total_chunks += 1
                     lang = p.payload.get("language", "unknown")
                     langs[lang] = langs.get(lang, 0) + 1
-                    for pat in p.payload.get("patterns", []):
+                    pats = p.payload.get("patterns", []) or []
+                    for pat in pats:
                         patterns[pat] = patterns.get(pat, 0) + 1
                     cc = p.payload.get("complexity_cyclomatic")
                     if cc is not None and isinstance(cc, (int, float)):
                         complexities.append(int(cc))
+                    # Seed materialized counters so the next call hits the
+                    # fast path. Failure is silent — fallback still works.
+                    try:
+                        _db.incr_overview(lang, list(pats), cc if isinstance(cc, (int, float)) else None)
+                    except Exception:
+                        pass
                 if offset is None:
                     break
 
@@ -482,6 +591,65 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error("overview_error", error=str(e))
             raise HTTPException(status_code=500, detail=f"Overview failed: {e}")
+
+    # --- Admin: hot-reload settings ---
+
+    @app.post("/admin/reload", response_model=ReloadResponse, dependencies=[Depends(require_auth)])
+    async def admin_reload(req: ReloadRequest):
+        """Re-read config files and lazily reinitialize the embedder if
+        its model changed. Refuses to swap the embedding model (which
+        would invalidate the index) unless ``force=true``.
+
+        Reranker reload was dropped when the reranker was removed.
+        """
+        # Snapshot current model name *before* clearing the cache.
+        old_settings = get_settings()
+        old_embed_model = old_settings.embeddings.model
+
+        reload_settings()
+        new_settings = get_settings()
+
+        embedder_changed = new_settings.embeddings.model != old_embed_model
+
+        if embedder_changed and not req.force:
+            # Roll back the cache so the running daemon still matches the
+            # old settings — refusing the reload is meaningless if the next
+            # caller sees the new config.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Embedding model change ({old_embed_model} -> "
+                    f"{new_settings.embeddings.model}) would invalidate the index. "
+                    "Re-index from scratch and pass force=true."
+                ),
+            )
+
+        embedder_reinit = False
+
+        if embedder_changed:
+            try:
+                new_embedder = HybridEmbedder()
+                await new_embedder.initialize()
+                # Replace embedder reference on the live vectorstore so
+                # subsequent searches use the new model.
+                vs = _state.get("vectorstore")
+                if vs is not None:
+                    vs._embedder = new_embedder
+                _state["embedder"] = new_embedder
+                embedder_reinit = True
+            except Exception as e:
+                logger.error("embedder_reinit_failed", error=str(e))
+                raise HTTPException(status_code=500, detail=f"Embedder reinit failed: {e}")
+
+        return ReloadResponse(
+            reloaded=True,
+            embedder_reinitialized=embedder_reinit,
+            reranker_reinitialized=False,
+            detail=(
+                "models unchanged" if not embedder_changed
+                else "swapped: embedder"
+            ),
+        )
 
     return app
 

@@ -17,13 +17,13 @@ class IndexError(RAGError):
     """Error during indexing."""
 
 
-class RerankerError(RAGError):
-    """Error during reranking."""
-
-
 class LSPError(RAGError):
     """Error during LSP operations."""
 
 
 class ConfigError(RAGError):
     """Error in configuration."""
+
+
+class RerankerError(RAGError):
+    """Error during reranking."""

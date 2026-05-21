@@ -13,7 +13,7 @@ from typing import Any
 
 import structlog
 
-from rag.config import get_settings
+from rag.config import RAG_HOME, get_settings
 from rag.core.chunker import (
     Chunk,
     chunk_code,
@@ -25,9 +25,27 @@ from rag.core.vectorstore import ChunkDocument, QdrantVectorStore
 
 logger = structlog.get_logger()
 
+# Legacy in-repo marker — kept for migration only. New state lives under
+# ~/.rag/repos/<sha256(abs_path)[:16]>/state.json so we don't pollute
+# user repositories.
 STATE_FILE = ".rag_index_state.json"
 
 ProgressCallback = Callable[[str, int, int], None] | None
+
+
+def _state_dir_for(path: Path) -> Path:
+    """Return the per-repo state directory under RAG_HOME.
+
+    Uses the first 16 hex chars of sha256(absolute_path) so that two
+    different repos never collide while the result stays filesystem-friendly.
+    """
+    abs_str = str(Path(path).resolve())
+    digest = hashlib.sha256(abs_str.encode("utf-8")).hexdigest()[:16]
+    return RAG_HOME / "repos" / digest
+
+
+def _state_file_for(path: Path) -> Path:
+    return _state_dir_for(path) / "state.json"
 
 
 @dataclass
@@ -36,7 +54,8 @@ class IndexState:
     file_hashes: dict[str, str] = field(default_factory=dict)
 
     def save(self, path: Path) -> None:
-        state_path = path / STATE_FILE
+        state_path = _state_file_for(path)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = state_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps({
             "last_commit": self.last_commit,
@@ -46,7 +65,40 @@ class IndexState:
 
     @classmethod
     def load(cls, path: Path) -> IndexState:
-        state_path = path / STATE_FILE
+        state_path = _state_file_for(path)
+        legacy_path = path / STATE_FILE
+
+        # Migration: pull data out of any in-repo legacy file, write to the
+        # new location, then remove the stale file from the user's repo.
+        if not state_path.exists() and legacy_path.exists():
+            try:
+                data = json.loads(legacy_path.read_text())
+                migrated = cls(
+                    last_commit=data.get("last_commit", ""),
+                    file_hashes=data.get("file_hashes", {}),
+                )
+                migrated.save(path)
+                try:
+                    legacy_path.unlink()
+                except OSError as e:
+                    logger.warning(
+                        "legacy_state_unlink_failed",
+                        path=str(legacy_path),
+                        error=str(e),
+                    )
+                logger.info(
+                    "index_state_migrated",
+                    legacy=str(legacy_path),
+                    new=str(state_path),
+                )
+                return migrated
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(
+                    "legacy_state_migration_failed",
+                    path=str(legacy_path),
+                    error=str(e),
+                )
+
         if not state_path.exists():
             return cls()
         data = json.loads(state_path.read_text())
@@ -76,8 +128,12 @@ def _get_head_commit(repo_path: Path) -> str:
             cwd=repo_path,
             capture_output=True,
             text=True,
+            timeout=10,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        logger.warning("git_head_commit_timeout", repo_path=str(repo_path))
+        return ""
     except Exception:
         return ""
 
@@ -89,9 +145,17 @@ def _get_changed_files(repo_path: Path, since_commit: str) -> list[str]:
             cwd=repo_path,
             capture_output=True,
             text=True,
+            timeout=10,
         )
         if result.returncode == 0:
             return [f for f in result.stdout.strip().split("\n") if f]
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "git_changed_files_timeout",
+            repo_path=str(repo_path),
+            since_commit=since_commit,
+        )
+        return []
     except Exception:
         pass
     return []
@@ -146,6 +210,14 @@ async def index_repository(
         return result
 
     state = IndexState() if full else IndexState.load(path)
+    if full:
+        # Wipe the materialized overview counters — incremental upserts
+        # below will rebuild them from scratch.
+        try:
+            from rag.storage import db as _db
+            _db.reset_overview()
+        except Exception as e:  # pragma: no cover - non-critical
+            logger.warning("overview_reset_failed", error=str(e))
     current_commit = _get_head_commit(path)
 
     # Determine extensions to scan
@@ -181,9 +253,11 @@ async def index_repository(
         incremental=not full,
     )
 
+    # NOTE: TODO: stream to SQLite via storage.db.file_hashes table when repos
+    # exceed ~100k files. Current in-memory approach OK for typical repos.
     new_hashes: dict[str, str] = dict(state.file_hashes)
     batch: list[ChunkDocument] = []
-    batch_size = 50
+    batch_size = 64  # aligns with embedder sub-batch for one-HTTP-call-per-flush
     detected_langs: set[str] = set()
     pending_upsert: asyncio.Task | None = None
 
@@ -194,7 +268,9 @@ async def index_repository(
     async def _flush_batch(docs: list[ChunkDocument]) -> int:
         if settings.lsp.enabled:
             await _lsp_enrich_batch(docs, str(path), list(detected_langs))
-        return await vectorstore.upsert(collection, docs, cache=embed_cache)
+        count = await vectorstore.upsert(collection, docs, cache=embed_cache)
+        _update_overview_stats(docs)
+        return count
 
     def _process_file(fp: Path, rel: str) -> list[ChunkDocument]:
         """CPU-bound: chunk + enrich a single file. Runs in thread pool."""
@@ -242,6 +318,7 @@ async def index_repository(
         if settings.lsp.enabled:
             await _lsp_enrich_batch(batch, str(path), list(detected_langs))
         result.chunks_indexed += await vectorstore.upsert(collection, batch)
+        _update_overview_stats(batch)
 
     # Delete chunks for removed files
     indexed_files = set(new_hashes.keys())
@@ -252,11 +329,18 @@ async def index_repository(
         del new_hashes[removed_file]
         result.files_deleted += 1
 
-    # Build code graph + communities + summaries
-    try:
-        await _build_graph_and_summaries(vectorstore, collection)
-    except Exception as e:
-        logger.warning("graph_build_error", error=str(e))
+    # Build code graph + communities + summaries.
+    # Set RAG_SKIP_SUMMARIES=1 to skip the (slow, Ollama-bound) module summary
+    # generation step — useful for first-pass indexing or when no fast LLM is
+    # available. Graph + communities still get built unless RAG_SKIP_GRAPH=1.
+    import os
+    if os.environ.get("RAG_SKIP_GRAPH") == "1":
+        logger.info("graph_build_skipped", reason="RAG_SKIP_GRAPH=1")
+    else:
+        try:
+            await _build_graph_and_summaries(vectorstore, collection)
+        except Exception as e:
+            logger.warning("graph_build_error", error=str(e))
 
     # Save state
     state = IndexState(last_commit=current_commit, file_hashes=new_hashes)
@@ -318,6 +402,23 @@ async def _build_graph_and_summaries(
 
     # Save graph to disk for query-time use
     graph.save()
+
+
+def _update_overview_stats(docs: list[ChunkDocument]) -> None:
+    """Increment materialized overview counters for each successfully indexed
+    chunk. Called after upsert; failures are non-fatal — /overview falls back
+    to a scroll-based aggregate when counters are missing.
+    """
+    try:
+        from rag.storage import db as _db
+        for doc in docs:
+            meta = doc.metadata or {}
+            lang = meta.get("language", "unknown")
+            patterns = meta.get("patterns", []) or []
+            cc = meta.get("complexity_cyclomatic")
+            _db.incr_overview(lang, list(patterns), cc)
+    except Exception as e:  # pragma: no cover - non-critical
+        logger.warning("overview_incr_failed", error=str(e))
 
 
 async def _lsp_enrich_batch(batch: list[ChunkDocument], repo_path: str, languages: list[str]) -> None:

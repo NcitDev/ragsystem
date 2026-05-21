@@ -36,6 +36,11 @@ async def generate_community_summaries(
     Returns:
         Number of summaries generated.
     """
+    import os
+    if os.environ.get("RAG_SKIP_SUMMARIES") == "1":
+        logger.info("summaries_skipped", reason="RAG_SKIP_SUMMARIES=1")
+        return 0
+
     settings = get_settings()
 
     if not graph.communities:
@@ -159,7 +164,11 @@ async def _generate_summary(context: str, ollama_url: str, model: str) -> str | 
             resp.raise_for_status()
             return resp.json().get("response", "").strip()
     except Exception as e:
-        logger.warning("summary_generation_failed", error=str(e))
+        logger.warning(
+            "summary_generation_failed",
+            error=repr(e),
+            error_type=type(e).__name__,
+        )
         return None
 
 

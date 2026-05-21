@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from rag.config import CONFIG_PATH, ensure_rag_home, get_settings
+from rag.config import CONFIG_PATH, ensure_rag_home, get_or_create_token, get_settings
 
 app = typer.Typer(
     name="rag",
@@ -23,10 +23,15 @@ def _base_url() -> str:
     return f"http://{settings.server.host}:{settings.server.port}"
 
 
+def _auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {get_or_create_token()}"}
+
+
 def _check_daemon() -> bool:
     import httpx
 
     try:
+        # /health is unauthenticated by design — keep this probe simple.
         resp = httpx.get(f"{_base_url()}/health", timeout=2)
         return resp.status_code == 200
     except Exception:
@@ -88,6 +93,7 @@ def init(
         resp = httpx.post(
             f"{_base_url()}/index",
             json={"repo_path": abs_path},
+            headers=_auth_headers(),
             timeout=600,
         )
         data = resp.json()
@@ -104,33 +110,94 @@ def init(
 
 @app.command()
 def start(
-    headless: bool = typer.Option(False, "--headless", help="Run without TUI"),
+    headless: bool = typer.Option(
+        False,
+        "--headless",
+        "--no-tui",
+        help="Alias for default behavior (server only). Kept for back-compat.",
+    ),
+    tui: bool = typer.Option(
+        False,
+        "--tui",
+        help="Convenience: spawn daemon in background, then launch TUI in foreground.",
+    ),
     watch: bool = typer.Option(False, "--watch", "-w", help="Enable file watcher for auto re-index"),
 ):
-    """Start the RAG daemon (TUI + HTTP server)."""
+    """Start the RAG daemon (HTTP server). Use 'rag tui' for the dashboard."""
     ensure_rag_home()
 
-    if headless:
-        import uvicorn
+    if tui:
+        # Spawn daemon in background, wait for /health, then run TUI in foreground.
+        import subprocess
+        import sys
+        import time as _time
 
-        from rag.server import app as fastapi_app
+        if _check_daemon():
+            console.print(f"[green]Daemon already running on {_base_url()}[/green]")
+        else:
+            console.print("[green]Starting daemon in background...[/green]")
+            subprocess.Popen(
+                [sys.executable, "-m", "rag", "start"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            for _ in range(20):
+                _time.sleep(0.5)
+                if _check_daemon():
+                    break
+            else:
+                console.print("[red]Daemon failed to start. Check: rag diagnose[/red]")
+                raise typer.Exit(1)
+            console.print(f"[green]Daemon:[/green] running on {_base_url()}")
 
-        settings = get_settings()
-        console.print(f"[green]Starting RAG server on {settings.server.host}:{settings.server.port}[/green]")
-        uvicorn.run(fastapi_app, host=settings.server.host, port=settings.server.port, log_level="info")
-    else:
         from rag.app import RAGApp
 
-        tui = RAGApp()
-        tui.run()
+        RAGApp().run()
+        return
+
+    # Default + --headless: run the daemon (HTTP server) in this process.
+    # This is the supervised entrypoint for launchd/systemd.
+    _ = headless  # accepted for back-compat; default behavior is server-only now.
+    import uvicorn
+
+    from rag.server import app as fastapi_app
+
+    settings = get_settings()
+    console.print(
+        f"[green]Starting RAG server on {settings.server.host}:{settings.server.port}[/green]"
+    )
+    uvicorn.run(
+        fastapi_app,
+        host=settings.server.host,
+        port=settings.server.port,
+        log_level="info",
+    )
+
+
+@app.command()
+def tui():
+    """Launch the read-only TUI dashboard. Requires a running daemon."""
+    ensure_rag_home()
+    if not _check_daemon():
+        console.print("[red]RAG daemon is not running.[/red]")
+        console.print("[dim]Start it with: rag start  (or: rag start --tui to auto-spawn)[/dim]")
+        raise typer.Exit(1)
+
+    from rag.app import RAGApp
+
+    RAGApp().run()
 
 
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of results"),
-    no_rerank: bool = typer.Option(False, "--no-rerank", help="Skip reranking"),
+    # ``--no-rerank`` is kept as a no-op for back-compat with existing
+    # scripts; the reranker was removed alongside FastEmbed.
+    no_rerank: bool = typer.Option(False, "--no-rerank", help="(deprecated, ignored)"),
     repo: str = typer.Option(None, "--repo", "-r", help="Search specific repo by name"),
+    explain: bool = typer.Option(False, "--explain", help="Print the planner's queries and filters"),
 ):
     """Search the indexed codebase."""
     _require_daemon()
@@ -140,6 +207,7 @@ def search(
         resp = httpx.post(
             f"{_base_url()}/search",
             json={"query": query, "top_k": top_k, "rerank": not no_rerank},
+            headers=_auth_headers(),
             timeout=60,
         )
         resp.raise_for_status()
@@ -151,6 +219,13 @@ def search(
     except httpx.ConnectError:
         console.print("[red]Connection lost to daemon.[/red]")
         raise typer.Exit(1)
+
+    plan = data.get("plan") or {}
+    if plan.get("strategy"):
+        console.print(f"[dim]Strategy: {plan['strategy']}[/dim]")
+    if explain and plan:
+        console.print(f"[dim]Queries: {plan.get('queries', [])}[/dim]")
+        console.print(f"[dim]Filters: {plan.get('filters', {})}[/dim]")
 
     if not data["results"]:
         console.print("[yellow]No results found.[/yellow]")
@@ -193,6 +268,7 @@ def index(
         resp = httpx.post(
             f"{_base_url()}/index",
             json={"repo_path": abs_path, "full": full, "languages": languages},
+            headers=_auth_headers(),
             timeout=600,
         )
         resp.raise_for_status()
@@ -227,7 +303,7 @@ def status():
     import httpx
 
     try:
-        resp = httpx.get(f"{_base_url()}/status", timeout=5)
+        resp = httpx.get(f"{_base_url()}/status", headers=_auth_headers(), timeout=5)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -239,7 +315,7 @@ def status():
     table.add_column("Value", style="green")
     table.add_row("Status", data["status"])
     table.add_row("Embedder", f"{data['embedder_model']} ({data['embedder_provider']})")
-    table.add_row("Reranker", data["reranker_model"])
+    table.add_row("Reranker", "removed")
     table.add_row("Uptime", f"{data['uptime_seconds']:.0f}s")
 
     for coll in data["collections"]:
@@ -250,9 +326,20 @@ def status():
     console.print(table)
 
 
-@app.command()
-def config():
-    """Open config file in $EDITOR."""
+config_app = typer.Typer(
+    name="config",
+    help="Edit or hot-reload daemon config",
+    no_args_is_help=False,
+    invoke_without_command=True,
+)
+
+
+@config_app.callback()
+def config_main(ctx: typer.Context):
+    """Open config file in $EDITOR (default action)."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     import os
     import subprocess
 
@@ -270,6 +357,42 @@ def config():
 
     editor = os.environ.get("EDITOR", "vim")
     subprocess.run([editor, str(CONFIG_PATH)])
+
+
+@config_app.command("reload")
+def config_reload(
+    force: bool = typer.Option(False, "--force", help="Allow embedding-model swap (invalidates index)"),
+):
+    """Tell the running daemon to re-read config and swap models if changed."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/admin/reload",
+            json={"force": force},
+            headers=_auth_headers(),
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        try:
+            error = e.response.json()
+        except Exception:
+            error = {}
+        console.print(f"[red]Reload failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Reload failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Config reloaded.[/green] {data.get('detail', '')}")
+    if data.get("embedder_reinitialized"):
+        console.print("  embedder reinitialized")
+
+
+app.add_typer(config_app, name="config")
 
 
 # --- Multi-repo Commands ---
@@ -398,7 +521,7 @@ def overview():
     import httpx
 
     try:
-        resp = httpx.get(f"{_base_url()}/overview", timeout=30)
+        resp = httpx.get(f"{_base_url()}/overview", headers=_auth_headers(), timeout=30)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -710,3 +833,69 @@ def diagnose():
         console.print("  Cache:     [dim]not initialized[/dim]")
 
     console.print()
+
+
+# --- Service (launchd / systemd) ---
+
+service_app = typer.Typer(
+    name="service",
+    help="Install/uninstall the RAG daemon as an OS-level service",
+    no_args_is_help=True,
+)
+
+
+@service_app.command("install")
+def service_install():
+    """Install the RAG daemon as a launchd agent (macOS) so it auto-starts."""
+    import sys
+    from rag.integration.supervisor import install_service
+
+    try:
+        result = install_service(python_executable=sys.executable)
+    except NotImplementedError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Service install failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Installed:[/green] {result['plist_path']}")
+    console.print(f"[green]Logs:[/green] {result['stdout_log']}")
+    console.print(f"[green]Errors:[/green] {result['stderr_log']}")
+    console.print("[dim]Daemon will auto-start on login and restart on crash.[/dim]")
+
+
+@service_app.command("uninstall")
+def service_uninstall():
+    """Remove the RAG daemon launchd agent."""
+    from rag.integration.supervisor import uninstall_service
+
+    try:
+        path = uninstall_service()
+    except NotImplementedError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Service uninstall failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Uninstalled:[/green] {path}")
+
+
+@service_app.command("status")
+def service_status():
+    """Report whether the launchd agent is registered."""
+    from rag.integration.supervisor import service_status as _status
+
+    try:
+        info = _status()
+    except NotImplementedError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"  Plist:      {info['plist_path']}")
+    console.print(f"  Installed:  {'[green]yes[/green]' if info['installed'] else '[yellow]no[/yellow]'}")
+    console.print(f"  Loaded:     {'[green]yes[/green]' if info['loaded'] else '[yellow]no[/yellow]'}")
+
+
+app.add_typer(service_app, name="service")

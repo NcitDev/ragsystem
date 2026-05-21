@@ -4,16 +4,16 @@ port = 7890
 
 [embeddings]
 model = "Qwen/Qwen3-Embedding-4B"
-provider = "auto"  # auto | ollama | fastembed
+# `provider` is deprecated and ignored at runtime — Ollama is the only
+# supported embedder after FastEmbed was removed. Field retained for
+# user-config back-compat.
+provider = "ollama"
 dim = 2560
 
 [reranker]
-model = "Qwen/Qwen3-Reranker-4B"
+model = "dengcao/Qwen3-Reranker-4B:Q8_0"
 enabled = true
 top_k = 5
-
-[sparse]
-model = "Qdrant/bm25"
 
 [qdrant]
 path = "~/.rag/qdrant_data"

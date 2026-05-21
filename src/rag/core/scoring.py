@@ -28,11 +28,19 @@ HIGH_VALUE_PATTERNS = {"repository", "service", "factory", "middleware", "strate
 MAX_RECENCY_DAYS = 90
 
 
-def score_results(results: list[Any], query: str = "") -> list[Any]:
+def score_results(results: list[Any], query: str = "", reranked: bool = False) -> list[Any]:
     """Apply weighted scoring adjustments to search results.
 
     Mutates result.score in place and returns sorted results.
+
+    The ``reranked`` flag is retained for backwards-compatible signature
+    (the cross-encoder reranker was removed alongside FastEmbed). When
+    True the function still returns results untouched — useful if a
+    caller has externally calibrated scores it doesn't want disturbed.
     """
+    if reranked:
+        return results
+
     for r in results:
         payload = r.payload if hasattr(r, "payload") else {}
         base_score = r.score if hasattr(r, "score") else 0.0

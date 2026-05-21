@@ -164,6 +164,31 @@ LANGUAGE_CONFIG: dict[str, dict[str, Any]] = {
         "import_types": ["preproc_include"],
         "extensions": [".cpp", ".cc", ".cxx", ".hpp", ".hh"],
     },
+    "dart": {
+        # Loaded via tree_sitter_language_pack (no standalone PyPI package).
+        "grammar_loader": "language_pack",
+        "grammar_lang": "dart",
+        "class_types": [
+            "class_definition",
+            "mixin_declaration",
+            "extension_declaration",
+            "enum_declaration",
+        ],
+        # Dart's grammar emits separate signature + function_body siblings.
+        # We treat the *_signature nodes as the function units; body content
+        # is appended via _dart_attach_body during extraction.
+        "function_types": [
+            "method_signature",
+            "function_signature",
+            "getter_signature",
+            "setter_signature",
+            "constructor_signature",
+        ],
+        "name_field": "name",
+        "body_field": "function_body",
+        "import_types": ["import_or_export", "library_name", "part_directive"],
+        "extensions": [".dart"],
+    },
 }
 
 # Reverse mapping: extension -> language
@@ -180,6 +205,15 @@ def detect_language(file_path: str) -> str | None:
 
 def _get_parser(language: str) -> ts.Parser:
     config = LANGUAGE_CONFIG[language]
+
+    # Languages without a standalone tree-sitter-* PyPI wheel use the
+    # community-maintained tree_sitter_language_pack.
+    loader = config.get("grammar_loader")
+    if loader == "language_pack":
+        from tree_sitter_language_pack import get_language as _pack_get_language
+        lang = _pack_get_language(config["grammar_lang"])
+        return ts.Parser(lang)
+
     module_name = config["grammar_module"]
     grammar_module = importlib.import_module(module_name)
 
@@ -215,6 +249,19 @@ def _get_node_name(node: ts.Node, config: dict[str, Any]) -> str:
             # May be a function_declarator wrapping an identifier
             ident = name_node.child_by_field_name("declarator") or name_node
             return ident.text.decode("utf-8").split("(")[0] if ident.text else ""
+
+    # Dart: method_signature wraps function_signature/getter_signature/etc.
+    # whose own `name` field holds the identifier. Mixin declarations have a
+    # positional `identifier` child (no field name).
+    if node.type == "method_signature":
+        for child in node.children:
+            inner = child.child_by_field_name("name") if hasattr(child, "child_by_field_name") else None
+            if inner and inner.text:
+                return inner.text.decode("utf-8")
+    if node.type == "mixin_declaration":
+        for child in node.children:
+            if child.type == "identifier" and child.text:
+                return child.text.decode("utf-8")
 
     return ""
 
@@ -350,6 +397,17 @@ def _extract_function_chunk(
     func_name = _get_node_name(node, config)
     func_text = node.text.decode("utf-8") if node.text else ""
 
+    # Dart's grammar emits signature and function_body as separate siblings.
+    # Splice the immediate following function_body so the chunk holds the
+    # full implementation, not just the prototype.
+    end_line = node.end_point[0] + 1
+    if language == "dart" and node.next_sibling and node.next_sibling.type == "function_body":
+        body_node = node.next_sibling
+        body_text = body_node.text.decode("utf-8") if body_node.text else ""
+        if body_text:
+            func_text = f"{func_text} {body_text}"
+            end_line = body_node.end_point[0] + 1
+
     if not func_text.strip():
         return
 
@@ -366,7 +424,7 @@ def _extract_function_chunk(
         name=func_name,
         parent_name=parent_name,
         start_line=node.start_point[0] + 1,
-        end_line=node.end_point[0] + 1,
+        end_line=end_line,
     ))
 
 

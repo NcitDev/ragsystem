@@ -31,8 +31,7 @@ class ModelsPanel(Static):
     def compose(self) -> ComposeResult:
         yield Static("[bold]Models[/bold]", id="models-title")
         yield ModelCard("Embedder", id="embedder-card")
-        yield ModelCard("Reranker", id="reranker-card")
-        yield ModelCard("Sparse", id="sparse-card")
+        # Reranker + sparse cards were removed when FastEmbed was nuked.
         yield ModelCard("Agent LLM", id="agent-card")
 
 

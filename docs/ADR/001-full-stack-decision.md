@@ -1,7 +1,15 @@
 # ADR-001: RAG System Full Stack Decision
 
 **Date:** 2026-04-02
-**Status:** Accepted
+**Status:** Accepted (with amendments)
+
+> **Amendment (post-launch):** Layer 5 (Sparse BM25 via FastEmbed) and
+> Layer 6 (Qwen3-Reranker-4B via FastEmbed) were removed in a later
+> refactor that nuked the FastEmbed dependency entirely. The runtime is
+> now Ollama-only dense embeddings, no reranker. The Layer 4 "FastEmbed
+> ONNX fallback" is also gone. See git log for the migration commit.
+> This ADR is preserved as-is for historical context — do not rely on
+> it as a description of the current code.
 
 ## Context
 

@@ -66,6 +66,13 @@ LSP_SERVERS: dict[str, dict[str, str]] = {
         "install": "brew install llvm",
         "args": "--background-index",
     },
+    "dart": {
+        # Invoked as: `dart language-server --protocol=lsp`
+        "binary": "dart",
+        "name": "dart language-server",
+        "install": "Install Dart SDK: https://dart.dev/get-dart",
+        "args": "language-server --protocol=lsp",
+    },
 }
 
 

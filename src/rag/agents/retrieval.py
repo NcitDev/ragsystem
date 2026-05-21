@@ -14,8 +14,71 @@ import httpx
 import structlog
 
 from rag.config import get_settings
+from rag.core.chunker import ChunkType, supported_languages
 
 logger = structlog.get_logger()
+
+
+# --- Filter value whitelists --------------------------------------------------
+#
+# Agno LLM and _fallback_plan emit filters as raw strings. A typo or a
+# case-mismatched value (e.g. language="kotlinx") would silently match
+# zero payloads in Qdrant. We validate enum-like fields against known sets
+# and drop unknown values with a warning.
+#
+# Numeric fields (complexity_cyclomatic, nesting_depth, ...) and
+# free-form fields like "patterns" are too dynamic to whitelist and
+# pass through untouched.
+
+ALLOWED_FILTER_VALUES: dict[str, set[str]] = {
+    "chunk_type": {ct.value for ct in ChunkType},
+    "language": set(supported_languages()),
+}
+
+
+def _sanitize_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    """Drop filter entries whose value is not in the allowed set.
+
+    Only fields listed in ALLOWED_FILTER_VALUES are validated. All other
+    fields (numeric ranges, "patterns", "domains", etc.) pass through.
+    Dropped entries are logged at WARNING level.
+    """
+    if not filters:
+        return filters
+
+    cleaned: dict[str, Any] = {}
+    for key, value in filters.items():
+        allowed = ALLOWED_FILTER_VALUES.get(key)
+        if allowed is None:
+            # Unvalidated field — pass through.
+            cleaned[key] = value
+            continue
+
+        # Allow list-of-strings filters too — keep only valid members.
+        if isinstance(value, (list, tuple, set)):
+            kept = [v for v in value if isinstance(v, str) and v in allowed]
+            dropped = [v for v in value if v not in kept]
+            if dropped:
+                logger.warning(
+                    "filter_value_dropped",
+                    field=key,
+                    dropped=dropped,
+                    allowed_count=len(allowed),
+                )
+            if kept:
+                cleaned[key] = kept if len(kept) > 1 else kept[0]
+            continue
+
+        if isinstance(value, str) and value in allowed:
+            cleaned[key] = value
+        else:
+            logger.warning(
+                "filter_value_dropped",
+                field=key,
+                value=value,
+                allowed_count=len(allowed),
+            )
+    return cleaned
 
 
 @dataclass
@@ -126,12 +189,13 @@ async def plan_search(query: str) -> SearchPlan:
 
         data = json.loads(text)
 
-        return SearchPlan(
+        plan = SearchPlan(
             queries=data.get("queries", [query]),
-            filters=data.get("filters", {}),
+            filters=_sanitize_filters(data.get("filters", {}) or {}),
             strategy=data.get("strategy", "hybrid"),
             top_k=data.get("top_k", 20),
         )
+        return plan
 
     except Exception as e:
         logger.warning("agent_plan_failed", error=str(e), query=query)
@@ -188,11 +252,14 @@ def _fallback_plan(query: str) -> SearchPlan:
         strategy = "aggregate"
     if any(w in query_lower for w in ["overview", "summary", "what does this", "architecture", "main purpose", "module"]):
         strategy = "global"
+    # ``naive`` historically meant "vector search without rerank". Now
+    # that rerank is gone it's effectively an alias for ``hybrid``; kept
+    # as a distinct value for plan-shape compatibility.
     if any(w in query_lower for w in ["exact", "literal", "raw search"]):
         strategy = "naive"
 
     return SearchPlan(
         queries=expanded,
-        filters=filters,
+        filters=_sanitize_filters(filters),
         strategy=strategy,
     )
