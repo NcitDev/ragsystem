@@ -204,8 +204,9 @@ class RAGApp(App):
         Binding("c", "clear_active", "Clear"),
     ]
 
-    def __init__(self):
+    def __init__(self, initial_screen: str = "home"):
         super().__init__()
+        self._initial_screen = initial_screen
         self._poll_tasks: list[asyncio.Task] = []
         self._daemon_warned = False
         self._reconnects = 0
@@ -223,7 +224,7 @@ class RAGApp(App):
 
     def compose(self) -> ComposeResult:
         settings = get_settings()
-        yield Dashboard(settings.server.host, settings.server.port, id="dashboard")
+        yield Dashboard(settings.server.host, settings.server.port, initial_screen=self._initial_screen, id="dashboard")
 
     async def on_mount(self) -> None:
         ensure_rag_home()

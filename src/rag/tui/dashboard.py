@@ -224,24 +224,22 @@ class CmdLine(Container):
 
 
 class ScreenBase(Container):
-    """Common scaffolding for a screen — title row + content slot."""
+    """Common scaffolding for a screen — content slot only.
+
+    The screen name lives in the StatusBar (top row), so individual
+    screens don't repeat their own title.
+    """
 
     DEFAULT_CSS = """
     ScreenBase {
         height: 1fr;
-        padding: 0 1;
-    }
-    .screen-title {
-        height: 1;
-        color: $accent;
-        padding: 0 1;
+        padding: 1 1;
     }
     """
 
     title = "Screen"
 
     def compose(self) -> ComposeResult:
-        yield Static(f"[bold]» {self.title}[/bold]", classes="screen-title")
         yield from self.compose_body()
 
     def compose_body(self) -> ComposeResult:
@@ -741,32 +739,60 @@ class Dashboard(Container):
         "help": HelpScreen,
     }
 
-    def __init__(self, host: str, port: int, **kwargs):
+    def __init__(self, host: str, port: int, initial_screen: str = "home", **kwargs):
         super().__init__(**kwargs)
         self._host = host
         self._port = port
-        self._active = "home"
+        self._active = initial_screen if initial_screen in self.SCREENS else "home"
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status-bar")
         yield Sidebar(id="sidebar")
         yield CmdLine(id="cmd-line")
+        cls = self.SCREENS.get(self._active, HomeScreen)
         with Container(id="screen-area"):
-            yield HomeScreen(id="screen-home")
+            yield cls(id=f"screen-{self._active}")
+
+    def on_mount(self) -> None:
+        # Sync sidebar + status bar with the initial screen on first mount.
+        try:
+            self.query_one("#sidebar", Sidebar).active = self._active
+            cls = self.SCREENS.get(self._active, HomeScreen)
+            self.query_one("#status-bar", StatusBar).screen_name = cls.title
+        except Exception:
+            pass
 
     async def switch_screen(self, name: str) -> None:
-        """Replace the screen-area contents with a new screen widget."""
+        """Replace the screen-area contents with a new screen widget.
+
+        Uses ``remove_children()`` to drop all children atomically — calling
+        ``await child.remove()`` per-child while children hold focused
+        Inputs caused NoActiveAppError on subsequent removals.
+        """
         if name not in self.SCREENS:
             return
         if name == self._active:
             return
-        self._active = name
-        area = self.query_one("#screen-area", Container)
-        for child in list(area.children):
-            await child.remove()
         cls = self.SCREENS[name]
-        new = cls(id=f"screen-{name}")
-        await area.mount(new)
+        try:
+            area = self.query_one("#screen-area", Container)
+        except Exception:
+            return
+        # Drop focus before removing — focused Input being yanked mid-remove
+        # raises NoActiveAppError.
+        try:
+            self.app.set_focus(None)
+        except Exception:
+            pass
+        try:
+            await area.remove_children()
+        except Exception:
+            pass
+        try:
+            await area.mount(cls(id=f"screen-{name}"))
+        except Exception:
+            return
+        self._active = name
         try:
             self.query_one("#sidebar", Sidebar).active = name
             self.query_one("#status-bar", StatusBar).screen_name = cls.title
