@@ -68,19 +68,19 @@ from rag.tui.widgets import (
 
 
 class StatusBar(Static):
-    """Always-visible top status bar.
+    """Always-visible top status bar — traffic-light buttons + state pills.
 
-    Shows: connection dot, current screen name, repo, embedder model,
-    generator model, qpm, mem usage, clock.
+    Shows: mac-style window controls, screen name, daemon dot, repo,
+    embedder model, generator model, qpm, mem usage, clock.
     """
 
     DEFAULT_CSS = """
     StatusBar {
         dock: top;
         height: 1;
-        padding: 0 2;
-        background: $surface;
-        color: $text-muted;
+        padding: 0 1;
+        background: #12161e;
+        color: #5a6a7a;
     }
     """
 
@@ -93,16 +93,22 @@ class StatusBar(Static):
     screen_name = reactive("Home")
 
     def render(self) -> str:
+        lights = "[red]●[/red] [yellow]●[/yellow] [green]●[/green]"
         dot = "[green]●[/green]" if self.daemon_ok else "[red]●[/red]"
         clock = datetime.now().strftime("%H:%M")
+        # Shorten model names to keep bar readable on narrow terminals
+        embed_short = self.embedder.split(":")[0].replace("qwen3-embedding", "qwen3-emb")[:16]
+        gen_short = self.gen_model[:12]
+        repo_short = self.repo_name[:18]
         return (
-            f"{dot} [bold cyan]{self.screen_name}[/bold cyan]"
-            f"  [dim]repo=[/dim]{self.repo_name}"
-            f"  [dim]embed=[/dim]{self.embedder}"
-            f"  [dim]gen=[/dim]{self.gen_model}"
+            f"{lights}  [#5ee6d0 b]» {self.screen_name}[/]"
+            f"  {dot} daemon"
+            f"  [dim]repo=[/dim][#7fb6f0]{repo_short}[/]"
+            f"  [dim]emb=[/dim][#5ee6d0]{embed_short}[/]"
+            f"  [dim]gen=[/dim][#b084eb]{gen_short}[/]"
             f"  [dim]qpm=[/dim]{self.qpm:.0f}"
             f"  [dim]mem=[/dim]{self.mem_mb}MB"
-            f"  [dim]·[/dim]  {clock}"
+            f"  [dim]·[/dim]  [#5a6a7a]{clock}[/]"
         )
 
 
@@ -112,46 +118,54 @@ class StatusBar(Static):
 
 
 class Sidebar(Static):
-    """Left nav. 8 items + section labels. Active row highlighted."""
+    """Left nav. 8 items + section labels. Active row highlighted with
+    a teal cursor block and brighter foreground."""
 
     DEFAULT_CSS = """
     Sidebar {
         dock: left;
-        width: 22;
-        background: $boost;
+        width: 24;
+        background: #10161d;
         padding: 1 0;
-        border-right: tall $primary 30%;
+        border-right: tall #1a1f2a;
     }
     """
 
     NAV = [
-        ("home", "Home"),
-        ("search", "Search"),
-        ("ask", "Ask"),
-        ("index", "Index"),
-        ("filters", "Filters"),
-        ("overview", "Overview"),
-        ("logs", "Logs"),
-        ("help", "Help"),
+        ("home", "Home", "h"),
+        ("search", "Search", "s"),
+        ("ask", "Ask", "a"),
+        ("index", "Index", "i"),
+        ("filters", "Filters", "f"),
+        ("overview", "Overview", "o"),
+        ("logs", "Logs", "l"),
+        ("help", "Help", "?"),
     ]
 
     active = reactive("home")
 
     def render(self) -> str:
-        lines = ["[dim]NAVIGATION[/dim]", ""]
-        for key, label in self.NAV:
+        lines = ["", "  [#5a6a7a b]NAVIGATION[/]", ""]
+        for key, label, hot in self.NAV:
             if key == self.active:
-                lines.append(f"  [bold cyan]▸ {label}[/bold cyan]")
+                lines.append(
+                    f"  [#5ee6d0 on #141b23] █ {label:<10}[/]  [#5a6a7a]{hot}[/]"
+                )
             else:
-                lines.append(f"    [dim]{label}[/dim]")
+                lines.append(
+                    f"    [#c8d6e5]{label:<10}[/]  [#5a6a7a]{hot}[/]"
+                )
         lines += [
             "",
-            "[dim]ACTIONS[/dim]",
+            "  [#5a6a7a b]ACTIONS[/]",
             "",
-            "    [dim]⌘K  Palette[/dim]",
-            "    [dim] :  Cmd line[/dim]",
-            "    [dim]?   Help[/dim]",
-            "    [dim]q   Quit[/dim]",
+            "    [#c8d6e5]Palette[/]    [#5a6a7a]⌘K[/]",
+            "    [#c8d6e5]Cmd line[/]   [#5a6a7a]:[/]",
+            "    [#c8d6e5]Clear[/]      [#5a6a7a]c[/]",
+            "    [#c8d6e5]Quit[/]       [#5a6a7a]q[/]",
+            "",
+            "  [#5a6a7a]──────────────[/]",
+            "  [#5a6a7a]rag[/] [#5ee6d0]» tui[/]",
         ]
         return "\n".join(lines)
 
@@ -173,29 +187,35 @@ class CmdLine(Container):
     CmdLine {
         dock: bottom;
         height: 1;
-        background: $surface;
+        background: #12161e;
+        border-top: tall #1a1f2a;
     }
     CmdLine Label {
-        width: auto;
-        color: $accent;
+        width: 3;
+        color: #5ee6d0;
+        text-style: bold;
         padding: 0 1;
     }
     CmdLine Input {
         border: none;
-        background: $surface;
+        background: #12161e;
+        color: #c8d6e5;
         height: 1;
-        padding: 0 0;
+        padding: 0;
     }
     CmdLine Input:focus {
         border: none;
-        background: $surface;
+        background: #141b23;
     }
     """
 
     def compose(self) -> ComposeResult:
         with Horizontal():
             yield Label(":")
-            yield Input(placeholder='cmd  (e.g. "search payment", "ask how X works", "list is_singleton")', id="cmd-input")
+            yield Input(
+                placeholder='try: search payment · ask how does X work · list is_singleton --lang kotlin · goto logs',
+                id="cmd-input",
+            )
 
 
 # ---------------------------------------------------------------------------

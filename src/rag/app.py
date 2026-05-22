@@ -23,6 +23,28 @@ import structlog
 from rich.syntax import Syntax
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.theme import Theme
+
+RAG_THEME = Theme(
+    name="rag-mono",
+    primary="#5EE6D0",
+    secondary="#B084EB",
+    accent="#5EE6D0",
+    foreground="#C8D6E5",
+    background="#0A0E14",
+    surface="#12161E",
+    panel="#1A1F2A",
+    boost="#10161D",
+    warning="#E0B466",
+    error="#E5687A",
+    success="#7FD18B",
+    dark=True,
+    variables={
+        "block-cursor-text-style": "bold",
+        "footer-key-foreground": "#5EE6D0",
+        "footer-key-background": "#10161D",
+    },
+)
 from textual.widgets import (
     Button,
     Checkbox,
@@ -47,6 +69,50 @@ from rag.tui.dashboard import (
 logger = structlog.get_logger()
 
 _DEFAULT_TOP_K = 8
+_SPARK_CHARS = " ▁▂▃▄▅▆▇█"
+
+
+def _sparkline(values: list[float], width: int = 24) -> str:
+    """Render unicode block sparkline. Pads/truncates to `width` bins."""
+    if not values:
+        return "─" * width
+    if len(values) > width:
+        # Bin down: average chunks
+        step = len(values) / width
+        binned = []
+        for i in range(width):
+            lo = int(i * step)
+            hi = int((i + 1) * step) or lo + 1
+            chunk = values[lo:hi] or [0.0]
+            binned.append(sum(chunk) / len(chunk))
+        values = binned
+    elif len(values) < width:
+        values = [0.0] * (width - len(values)) + values
+    vmax = max(values) or 1.0
+    out = []
+    for v in values:
+        idx = min(len(_SPARK_CHARS) - 1, max(0, int(v / vmax * (len(_SPARK_CHARS) - 1))))
+        out.append(_SPARK_CHARS[idx])
+    return "".join(out)
+
+
+def _bin_timestamps(timestamps: list[float], window_sec: int, bin_sec: int) -> list[int]:
+    """Count how many timestamps fall into each bin over the trailing window.
+    Returns list of counts, oldest-first."""
+    import time as _t
+
+    now = _t.time()
+    n_bins = max(1, window_sec // bin_sec)
+    counts = [0] * n_bins
+    cutoff = now - window_sec
+    for ts in timestamps:
+        if ts < cutoff:
+            continue
+        offset = now - ts
+        idx = n_bins - 1 - int(offset // bin_sec)
+        if 0 <= idx < n_bins:
+            counts[idx] += 1
+    return counts
 
 
 class RAGApp(App):
@@ -59,6 +125,67 @@ class RAGApp(App):
     Screen {
         background: #0a0e14;
         color: #c8d6e5;
+    }
+    Sidebar {
+        background: #10161d;
+    }
+    StatusBar {
+        background: #12161e;
+        color: #5a6a7a;
+    }
+    CmdLine {
+        background: #12161e;
+    }
+    .screen-title {
+        color: #5ee6d0;
+        text-style: bold;
+        padding: 0 2;
+        height: 1;
+    }
+    .kpi {
+        background: #10161d;
+    }
+    .panel {
+        background: #10161d;
+    }
+    .filter-group {
+        background: #10161d;
+    }
+    Input {
+        background: #10161d;
+    }
+    Input:focus {
+        background: #141b23;
+        border: tall #5ee6d0;
+    }
+    ListView {
+        background: #10161d;
+    }
+    ListView > ListItem {
+        background: transparent;
+        padding: 0 1;
+    }
+    ListView > ListItem.--highlight {
+        background: #1a2330;
+    }
+    RichLog {
+        background: #060a10;
+        padding: 1 2;
+    }
+    ProgressBar {
+        background: transparent;
+    }
+    ProgressBar > Bar {
+        color: #5ee6d0;
+    }
+    Checkbox {
+        background: transparent;
+    }
+    Checkbox:focus > .toggle--label {
+        text-style: bold;
+    }
+    RadioSet {
+        background: transparent;
     }
     """
 
@@ -100,6 +227,11 @@ class RAGApp(App):
 
     async def on_mount(self) -> None:
         ensure_rag_home()
+        try:
+            self.register_theme(RAG_THEME)
+            self.theme = "rag-mono"
+        except Exception as e:
+            logger.debug("theme_register_failed", error=str(e))
         self._poll_tasks.append(asyncio.create_task(self._poll_status()))
         self._poll_tasks.append(asyncio.create_task(self._poll_query_log()))
         self._poll_tasks.append(asyncio.create_task(self._poll_stats()))
@@ -243,8 +375,33 @@ class RAGApp(App):
         first_pass = True
         while True:
             try:
-                data = await self._http_get("/queries/recent?limit=20")
+                # Pull more for sparkline binning; only render new entries to list.
+                data = await self._http_get("/queries/recent?limit=200")
                 rows = (data or {}).get("queries", []) if data else []
+                # Build sparkline: 24 bins over 24h
+                if rows:
+                    try:
+                        ts_list: list[float] = []
+                        for r in rows:
+                            ts = r.get("timestamp")
+                            if isinstance(ts, (int, float)):
+                                ts_list.append(float(ts))
+                            elif isinstance(ts, str):
+                                try:
+                                    ts_list.append(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                                except Exception:
+                                    pass
+                        spark_bins = _bin_timestamps(ts_list, window_sec=24 * 3600, bin_sec=3600)
+                        peak = max(spark_bins) if spark_bins else 0
+                        spark = _sparkline([float(x) for x in spark_bins], width=24)
+                        try:
+                            self.query_one("#qpm-spark", Static).update(
+                                f"[#5ee6d0]{spark}[/]   [dim]peak[/] [bold]{peak}[/bold] [dim]/ hour[/]"
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.debug("tui_sparkline_error", error=str(e))
                 if rows and not first_pass:
                     try:
                         lv = self.query_one("#home-recent-queries", ListView)
@@ -334,17 +491,37 @@ class RAGApp(App):
     async def _poll_events(self) -> None:
         while True:
             try:
-                data = await self._http_get(f"/events/recent?limit=200&after_ts={self._seen_event_ts}")
-                events = (data or {}).get("events", []) if data else []
-                if events:
-                    self._seen_event_ts = max(float(e.get("ts", 0.0)) for e in events)
+                # Always pull a fresh window for the heatmap (after_ts not used here);
+                # delta-only updates also for the live tail.
+                full = await self._http_get("/events/recent?limit=500")
+                events_full = (full or {}).get("events", []) if full else []
+                # Heatmap: 80 bins over last 24h (~18-min each)
+                if events_full:
+                    try:
+                        ts_all = [float(e.get("ts", 0.0)) for e in events_full if e.get("ts")]
+                        bins = _bin_timestamps(ts_all, window_sec=24 * 3600, bin_sec=18 * 60)
+                        heat = _sparkline([float(x) for x in bins], width=80)
+                        try:
+                            self.query_one("#logs-heatmap", Static).update(
+                                "[bold]24h event volume (≈18-min bins)[/bold]\n"
+                                f"[#5ee6d0]{heat}[/]\n"
+                                "[dim]00:00                                       12:00                                       23:59[/]"
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.debug("tui_heatmap_error", error=str(e))
+                # Delta tail for the RichLog
+                delta_events = [e for e in events_full if float(e.get("ts", 0.0)) > self._seen_event_ts]
+                if delta_events:
+                    self._seen_event_ts = max(float(e.get("ts", 0.0)) for e in delta_events)
                     try:
                         view = self.query_one("#logs-view", RichLog)
-                        for ev in events:
+                        for ev in delta_events:
                             ts = datetime.fromtimestamp(float(ev.get("ts", 0.0))).strftime("%H:%M:%S")
                             name = ev.get("event", "?")
                             payload = {k: v for k, v in ev.items() if k not in ("ts", "event")}
-                            line = f"[dim]{ts}[/dim] [bold cyan]{name}[/bold cyan] {payload}"
+                            line = f"[#5a6a7a]{ts}[/] [#5ee6d0 b]{name}[/] [#c8d6e5]{payload}[/]"
                             view.write(line)
                     except Exception:
                         pass
