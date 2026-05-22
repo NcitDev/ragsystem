@@ -1,14 +1,20 @@
-"""Textual TUI app — HTTP client to the RAG daemon.
+"""Textual TUI app — interactive HTTP client to the RAG daemon.
 
-The TUI is an interactive front-end: search, ask, index, and inspect the daemon
-in real time. State (collections, query log, events, plugins, etc.) is fetched
-from the daemon over HTTP — the TUI process holds no model or vectorstore.
+Redesigned layout (see ragsystem.pen):
+
+  - Always-visible top status bar (daemon dot, screen, repo, models, qpm, mem, clock)
+  - Left sidebar (8 nav items)
+  - Bottom :cmd line (REPL-style)
+  - Center: one of 8 swappable screens (Home/Search/Ask/Index/Filters/Overview/Logs/Help)
+  - ⌘K / ctrl+k command palette modal
+
+All daemon state is fetched over HTTP — TUI process holds no model or vectorstore.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import shlex
 from datetime import datetime
 from typing import Any
 
@@ -32,14 +38,11 @@ from textual.widgets import (
 from rag.config import ensure_rag_home, get_or_create_token, get_settings
 from rag.core.lsp import detect_lsp_servers
 from rag.tui.dashboard import (
-    CollectionsPanel,
-    ConnectionPanel,
+    CommandPalette,
     Dashboard,
-    PluginsPanel,
-    QueryLogPanel,
-    StatsPanel,
+    Sidebar,
+    StatusBar,
 )
-from rag.tui.widgets import IndexStatsWidget, LSPStatusWidget, ModelCard
 
 logger = structlog.get_logger()
 
@@ -47,64 +50,45 @@ _DEFAULT_TOP_K = 8
 
 
 class RAGApp(App):
-    """RAG System TUI — interactive dashboard for the running daemon."""
+    """RAG System TUI — redesigned dashboard for the running daemon."""
 
     TITLE = "RAG System"
     SUB_TITLE = "Code Search Engine"
 
     CSS = """
     Screen {
-        layout: vertical;
-    }
-    #home-left {
-        width: 50;
-        min-width: 40;
-    }
-    #home-right {
-        width: 1fr;
+        background: #0a0e14;
+        color: #c8d6e5;
     }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("question_mark", "show_help", "Help"),
-        Binding("s", "focus_tab('tab-search')", "Search"),
-        Binding("a", "focus_tab('tab-ask')", "Ask"),
-        Binding("i", "focus_tab('tab-index')", "Index"),
-        Binding("f", "focus_tab('tab-filters')", "Filters"),
-        Binding("o", "focus_tab('tab-overview')", "Overview"),
-        Binding("d", "focus_tab('tab-diff')", "Diff"),
-        Binding("l", "focus_tab('tab-logs')", "Logs"),
+        Binding("question_mark", "goto('help')", "Help", show=False),
+        Binding("ctrl+k", "palette", "⌘K Palette"),
+        Binding("colon", "focus_cmd", ":cmd", show=False),
+        Binding("h", "goto('home')", "Home"),
+        Binding("s", "goto('search')", "Search"),
+        Binding("a", "goto('ask')", "Ask"),
+        Binding("i", "goto('index')", "Index"),
+        Binding("f", "goto('filters')", "Filters"),
+        Binding("o", "goto('overview')", "Overview"),
+        Binding("l", "goto('logs')", "Logs"),
         Binding("c", "clear_active", "Clear"),
-        Binding("t", "toggle_theme", "Theme"),
     ]
 
     def __init__(self):
         super().__init__()
-        self._poll_task: asyncio.Task | None = None
-        self._query_poll_task: asyncio.Task | None = None
-        self._stats_poll_task: asyncio.Task | None = None
-        self._events_poll_task: asyncio.Task | None = None
-        self._index_poll_task: asyncio.Task | None = None
-        self._collections_poll_task: asyncio.Task | None = None
-        self._plugins_poll_task: asyncio.Task | None = None
-        self._overview_poll_task: asyncio.Task | None = None
-
+        self._poll_tasks: list[asyncio.Task] = []
         self._daemon_warned = False
         self._reconnects = 0
         self._last_daemon_up = True
 
         self._seen_query_ts: set[str] = set()
         self._seen_event_ts: float = 0.0
-
-        # Search state
         self._last_search_results: list[dict] = []
-
-        # Index state
         self._current_job_id: str | None = None
-
-        # Theme
-        self._light_theme = False
+        self._index_poll_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Compose + mount
@@ -112,25 +96,21 @@ class RAGApp(App):
 
     def compose(self) -> ComposeResult:
         settings = get_settings()
-        yield Dashboard(settings.server.host, settings.server.port)
+        yield Dashboard(settings.server.host, settings.server.port, id="dashboard")
 
     async def on_mount(self) -> None:
         ensure_rag_home()
-        self.set_timer(0.5, self._update_model_status)
-        self.set_timer(1.5, self._update_lsp_status)
-        self.set_timer(1.0, self._update_index_stats)
-        self.set_timer(2.0, self._initial_help_config)
-
-        self._poll_task = asyncio.create_task(self._poll_status())
-        self._query_poll_task = asyncio.create_task(self._poll_query_log())
-        self._stats_poll_task = asyncio.create_task(self._poll_stats())
-        self._events_poll_task = asyncio.create_task(self._poll_events())
-        self._collections_poll_task = asyncio.create_task(self._poll_collections())
-        self._plugins_poll_task = asyncio.create_task(self._poll_plugins())
-        self._overview_poll_task = asyncio.create_task(self._poll_overview())
+        self._poll_tasks.append(asyncio.create_task(self._poll_status()))
+        self._poll_tasks.append(asyncio.create_task(self._poll_query_log()))
+        self._poll_tasks.append(asyncio.create_task(self._poll_stats()))
+        self._poll_tasks.append(asyncio.create_task(self._poll_events()))
+        self._poll_tasks.append(asyncio.create_task(self._poll_collections()))
+        self._poll_tasks.append(asyncio.create_task(self._poll_plugins()))
+        self._poll_tasks.append(asyncio.create_task(self._poll_overview()))
+        self._poll_tasks.append(asyncio.create_task(self._poll_health_detail()))
 
     # ------------------------------------------------------------------
-    # HTTP plumbing
+    # HTTP helpers
     # ------------------------------------------------------------------
 
     def _base_url(self) -> str:
@@ -177,14 +157,14 @@ class RAGApp(App):
         self._last_daemon_up = True
         self._daemon_warned = False
         try:
-            self.query_one("#conn-bar", ConnectionPanel).set_state(True, self._reconnects)
+            self.query_one("#status-bar", StatusBar).daemon_ok = True
         except Exception:
             pass
 
     def _mark_daemon_down(self) -> None:
         self._last_daemon_up = False
         try:
-            self.query_one("#conn-bar", ConnectionPanel).set_state(False, self._reconnects)
+            self.query_one("#status-bar", StatusBar).daemon_ok = False
         except Exception:
             pass
         if not self._daemon_warned:
@@ -199,80 +179,65 @@ class RAGApp(App):
                 pass
 
     # ------------------------------------------------------------------
-    # Home tab polling
+    # Polling loops
     # ------------------------------------------------------------------
 
-    async def _update_model_status(self) -> None:
-        settings = get_settings()
-        try:
-            embedder_card = self.query_one("#embedder-card", ModelCard)
-            agent_card = self.query_one("#agent-card", ModelCard)
-
-            health = await self._http_get("/health", auth=False)
-            status = await self._http_get("/status")
-
-            if health is None and status is None:
-                embedder_card.update_info(settings.embeddings.model, "?", "daemon down")
-                agent_card.update_info(settings.llm.agent_model, "ollama", "daemon down")
-                return
-
-            components = (health or {}).get("components", {}) if health else {}
-            provider = (status or {}).get("embedder_provider") or components.get("embedder", "?")
-            embedder_model = (status or {}).get("embedder_model") or settings.embeddings.model
-
-            embedder_card.update_info(
-                embedder_model,
-                str(provider),
-                "running" if provider not in ("?", "not_initialized") else "unknown",
-            )
-            ollama_status = components.get("ollama", "unknown")
-            agent_card.update_info(settings.llm.agent_model, "ollama", ollama_status)
-        except Exception as e:
-            logger.debug("tui_update_error", error=str(e))
-
-    async def _update_lsp_status(self) -> None:
-        try:
-            lsp_widget = self.query_one("#lsp-status", LSPStatusWidget)
-            servers = detect_lsp_servers()
-            lsp_widget.update_servers([
-                {
-                    "language": s.language,
-                    "name": s.name,
-                    "found": s.found,
-                    "install_hint": s.install_hint,
-                }
-                for s in servers
-            ])
-        except Exception as e:
-            logger.debug("tui_update_error", error=str(e))
-
-    async def _update_index_stats(self) -> None:
-        try:
-            data = await self._http_get("/status")
-            if not data:
-                return
-
-            settings = get_settings()
-            code_coll = settings.qdrant.code_collection
-            stats = None
-            for coll in data.get("collections", []) or []:
-                if coll.get("name") == code_coll:
-                    stats = coll
-                    break
-            if stats is None and data.get("collections"):
-                stats = data["collections"][0]
-
-            if stats:
-                stats_widget = self.query_one("#index-stats", IndexStatsWidget)
-                stats_widget.update_stats(stats)
-        except Exception as e:
-            logger.debug("tui_update_error", error=str(e))
-
     async def _poll_status(self) -> None:
+        settings = get_settings()
         while True:
-            await asyncio.sleep(10)
-            await self._update_index_stats()
-            await self._update_model_status()
+            try:
+                status = await self._http_get("/status")
+                sb = self.query_one("#status-bar", StatusBar)
+                if status:
+                    sb.embedder = status.get("embedder_model", "?")
+                    cols = status.get("collections", []) or []
+                    if cols:
+                        sb.repo_name = cols[0].get("name", "?")
+                    # Update Home kpi if mounted
+                    try:
+                        kpi = self.query_one("#kpi-index", Static)
+                        if cols:
+                            n = cols[0].get("points_count", 0)
+                            kpi.update(f"[dim]INDEX[/dim]\n[bold cyan]{n:,}[/bold cyan]\n[dim]chunks[/dim]")
+                    except Exception:
+                        pass
+                    try:
+                        kpi = self.query_one("#kpi-embedder", Static)
+                        kpi.update(
+                            f"[dim]EMBEDDER[/dim]\n[bold cyan]{status.get('embedder_model','?')}[/bold cyan]\n[dim]Ollama[/dim]"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        kpi = self.query_one("#kpi-gen", Static)
+                        kpi.update(
+                            f"[dim]GENERATOR[/dim]\n[bold magenta]{settings.llm.gen_model or settings.llm.agent_model}[/bold magenta]\n[dim]Ollama[/dim]"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        kpi = self.query_one("#kpi-uptime", Static)
+                        up = status.get("uptime_seconds", 0) or 0
+                        kpi.update(
+                            f"[dim]UPTIME[/dim]\n[bold]{int(up // 3600)}h {int((up % 3600) // 60)}m[/bold]\n[dim]daemon[/dim]"
+                        )
+                    except Exception:
+                        pass
+                # Help-screen config
+                try:
+                    cfg = self.query_one("#help-config", Static)
+                    cfg.update(
+                        f"  [cyan]embedder[/cyan] : {settings.embeddings.model}\n"
+                        f"  [cyan]agent   [/cyan] : {settings.llm.agent_model}\n"
+                        f"  [cyan]gen     [/cyan] : {settings.llm.gen_model or settings.llm.agent_model}\n"
+                        f"  [cyan]ollama  [/cyan] : {settings.llm.ollama_url}\n"
+                        f"  [cyan]server  [/cyan] : {settings.server.host}:{settings.server.port}\n"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.debug("tui_status_poll_error", error=str(e))
+            await asyncio.sleep(5.0)
 
     async def _poll_query_log(self) -> None:
         first_pass = True
@@ -280,22 +245,30 @@ class RAGApp(App):
             try:
                 data = await self._http_get("/queries/recent?limit=20")
                 rows = (data or {}).get("queries", []) if data else []
-                for row in reversed(rows):
-                    key = f"{row.get('timestamp')}|{row.get('query')}"
-                    if key in self._seen_query_ts:
-                        continue
-                    self._seen_query_ts.add(key)
-                    if first_pass:
-                        continue
+                if rows and not first_pass:
                     try:
-                        log = self.query_one("#query-log", QueryLogPanel)
-                        log.add_entry(
-                            query=str(row.get("query", "")),
-                            results=int(row.get("results_count") or 0),
-                            latency_ms=float(row.get("latency_ms") or 0.0),
-                        )
-                    except Exception as e:
-                        logger.debug("tui_query_log_render_error", error=str(e))
+                        lv = self.query_one("#home-recent-queries", ListView)
+                        for row in reversed(rows):
+                            key = f"{row.get('timestamp')}|{row.get('query')}"
+                            if key in self._seen_query_ts:
+                                continue
+                            self._seen_query_ts.add(key)
+                            ts = str(row.get("timestamp", ""))[11:19]
+                            await lv.append(
+                                ListItem(
+                                    Static(
+                                        f"  [dim]{ts}[/dim]  {row.get('query','')[:60]}"
+                                        f"  [cyan]{row.get('results_count', 0)} hits[/cyan]"
+                                        f"  [dim]{row.get('latency_ms', 0):.0f}ms[/dim]"
+                                    )
+                                )
+                            )
+                    except Exception:
+                        pass
+                # Seed seen set on first pass
+                if first_pass:
+                    for row in rows:
+                        self._seen_query_ts.add(f"{row.get('timestamp')}|{row.get('query')}")
                 first_pass = False
             except Exception as e:
                 logger.debug("tui_query_log_poll_error", error=str(e))
@@ -307,7 +280,7 @@ class RAGApp(App):
                 data = await self._http_get("/queries/stats?window=100")
                 if data:
                     try:
-                        self.query_one("#stats-panel", StatsPanel).update_stats(data)
+                        self.query_one("#status-bar", StatusBar).qpm = data.get("qpm", 0.0)
                     except Exception:
                         pass
             except Exception:
@@ -320,8 +293,17 @@ class RAGApp(App):
                 data = await self._http_get("/collections")
                 if data:
                     cols = data.get("collections", [])
+                    lines = []
+                    for c in cols:
+                        st = c.get("status", "?")
+                        color = "green" if st == "green" else ("yellow" if st == "ok" else "red")
+                        lines.append(
+                            f"  [{color}]●[/{color}] {c.get('name','?')}  [dim]{c.get('points_count', 0):,} pts[/dim]"
+                        )
                     try:
-                        self.query_one("#collections-panel", CollectionsPanel).update_collections(cols)
+                        self.query_one("#home-collections", Static).update(
+                            "\n".join(lines) or "[dim]no collections[/dim]"
+                        )
                     except Exception:
                         pass
             except Exception:
@@ -329,14 +311,19 @@ class RAGApp(App):
             await asyncio.sleep(10.0)
 
     async def _poll_plugins(self) -> None:
-        # Plugins rarely change; poll slowly.
         while True:
             try:
                 data = await self._http_get("/plugins")
                 if data is not None:
+                    plugins = data.get("plugins", [])
+                    lines = [
+                        f"  [cyan]{p.get('name','?')}[/cyan] v{p.get('version','?')}  "
+                        f"[dim]patterns={p.get('patterns', 0)} domains={p.get('domains', 0)}[/dim]"
+                        for p in plugins
+                    ]
                     try:
-                        self.query_one("#plugins-panel", PluginsPanel).update_plugins(
-                            data.get("plugins", [])
+                        self.query_one("#home-plugins", Static).update(
+                            "\n".join(lines) or "[dim]no plugins[/dim]"
                         )
                     except Exception:
                         pass
@@ -353,41 +340,41 @@ class RAGApp(App):
                     self._seen_event_ts = max(float(e.get("ts", 0.0)) for e in events)
                     try:
                         view = self.query_one("#logs-view", RichLog)
-                    except Exception:
-                        view = None
-                    if view is not None:
                         for ev in events:
                             ts = datetime.fromtimestamp(float(ev.get("ts", 0.0))).strftime("%H:%M:%S")
                             name = ev.get("event", "?")
                             payload = {k: v for k, v in ev.items() if k not in ("ts", "event")}
                             line = f"[dim]{ts}[/dim] [bold cyan]{name}[/bold cyan] {payload}"
                             view.write(line)
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.debug("tui_events_poll_error", error=str(e))
             await asyncio.sleep(1.5)
 
     async def _poll_overview(self) -> None:
-        # Overview is expensive; poll slowly and only when visible isn't easy
-        # to detect from outside the widget, so we poll cheaply.
         while True:
             try:
                 data = await self._http_get("/overview/tui", timeout=10.0)
                 if data is not None:
-                    summaries = data.get("summaries", []) or []
-                    communities = data.get("communities", []) or []
-                    top_nodes = data.get("top_nodes", []) or []
+                    s = data.get("summaries", []) or []
+                    c = data.get("communities", []) or []
+                    n = data.get("top_nodes", []) or []
                     try:
                         self.query_one("#ov-summaries", Static).update(
-                            "\n".join(f" - {s}" for s in summaries[:20])
-                            or "[dim]no summaries[/dim]"
+                            "\n".join(f" - {x}" for x in s[:20]) or "[dim]no summaries[/dim]"
                         )
+                    except Exception:
+                        pass
+                    try:
                         self.query_one("#ov-communities", Static).update(
-                            "\n".join(f" - {c}" for c in communities[:10])
-                            or "[dim]no communities[/dim]"
+                            "\n".join(f" - {x}" for x in c[:10]) or "[dim]no communities[/dim]"
                         )
+                    except Exception:
+                        pass
+                    try:
                         self.query_one("#ov-nodes", Static).update(
-                            "\n".join(f" - {n}" for n in top_nodes[:10])
-                            or "[dim]no graph nodes[/dim]"
+                            "\n".join(f" - {x}" for x in n[:10]) or "[dim]no graph nodes[/dim]"
                         )
                     except Exception:
                         pass
@@ -395,89 +382,73 @@ class RAGApp(App):
                 pass
             await asyncio.sleep(30.0)
 
-    async def _initial_help_config(self) -> None:
-        try:
-            settings = get_settings()
-            cfg = {
-                "embedder_model": settings.embeddings.model,
-                "agent_model": settings.llm.agent_model,
-                "ollama_url": settings.llm.ollama_url,
-                "qdrant_path": str(settings.qdrant.path),
-                "code_collection": settings.qdrant.code_collection,
-                "server": f"{settings.server.host}:{settings.server.port}",
-            }
-            self.query_one("#help-config", Static).update(
-                "\n".join(f"  {k}: {v}" for k, v in cfg.items())
-            )
-        except Exception:
-            pass
+    async def _poll_health_detail(self) -> None:
+        # Once per minute is plenty for memory metric.
+        import os
+        while True:
+            try:
+                # Pull RSS of the current TUI process — cheapest "mem" indicator.
+                # We don't have psutil; read mach_vm size via /proc/self/status would
+                # be Linux-only. Fall back to garbage value 0 if unavailable.
+                try:
+                    import resource
+                    rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                    # On macOS getrusage returns bytes; on Linux returns kilobytes.
+                    if os.uname().sysname == "Darwin":
+                        rss_mb = int(rss_kb / (1024 * 1024))
+                    else:
+                        rss_mb = int(rss_kb / 1024)
+                    self.query_one("#status-bar", StatusBar).mem_mb = rss_mb
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(15.0)
 
     # ------------------------------------------------------------------
-    # Search / Ask / Index handlers
+    # Filter / strategy collection
     # ------------------------------------------------------------------
 
     def _collect_filters(self) -> dict:
-        """Read filter sidebar state into a Qdrant payload filter dict."""
         filters: dict[str, Any] = {}
-        langs = []
         for code in ("kotlin", "java", "python", "dart", "typescript"):
             try:
                 if self.query_one(f"#f-lang-{code}", Checkbox).value:
-                    langs.append(code)
+                    filters["language"] = code  # last wins; multi-select unsupported here
             except Exception:
                 pass
-        if langs:
-            filters["language"] = langs[0] if len(langs) == 1 else langs
-
         bool_keys = [
             ("f-is-suspend", "is_suspend"),
             ("f-uses-coroutines", "uses_coroutines"),
             ("f-uses-flow", "uses_flow"),
             ("f-uses-async-java", "uses_async_java"),
+            ("f-is-singleton", "is_singleton"),
+            ("f-is-data-class", "is_data_class"),
+            ("f-is-sealed", "is_sealed"),
+            ("f-is-interface", "is_interface"),
+            ("f-is-composable", "is_composable"),
+            ("f-is-di-component", "is_di_component"),
         ]
-        for widget_id, payload_key in bool_keys:
+        for wid, key in bool_keys:
             try:
-                if self.query_one(f"#{widget_id}", Checkbox).value:
-                    filters[payload_key] = "true"
+                if self.query_one(f"#{wid}", Checkbox).value:
+                    filters[key] = "true"
             except Exception:
                 pass
-
-        cts = []
-        for code in ("function", "class", "file"):
-            try:
-                if self.query_one(f"#f-ct-{code}", Checkbox).value:
-                    cts.append(code)
-            except Exception:
-                pass
-        if cts:
-            filters["chunk_type"] = cts[0] if len(cts) == 1 else cts
         return filters
 
-    def _selected_strategy(self) -> str | None:
-        try:
-            rs = self.query_one("#f-strategy", RadioSet)
-            pressed = rs.pressed_button
-            if pressed is None:
-                return None
-            sid = pressed.id or ""
-            if sid == "strat-auto":
-                return None
-            return sid.replace("strat-", "")
-        except Exception:
-            return None
+    # ------------------------------------------------------------------
+    # Search / Ask / Index runners
+    # ------------------------------------------------------------------
 
     async def _run_search(self, query: str) -> None:
         if not query.strip():
             return
+        await self.action_goto("search")
         filters = self._collect_filters()
-        payload = {"query": query, "top_k": _DEFAULT_TOP_K}
+        payload: dict = {"query": query, "top_k": _DEFAULT_TOP_K}
         if filters:
             payload["filters"] = filters
-        # Strategy override is honored by the planner via prefix keyword nudges;
-        # the daemon's SearchRequest model doesn't currently accept a "strategy"
-        # field. Surface the override in the plan panel anyway so users see what
-        # they picked, and pass it through filters for the planner to read.
-        strat = self._selected_strategy()
 
         try:
             self.query_one("#search-plan", Static).update("[dim]searching...[/dim]")
@@ -495,12 +466,10 @@ class RAGApp(App):
         plan = data.get("plan") or {}
         plan_line = (
             f"[bold]Strategy:[/bold] {plan.get('strategy', '?')}"
-            f"  [bold]Filters:[/bold] {plan.get('filters', {})}"
-            f"  [bold]Queries:[/bold] {plan.get('queries', [])}"
-            f"  [dim]({data.get('total', 0)} hits, {data.get('latency_ms', 0)}ms)[/dim]"
+            f"  [bold]Filters:[/bold] {plan.get('filters', {})}\n"
+            f"[bold]Queries:[/bold] {plan.get('queries', [])}\n"
+            f"[dim]({data.get('total', 0)} hits · {data.get('latency_ms', 0):.0f}ms)[/dim]"
         )
-        if strat:
-            plan_line = f"[yellow]override={strat}[/yellow]  " + plan_line
         try:
             self.query_one("#search-plan", Static).update(plan_line)
         except Exception:
@@ -508,20 +477,17 @@ class RAGApp(App):
 
         results = data.get("results", []) or []
         self._last_search_results = results
-
         try:
             lv = self.query_one("#search-results", ListView)
             await lv.clear()
             for i, r in enumerate(results, 1):
                 label = (
-                    f"{i:2d}. [{r.get('language', '?')}] "
-                    f"{r.get('file_path', '?')}:{r.get('lines', '?')}  "
-                    f"score={r.get('score', 0)}  "
-                    f"{r.get('name', '')}"
+                    f"{i:2d}. [cyan]{r.get('language', '?')}[/cyan] "
+                    f"{r.get('file_path', '?')}:{r.get('lines', '?')}\n"
+                    f"     [dim]{r.get('name', '')}  score={r.get('score', 0)}[/dim]"
                 )
                 await lv.append(ListItem(Static(label)))
             if results:
-                # Auto-show first result in detail pane
                 await self._show_result_detail(0)
         except Exception as e:
             logger.debug("tui_search_render_error", error=str(e))
@@ -535,15 +501,13 @@ class RAGApp(App):
             detail.clear()
             header = (
                 f"[bold cyan]{r.get('file_path', '?')}:{r.get('lines', '?')}[/bold cyan]\n"
-                f"[dim]{r.get('chunk_type', '?')} {r.get('name', '')}  "
-                f"score={r.get('score', 0)}[/dim]\n"
+                f"[dim]{r.get('chunk_type', '?')}  {r.get('name', '')}  score={r.get('score', 0)}[/dim]\n"
             )
             detail.write(header)
             code = r.get("code", "") or ""
             lang = r.get("language", "") or "text"
             try:
-                syntax = Syntax(code, lang, theme="monokai", line_numbers=False, word_wrap=False)
-                detail.write(syntax)
+                detail.write(Syntax(code, lang, theme="monokai", line_numbers=False, word_wrap=False))
             except Exception:
                 detail.write(code)
         except Exception as e:
@@ -552,6 +516,7 @@ class RAGApp(App):
     async def _run_ask(self, question: str) -> None:
         if not question.strip():
             return
+        await self.action_goto("ask")
         try:
             ans = self.query_one("#ask-answer", RichLog)
             ans.clear()
@@ -559,54 +524,58 @@ class RAGApp(App):
         except Exception:
             pass
 
-        payload = {"question": question, "top_k": _DEFAULT_TOP_K}
-        data = await self._http_post("/ask", payload, timeout=300.0)
+        data = await self._http_post(
+            "/ask", {"question": question, "top_k": _DEFAULT_TOP_K}, timeout=300.0
+        )
         if not data:
             try:
                 self.query_one("#ask-answer", RichLog).write("[red]ask failed[/red]")
             except Exception:
                 pass
             return
+
         try:
             ans = self.query_one("#ask-answer", RichLog)
             ans.clear()
-            meta = (
-                f"[dim]model={data.get('model', '?')}  "
-                f"retrieval={data.get('retrieval_ms', 0)}ms  "
-                f"gen={data.get('generation_ms', 0)}ms[/dim]\n"
-            )
-            ans.write(meta)
             ans.write(data.get("answer", ""))
         except Exception:
             pass
-
         try:
             lv = self.query_one("#ask-citations", ListView)
             await lv.clear()
             for i, c in enumerate(data.get("citations", []), 1):
                 label = (
-                    f"[{i}] {c.get('file_path', '?')}:{c.get('lines', '?')}  "
-                    f"({c.get('name', '')})  score={c.get('score', 0)}"
+                    f"[cyan][{i}][/cyan] {c.get('file_path', '?')}:{c.get('lines', '?')}\n"
+                    f"     [dim]{c.get('name', '')}  score={c.get('score', 0)}[/dim]"
                 )
                 await lv.append(ListItem(Static(label)))
         except Exception:
             pass
-
-    async def _start_index_job(self) -> None:
         try:
-            path = self.query_one("#index-path", Input).value.strip()
-            full = self.query_one("#index-full", Checkbox).value
+            meta = self.query_one("#ask-meta", Static)
+            meta.update(
+                f"[dim]model=[/dim]{data.get('model', '?')}  "
+                f"[dim]retrieval=[/dim]{data.get('retrieval_ms', 0):.0f}ms  "
+                f"[dim]gen=[/dim]{data.get('generation_ms', 0):.0f}ms  "
+                f"[dim]total=[/dim]{data.get('latency_ms', 0):.0f}ms"
+            )
         except Exception:
-            return
+            pass
+
+    async def _start_index_job(self, path: str | None = None, full: bool = False) -> None:
+        if path is None:
+            try:
+                path = self.query_one("#index-path", Input).value.strip()
+            except Exception:
+                path = ""
         if not path:
             self.notify("Enter a path first", severity="warning")
             return
-
+        await self.action_goto("index")
         try:
             self.query_one("#index-status", Static).update(f"[dim]starting job for {path}...[/dim]")
         except Exception:
             pass
-
         data = await self._http_post("/index/start", {"repo_path": path, "full": full})
         if not data:
             try:
@@ -634,13 +603,10 @@ class RAGApp(App):
             done = int(data.get("files_processed", 0) or 0)
             cur = data.get("current_file", "")
             chunks = int(data.get("chunks_indexed", 0) or 0)
-
             try:
                 bar = self.query_one("#index-progress", ProgressBar)
                 if total > 0:
                     bar.update(total=total, progress=done)
-                else:
-                    bar.update(total=100, progress=0)
             except Exception:
                 pass
             try:
@@ -649,136 +615,201 @@ class RAGApp(App):
                 )
             except Exception:
                 pass
-
-            # Recent files
             try:
-                rdata = await self._http_get(f"/files/recent?limit=30")
+                rdata = await self._http_get("/files/recent?limit=30")
                 files = (rdata or {}).get("files", []) if rdata else []
                 lv = self.query_one("#index-recent", ListView)
-                # Only append entries newer than last seen
                 new_entries = [f for f in files if float(f.get("ts", 0.0)) > last_recent_ts]
                 if new_entries:
                     last_recent_ts = max(float(f.get("ts", 0.0)) for f in new_entries)
                     for f in new_entries:
                         ts = datetime.fromtimestamp(float(f.get("ts", 0.0))).strftime("%H:%M:%S")
-                        await lv.append(ListItem(Static(f"{ts}  {f.get('path', '?')}")))
+                        await lv.append(ListItem(Static(f"  {ts}  {f.get('path', '?')}")))
             except Exception:
                 pass
-
             if status in ("completed", "failed"):
                 break
             await asyncio.sleep(1.0)
 
-    async def _run_diff(self) -> None:
+    # ------------------------------------------------------------------
+    # :cmd line parser
+    # ------------------------------------------------------------------
+
+    async def _exec_cmd(self, line: str) -> None:
+        """Parse a :cmd line and dispatch."""
+        s = line.strip()
+        if not s:
+            return
+        if s.startswith(":"):
+            s = s[1:]
         try:
-            q = self.query_one("#diff-q", Input).value.strip()
-            since = self.query_one("#diff-since", Input).value.strip() or "HEAD~5"
-        except Exception:
+            parts = shlex.split(s)
+        except ValueError:
+            parts = s.split()
+        if not parts:
             return
-        if not q:
-            self.notify("Enter a diff query", severity="warning")
+        verb = parts[0].lower()
+        rest = parts[1:]
+        args = " ".join(rest)
+
+        if verb in ("goto", "go"):
+            target = rest[0].lower() if rest else ""
+            await self.action_goto(target)
+        elif verb in ("search", "s"):
+            await self._run_search(args)
+        elif verb in ("ask", "a"):
+            await self._run_ask(args)
+        elif verb in ("list", "ls", "enum"):
+            await self._run_list(rest)
+        elif verb in ("index",):
+            full = "--full" in rest
+            rest_no_full = [r for r in rest if r != "--full"]
+            path = rest_no_full[0] if rest_no_full else None
+            await self._start_index_job(path, full=full)
+        elif verb in ("filter", "filters"):
+            await self.action_goto("filters")
+        elif verb in ("strategy",):
+            self.notify(f"strategy override: {args} (use Filters tab radio)", severity="information")
+        elif verb in ("status",):
+            data = await self._http_get("/status")
+            self.notify(f"chunks={(data or {}).get('collections',[{}])[0].get('points_count','?')}", severity="information")
+        elif verb in ("health",):
+            await self._show_health_modal()
+        elif verb in ("events",):
+            await self.action_goto("logs")
+        elif verb in ("collections", "plugins"):
+            await self.action_goto("home")
+        elif verb in ("clear",):
+            self.action_clear_active()
+        elif verb in ("reload",):
+            await self._http_post("/admin/reload", {})
+            self.notify("config reloaded", severity="information")
+        else:
+            self.notify(f"unknown cmd: {verb}", severity="warning")
+
+    async def _run_list(self, args: list[str]) -> None:
+        """':list is_singleton --lang kotlin' → /enumerate."""
+        if not args:
+            self.notify("usage: list <flag> [--lang X]", severity="warning")
             return
-        out = self.query_one("#diff-output", RichLog)
-        out.clear()
-        out.write(f"[dim]running diff query={q!r} since={since!r}...[/dim]")
-        # Daemon currently exposes diff only via CLI. Surface a helpful message
-        # rather than silently failing.
-        out.write(
-            "[yellow]Note:[/yellow] /diff endpoint not yet wired.  "
-            f"Run from another terminal: [bold]rag diff {q!r} --since {since}[/bold]"
+        flag = args[0]
+        filters: dict[str, Any] = {flag: "true"}
+        if "--lang" in args:
+            try:
+                idx = args.index("--lang")
+                filters["language"] = args[idx + 1]
+            except (ValueError, IndexError):
+                pass
+        data = await self._http_post(
+            "/enumerate",
+            {"filters": filters, "limit": 500, "fields": ["file_path", "name", "start_line", "end_line", "language"]},
         )
+        if not data:
+            self.notify("enumerate failed", severity="error")
+            return
+        # Surface as a search-like list in the Search screen
+        await self.action_goto("search")
+        try:
+            self.query_one("#search-plan", Static).update(
+                f"[bold]/enumerate[/bold]  filters={filters}  [dim]({data.get('count', 0)} matches)[/dim]"
+            )
+        except Exception:
+            pass
+        try:
+            lv = self.query_one("#search-results", ListView)
+            await lv.clear()
+            seen_paths: set[str] = set()
+            for r in data.get("results", []):
+                fp = r.get("file_path", "")
+                if fp in seen_paths:
+                    continue
+                seen_paths.add(fp)
+                label = (
+                    f"[cyan]{r.get('language', '?')}[/cyan]  {fp}:{r.get('start_line','?')}-{r.get('end_line','?')}\n"
+                    f"     [dim]{r.get('name', '')}[/dim]"
+                )
+                await lv.append(ListItem(Static(label)))
+            self._last_search_results = []  # detail pane is N/A for enumerations
+            self.query_one("#search-detail", RichLog).clear()
+        except Exception as e:
+            logger.debug("tui_list_render_error", error=str(e))
+
+    async def _show_health_modal(self) -> None:
+        data = await self._http_get("/health/detail", timeout=5.0)
+        if not data:
+            self.notify("health detail unavailable", severity="warning")
+            return
+        models = ", ".join(m.get("name", "?") for m in (data.get("ollama_models") or [])[:6])
+        msg = (
+            f"ollama={data.get('ollama_version','?')}  embed={data.get('embedder_model','?')}  "
+            f"agent={data.get('agent_model','?')}\nmodels: {models}"
+        )
+        self.notify(msg, severity="information", timeout=15)
 
     # ------------------------------------------------------------------
     # Textual event handlers
     # ------------------------------------------------------------------
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "search-input":
+        wid = event.input.id
+        if wid == "search-input":
             await self._run_search(event.value)
-        elif event.input.id == "ask-input":
+        elif wid == "ask-input":
             await self._run_ask(event.value)
-        elif event.input.id == "diff-q":
-            await self._run_diff()
+        elif wid == "cmd-input":
+            line = event.value
+            event.input.value = ""
+            await self._exec_cmd(line)
+        elif wid == "index-path":
+            await self._start_index_job(event.value.strip())
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id
-        if bid == "index-go":
+        if event.button.id == "index-go":
             await self._start_index_job()
-        elif bid == "diff-go":
-            await self._run_diff()
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
-        # Only act for the search results list
         try:
             parent_id = event.list_view.id
         except Exception:
             parent_id = None
-        if parent_id != "search-results":
-            return
-        idx = event.list_view.index
-        if idx is not None:
-            await self._show_result_detail(idx)
+        if parent_id == "search-results":
+            idx = event.list_view.index
+            if idx is not None:
+                await self._show_result_detail(idx)
 
     # ------------------------------------------------------------------
-    # Actions (key bindings)
+    # Actions
     # ------------------------------------------------------------------
 
-    def action_show_help(self) -> None:
+    async def action_goto(self, screen: str) -> None:
         try:
-            from textual.widgets import TabbedContent
-            self.query_one(TabbedContent).active = "tab-help"
-        except Exception:
-            pass
-
-    def action_focus_tab(self, tab_id: str) -> None:
-        try:
-            from textual.widgets import TabbedContent
-            self.query_one(TabbedContent).active = tab_id
-        except Exception:
-            pass
+            dash = self.query_one("#dashboard", Dashboard)
+            await dash.switch_screen(screen)
+        except Exception as e:
+            logger.debug("tui_switch_screen_error", error=str(e))
 
     def action_clear_active(self) -> None:
-        # Try clearing query log first, then results, then ask.
-        for wid, kind in (
-            ("#query-log", "log"),
-            ("#search-results", "list"),
-            ("#search-detail", "richlog"),
-            ("#ask-answer", "richlog"),
-            ("#ask-citations", "list"),
-            ("#logs-view", "richlog"),
-        ):
+        for wid in ("#search-results", "#search-detail", "#ask-answer", "#ask-citations", "#logs-view"):
             try:
                 w = self.query_one(wid)
-                if kind == "log" and hasattr(w, "clear_log"):
-                    w.clear_log()
-                elif kind == "list":
-                    w.clear()
-                elif kind == "richlog":
+                if hasattr(w, "clear"):
                     w.clear()
             except Exception:
                 pass
 
-    def action_toggle_theme(self) -> None:
-        self._light_theme = not self._light_theme
+    def action_focus_cmd(self) -> None:
         try:
-            self.theme = "textual-light" if self._light_theme else "textual-dark"
+            self.query_one("#cmd-input", Input).focus()
         except Exception:
-            try:
-                self.dark = not self._light_theme
-            except Exception:
-                pass
+            pass
+
+    async def action_palette(self) -> None:
+        result = await self.push_screen_wait(CommandPalette())
+        if result:
+            await self._exec_cmd(str(result))
 
     async def action_quit(self) -> None:
-        for t in (
-            self._poll_task,
-            self._query_poll_task,
-            self._stats_poll_task,
-            self._events_poll_task,
-            self._index_poll_task,
-            self._collections_poll_task,
-            self._plugins_poll_task,
-            self._overview_poll_task,
-        ):
+        for t in self._poll_tasks + [self._index_poll_task]:
             if t:
                 t.cancel()
                 try:

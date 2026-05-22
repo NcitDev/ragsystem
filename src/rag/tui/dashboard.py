@@ -1,16 +1,47 @@
-"""Main TUI dashboard layout."""
+"""RAG System TUI — redesigned dashboard.
+
+Layout follows the Pencil mock in ragsystem.pen:
+
+    ┌──────────────────────────────────────────────────────────────────┐
+    │ • Home/Dashboard  ragsys 2 of 8                            14:32 │  status bar
+    ├───────────┬──────────────────────────────────────────────────────┤
+    │ Home      │                                                       │
+    │ Search    │                                                       │
+    │ Ask       │            <active screen content>                    │
+    │ Index     │                                                       │
+    │ Filters   │                                                       │
+    │ Logs      │                                                       │
+    │ Overview  │                                                       │
+    │ Help      │                                                       │
+    ├───────────┴──────────────────────────────────────────────────────┤
+    │ :cmd  search payment processing                              ↵   │  cmd line
+    └──────────────────────────────────────────────────────────────────┘
+
+Colors: dark slate background, teal accent, violet for agent/model, blue for
+identifiers. JetBrains Mono / Geist Mono only.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.binding import Binding
+from textual.containers import (
+    Horizontal,
+    Vertical,
+    VerticalScroll,
+    Container,
+)
+from textual.reactive import reactive
+from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
+    DataTable,
     Footer,
-    Header,
     Input,
     Label,
     ListItem,
@@ -20,10 +51,9 @@ from textual.widgets import (
     RadioSet,
     RichLog,
     Static,
-    TabbedContent,
-    TabPane,
 )
 
+# Reuse the existing helper widgets for sub-content; full dashboard frame is new.
 from rag.tui.widgets import (
     IndexStatsWidget,
     LSPStatusWidget,
@@ -32,558 +62,693 @@ from rag.tui.widgets import (
 )
 
 
-class ModelsPanel(Static):
-    """Panel showing model status."""
+# ---------------------------------------------------------------------------
+# Top status bar
+# ---------------------------------------------------------------------------
+
+
+class StatusBar(Static):
+    """Always-visible top status bar.
+
+    Shows: connection dot, current screen name, repo, embedder model,
+    generator model, qpm, mem usage, clock.
+    """
 
     DEFAULT_CSS = """
-    ModelsPanel {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-        margin: 0 1;
+    StatusBar {
+        dock: top;
+        height: 1;
+        padding: 0 2;
+        background: $surface;
+        color: $text-muted;
     }
     """
 
-    def compose(self) -> ComposeResult:
-        yield Static("[bold]Models[/bold]", id="models-title")
-        yield ModelCard("Embedder", id="embedder-card")
-        # Reranker + sparse cards were removed when FastEmbed was nuked.
-        yield ModelCard("Agent LLM", id="agent-card")
-
-
-class IndexPanel(Static):
-    """Panel showing index statistics."""
-
-    DEFAULT_CSS = """
-    IndexPanel {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-        margin: 0 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Static("[bold]Index[/bold]")
-        yield IndexStatsWidget(id="index-stats")
-
-
-class LSPPanel(Static):
-    """Panel showing LSP server status."""
-
-    DEFAULT_CSS = """
-    LSPPanel {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-        margin: 0 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Static("[bold]LSP Enrichment[/bold]")
-        yield LSPStatusWidget(id="lsp-status")
-
-
-class ServerPanel(Static):
-    """Panel showing server info."""
-
-    DEFAULT_CSS = """
-    ServerPanel {
-        height: 3;
-        border: solid $accent;
-        padding: 0 1;
-        margin: 0 1;
-    }
-    """
-
-    def __init__(self, host: str, port: int, **kwargs):
-        super().__init__(**kwargs)
-        self._host = host
-        self._port = port
+    daemon_ok = reactive(False)
+    repo_name = reactive("(none)")
+    embedder = reactive("?")
+    gen_model = reactive("?")
+    qpm = reactive(0.0)
+    mem_mb = reactive(0)
+    screen_name = reactive("Home")
 
     def render(self) -> str:
-        return f" Server: [green]\u25cf[/green] listening on [bold]{self._host}:{self._port}[/bold]"
+        dot = "[green]●[/green]" if self.daemon_ok else "[red]●[/red]"
+        clock = datetime.now().strftime("%H:%M")
+        return (
+            f"{dot} [bold cyan]{self.screen_name}[/bold cyan]"
+            f"  [dim]repo=[/dim]{self.repo_name}"
+            f"  [dim]embed=[/dim]{self.embedder}"
+            f"  [dim]gen=[/dim]{self.gen_model}"
+            f"  [dim]qpm=[/dim]{self.qpm:.0f}"
+            f"  [dim]mem=[/dim]{self.mem_mb}MB"
+            f"  [dim]·[/dim]  {clock}"
+        )
 
 
-class QueryLogPanel(VerticalScroll):
-    """Scrollable query log."""
+# ---------------------------------------------------------------------------
+# Left sidebar — 8-item nav
+# ---------------------------------------------------------------------------
+
+
+class Sidebar(Static):
+    """Left nav. 8 items + section labels. Active row highlighted."""
 
     DEFAULT_CSS = """
-    QueryLogPanel {
-        border: solid $accent;
-        padding: 1;
+    Sidebar {
+        dock: left;
+        width: 22;
+        background: $boost;
+        padding: 1 0;
+        border-right: tall $primary 30%;
+    }
+    """
+
+    NAV = [
+        ("home", "Home"),
+        ("search", "Search"),
+        ("ask", "Ask"),
+        ("index", "Index"),
+        ("filters", "Filters"),
+        ("overview", "Overview"),
+        ("logs", "Logs"),
+        ("help", "Help"),
+    ]
+
+    active = reactive("home")
+
+    def render(self) -> str:
+        lines = ["[dim]NAVIGATION[/dim]", ""]
+        for key, label in self.NAV:
+            if key == self.active:
+                lines.append(f"  [bold cyan]▸ {label}[/bold cyan]")
+            else:
+                lines.append(f"    [dim]{label}[/dim]")
+        lines += [
+            "",
+            "[dim]ACTIONS[/dim]",
+            "",
+            "    [dim]⌘K  Palette[/dim]",
+            "    [dim] :  Cmd line[/dim]",
+            "    [dim]?   Help[/dim]",
+            "    [dim]q   Quit[/dim]",
+        ]
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Bottom command line — REPL-style input
+# ---------------------------------------------------------------------------
+
+
+class CmdLine(Container):
+    """Always-visible bottom command line.
+
+    Type ``:search foo``, ``:ask "how does X work"``, ``:list is_singleton``,
+    ``:index /abs/path``, ``:filter lang=kotlin``, ``:strategy hybrid``,
+    ``:goto search`` from any screen.
+    """
+
+    DEFAULT_CSS = """
+    CmdLine {
+        dock: bottom;
+        height: 1;
+        background: $surface;
+    }
+    CmdLine Label {
+        width: auto;
+        color: $accent;
+        padding: 0 1;
+    }
+    CmdLine Input {
+        border: none;
+        background: $surface;
+        height: 1;
+        padding: 0 0;
+    }
+    CmdLine Input:focus {
+        border: none;
+        background: $surface;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Horizontal():
+            yield Label(":")
+            yield Input(placeholder='cmd  (e.g. "search payment", "ask how X works", "list is_singleton")', id="cmd-input")
+
+
+# ---------------------------------------------------------------------------
+# Screen frames — each is a content panel switched into the main area
+# ---------------------------------------------------------------------------
+
+
+class ScreenBase(Container):
+    """Common scaffolding for a screen — title row + content slot."""
+
+    DEFAULT_CSS = """
+    ScreenBase {
+        height: 1fr;
+        padding: 0 1;
+    }
+    .screen-title {
+        height: 1;
+        color: $accent;
+        padding: 0 1;
+    }
+    """
+
+    title = "Screen"
+
+    def compose(self) -> ComposeResult:
+        yield Static(f"[bold]» {self.title}[/bold]", classes="screen-title")
+        yield from self.compose_body()
+
+    def compose_body(self) -> ComposeResult:
+        yield Static("(no body)")
+
+
+# ---------- Home ----------
+
+
+class HomeScreen(ScreenBase):
+    title = "Home / Dashboard"
+
+    DEFAULT_CSS = """
+    HomeScreen .home-kpis {
+        height: 7;
+    }
+    HomeScreen .kpi {
+        border: round $primary 30%;
+        padding: 1 2;
+        width: 1fr;
+        height: 7;
+        margin: 0 1;
+    }
+    HomeScreen .kpi-val {
+        color: $accent;
+        text-style: bold;
+    }
+    HomeScreen .home-mid {
+        height: 1fr;
+    }
+    HomeScreen .panel {
+        border: round $primary 30%;
+        padding: 1 1;
         margin: 0 1;
         height: 1fr;
     }
     """
 
-    def compose(self) -> ComposeResult:
-        yield Static("[bold]Live Query Log[/bold]", id="log-title")
-        yield Static("[dim]Waiting for queries...[/dim]", id="log-placeholder")
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(classes="home-kpis"):
+            yield Static(
+                "[dim]INDEX[/dim]\n[bold cyan]56 427[/bold cyan]\n[dim]chunks · 137 files[/dim]",
+                classes="kpi",
+                id="kpi-index",
+            )
+            yield Static(
+                "[dim]EMBEDDER[/dim]\n[bold cyan]qwen3-emb-4b[/bold cyan]\n[dim]Ollama · 12ms[/dim]",
+                classes="kpi",
+                id="kpi-embedder",
+            )
+            yield Static(
+                "[dim]GENERATOR[/dim]\n[bold magenta]qwen3:8b[/bold magenta]\n[dim]Ollama · streaming[/dim]",
+                classes="kpi",
+                id="kpi-gen",
+            )
+            yield Static(
+                "[dim]UPTIME[/dim]\n[bold]4d 12h[/bold]\n[dim]42 restarts[/dim]",
+                classes="kpi",
+                id="kpi-uptime",
+            )
+        with Horizontal(classes="home-mid"):
+            with Vertical(classes="panel"):
+                yield Static("[bold]QPM (last 24h)[/bold]")
+                yield Static(
+                    "[cyan]▁▂▃▅▆▇█▇▆▅▃▂▁▂▄▆██▇▅▃▂▁▁[/cyan]   peak 38",
+                    id="qpm-spark",
+                )
+                yield Static("")
+                yield Static("[bold]Recent queries[/bold]")
+                yield ListView(id="home-recent-queries")
+            with Vertical(classes="panel"):
+                yield Static("[bold]Plugins[/bold]")
+                yield Static("[dim]loading...[/dim]", id="home-plugins")
+                yield Static("")
+                yield Static("[bold]Collections[/bold]")
+                yield Static("[dim]loading...[/dim]", id="home-collections")
 
-    def add_entry(self, query: str, results: int, latency_ms: float) -> None:
-        placeholder = self.query_one("#log-placeholder", Static)
-        if placeholder:
-            placeholder.remove()
 
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        entry = QueryLogEntry(timestamp, query, results, latency_ms)
-        self.mount(entry)
-        self.scroll_end(animate=False)
-
-    def clear_log(self) -> None:
-        for child in list(self.children):
-            if isinstance(child, QueryLogEntry):
-                child.remove()
-        if not self.query(QueryLogEntry):
-            self.mount(Static("[dim]Waiting for queries...[/dim]", id="log-placeholder"))
+# ---------- Search ----------
 
 
-class ConnectionPanel(Static):
-    """Single-line connection indicator (dot + label)."""
+class SearchScreen(ScreenBase):
+    title = "Search"
 
     DEFAULT_CSS = """
-    ConnectionPanel {
+    SearchScreen .search-input-row { height: 3; padding: 0 1; }
+    SearchScreen #search-input { width: 1fr; }
+    SearchScreen .search-mid { height: 1fr; }
+    SearchScreen #search-results {
+        width: 2fr;
+        border: round $primary 30%;
+        margin: 0 1;
+    }
+    SearchScreen #search-detail {
+        width: 3fr;
+        border: round $primary 30%;
+        margin: 0 1;
+    }
+    SearchScreen #search-plan {
+        height: 6;
+        border: round $primary 30%;
+        margin: 0 1;
+        padding: 0 1;
+    }
+    """
+
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(classes="search-input-row"):
+            yield Input(
+                placeholder="Query — Enter to search   (Ctrl+A toggles Ask mode)",
+                id="search-input",
+            )
+        with Horizontal(classes="search-mid"):
+            yield ListView(id="search-results")
+            yield RichLog(highlight=True, markup=True, id="search-detail", wrap=False)
+        yield Static("[dim]Planner inspector will show after first query.[/dim]", id="search-plan")
+
+
+# ---------- Ask ----------
+
+
+class AskScreen(ScreenBase):
+    title = "Ask (RAG)"
+
+    DEFAULT_CSS = """
+    AskScreen .ask-input-row { height: 3; padding: 0 1; }
+    AskScreen #ask-input { width: 1fr; }
+    AskScreen .ask-mid { height: 1fr; }
+    AskScreen #ask-answer {
+        width: 3fr;
+        border: round $primary 30%;
+        margin: 0 1;
+    }
+    AskScreen #ask-citations {
+        width: 2fr;
+        border: round $primary 30%;
+        margin: 0 1;
+    }
+    AskScreen #ask-meta {
         height: 1;
         padding: 0 1;
+        color: $text-muted;
     }
     """
 
-    def __init__(self, host: str, port: int, **kwargs):
-        super().__init__(**kwargs)
-        self._host = host
-        self._port = port
-        self._ok = True
-        self._reconnects = 0
-
-    def set_state(self, ok: bool, reconnects: int = 0) -> None:
-        self._ok = ok
-        self._reconnects = reconnects
-        self.refresh()
-
-    def render(self) -> str:
-        dot = "[green]●[/green]" if self._ok else "[red]●[/red]"
-        state = "connected" if self._ok else "DISCONNECTED"
-        rc = f" reconnects={self._reconnects}" if self._reconnects else ""
-        return f"{dot} {self._host}:{self._port}  [dim]{state}{rc}[/dim]"
-
-
-class StatsPanel(Static):
-    """Rolling latency + qpm + avg results."""
-
-    DEFAULT_CSS = """
-    StatsPanel {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-        margin: 0 1;
-    }
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._stats = {"count": 0, "p50_ms": 0, "p95_ms": 0, "qpm": 0.0, "avg_results": 0.0}
-
-    def update_stats(self, stats: dict) -> None:
-        self._stats = stats
-        self.refresh()
-
-    def render(self) -> str:
-        s = self._stats
-        return (
-            f"[bold]Query Stats[/bold]\n"
-            f" Count:  {s.get('count', 0)}\n"
-            f" p50:    {s.get('p50_ms', 0)} ms\n"
-            f" p95:    {s.get('p95_ms', 0)} ms\n"
-            f" QPM:    {s.get('qpm', 0)}\n"
-            f" Avg results: {s.get('avg_results', 0)}"
-        )
-
-
-class PluginsPanel(VerticalScroll):
-    """List of loaded plugins."""
-
-    DEFAULT_CSS = """
-    PluginsPanel {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-        margin: 0 1;
-    }
-    """
-
-    def on_mount(self) -> None:
-        self.mount(Static("[bold]Plugins[/bold]"))
-        self.mount(Static("[dim]loading...[/dim]", id="plugins-body"))
-
-    def update_plugins(self, plugins: list[dict]) -> None:
-        body = self.query_one("#plugins-body", Static)
-        if not plugins:
-            body.update("[dim]no plugins[/dim]")
-            return
-        lines = [
-            f" {p.get('name', '?')} v{p.get('version', '?')}  patterns={p.get('patterns', 0)}  domains={p.get('domains', 0)}"
-            for p in plugins
-        ]
-        body.update("\n".join(lines))
-
-
-class CollectionsPanel(VerticalScroll):
-    """Multi-repo collection cards."""
-
-    DEFAULT_CSS = """
-    CollectionsPanel {
-        height: auto;
-        border: solid $accent;
-        padding: 1;
-        margin: 0 1;
-    }
-    """
-
-    def on_mount(self) -> None:
-        self.mount(Static("[bold]Collections[/bold]"))
-        self.mount(Static("[dim]loading...[/dim]", id="collections-body"))
-
-    def update_collections(self, cols: list[dict]) -> None:
-        body = self.query_one("#collections-body", Static)
-        if not cols:
-            body.update("[dim]none[/dim]")
-            return
-        lines = []
-        for c in cols:
-            status = c.get("status", "?")
-            color = "green" if status == "green" else ("yellow" if status == "ok" else "red")
-            lines.append(
-                f" [{color}]●[/{color}] {c.get('name', '?')}  points={c.get('points_count', 0)}"
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(classes="ask-input-row"):
+            yield Input(
+                placeholder="Ask a grounded question — Enter to run",
+                id="ask-input",
             )
-        body.update("\n".join(lines))
+        with Horizontal(classes="ask-mid"):
+            yield RichLog(highlight=True, markup=True, id="ask-answer")
+            yield ListView(id="ask-citations")
+        yield Static("", id="ask-meta")
 
 
-# ---------------------------------------------------------------------------
-# Search tab — input + results list + detail pane
-# ---------------------------------------------------------------------------
+# ---------- Index ----------
 
 
-class SearchTab(Vertical):
-    """Search tab: input bar, results list, detail pane."""
+class IndexScreen(ScreenBase):
+    title = "Index Manager"
 
     DEFAULT_CSS = """
-    SearchTab {
-        height: 1fr;
-    }
-    #search-row {
+    IndexScreen .index-input-row { height: 3; padding: 0 1; }
+    IndexScreen #index-path { width: 3fr; }
+    IndexScreen #index-go { width: 1fr; }
+    IndexScreen #index-status {
         height: 3;
+        border: round $primary 30%;
         padding: 0 1;
+        margin: 0 1;
     }
-    #search-input {
+    IndexScreen #index-progress {
+        height: 1;
+        margin: 0 2;
+    }
+    IndexScreen .index-mid { height: 1fr; }
+    IndexScreen #index-repos {
         width: 2fr;
-    }
-    #search-mode {
-        width: 1fr;
-        height: 3;
-    }
-    #search-strategy {
-        width: 1fr;
-        height: 3;
-    }
-    #search-results {
-        width: 1fr;
-        height: 1fr;
-        border: solid $accent;
+        border: round $primary 30%;
         margin: 0 1;
     }
-    #search-detail {
-        width: 2fr;
-        height: 1fr;
-        border: solid $accent;
-        margin: 0 1;
-    }
-    #search-plan {
-        height: auto;
-        border: solid $accent;
-        padding: 0 1;
-        margin: 0 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        with Horizontal(id="search-row"):
-            yield Input(placeholder="Type query, Enter to search   (Ctrl+A toggles Ask mode)", id="search-input")
-        yield Static("[dim]Strategy: hybrid (planner default)[/dim]", id="search-plan")
-        with Horizontal():
-            yield ListView(id="search-results")
-            yield RichLog(highlight=True, markup=True, id="search-detail")
-
-
-class AskTab(Vertical):
-    """Ask tab: question input, answer pane, citations list."""
-
-    DEFAULT_CSS = """
-    AskTab {
-        height: 1fr;
-    }
-    #ask-row {
-        height: 3;
-        padding: 0 1;
-    }
-    #ask-input {
-        width: 1fr;
-    }
-    #ask-answer {
-        height: 2fr;
-        border: solid $accent;
-        margin: 0 1;
-    }
-    #ask-citations {
-        height: 1fr;
-        border: solid $accent;
-        margin: 0 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        with Horizontal(id="ask-row"):
-            yield Input(placeholder="Ask a grounded question about the indexed codebase", id="ask-input")
-        yield RichLog(highlight=True, markup=True, id="ask-answer")
-        yield ListView(id="ask-citations")
-
-
-class IndexTab(Vertical):
-    """Index tab: path input, run button, progress bar, recent files."""
-
-    DEFAULT_CSS = """
-    IndexTab {
-        height: 1fr;
-    }
-    #index-row {
-        height: 3;
-        padding: 0 1;
-    }
-    #index-path {
+    IndexScreen #index-recent {
         width: 3fr;
-    }
-    #index-go {
-        width: 1fr;
-    }
-    #index-progress {
-        height: 3;
-        padding: 0 1;
-    }
-    #index-status {
-        height: 3;
-        padding: 0 1;
-    }
-    #index-recent {
-        height: 1fr;
-        border: solid $accent;
+        border: round $primary 30%;
         margin: 0 1;
     }
     """
 
-    def compose(self) -> ComposeResult:
-        with Horizontal(id="index-row"):
-            yield Input(placeholder="/absolute/path/to/repo  (--full re-index via checkbox)", id="index-path")
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(classes="index-input-row"):
+            yield Input(placeholder="/absolute/path/to/repo", id="index-path")
             yield Button("Index", id="index-go", variant="primary")
-        yield Checkbox("Full re-index (ignore SHA cache)", value=False, id="index-full")
-        yield Static("[dim]Idle.[/dim]", id="index-status")
+        yield Static("[dim]Idle. Pick a path above and press Index.[/dim]", id="index-status")
         yield ProgressBar(total=100, show_eta=False, id="index-progress")
-        yield ListView(id="index-recent")
+        with Horizontal(classes="index-mid"):
+            yield ListView(id="index-repos")
+            yield ListView(id="index-recent")
 
 
-class FiltersTab(Vertical):
-    """Filter builder + strategy picker (applied to next Search query)."""
+# ---------- Filters ----------
+
+
+class FiltersScreen(ScreenBase):
+    title = "Filters & Strategy"
 
     DEFAULT_CSS = """
-    FiltersTab {
-        height: 1fr;
-        padding: 1;
-    }
-    .filter-group {
+    FiltersScreen .filters-mid { height: 1fr; }
+    FiltersScreen .filter-group {
+        border: round $primary 30%;
+        padding: 1 1;
+        margin: 0 1;
+        width: 1fr;
         height: auto;
-        border: solid $accent;
-        padding: 1;
-        margin: 0 0 1 0;
     }
+    FiltersScreen .group-title { color: $accent; }
     """
 
-    def compose(self) -> ComposeResult:
-        yield Static("[bold]Language[/bold]", classes="filter-label")
-        with Vertical(classes="filter-group"):
-            yield Checkbox("kotlin", id="f-lang-kotlin")
-            yield Checkbox("java", id="f-lang-java")
-            yield Checkbox("python", id="f-lang-python")
-            yield Checkbox("dart", id="f-lang-dart")
-            yield Checkbox("typescript", id="f-lang-typescript")
-        yield Static("[bold]Concurrency[/bold]")
-        with Vertical(classes="filter-group"):
-            yield Checkbox("is_suspend = true", id="f-is-suspend")
-            yield Checkbox("uses_coroutines = true", id="f-uses-coroutines")
-            yield Checkbox("uses_flow = true", id="f-uses-flow")
-            yield Checkbox("uses_async_java = true", id="f-uses-async-java")
-        yield Static("[bold]Chunk type[/bold]")
-        with Vertical(classes="filter-group"):
-            yield Checkbox("function", id="f-ct-function")
-            yield Checkbox("class", id="f-ct-class")
-            yield Checkbox("file", id="f-ct-file")
-        yield Static("[bold]Strategy override[/bold]")
-        with RadioSet(id="f-strategy"):
-            yield RadioButton("auto (planner)", value=True, id="strat-auto")
-            yield RadioButton("hybrid", id="strat-hybrid")
-            yield RadioButton("filtered", id="strat-filtered")
-            yield RadioButton("graph_walk", id="strat-graph_walk")
-            yield RadioButton("aggregate", id="strat-aggregate")
-            yield RadioButton("global", id="strat-global")
-            yield RadioButton("naive", id="strat-naive")
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(classes="filters-mid"):
+            with Vertical(classes="filter-group"):
+                yield Static("[bold]Language[/bold]", classes="group-title")
+                yield Checkbox("kotlin", id="f-lang-kotlin")
+                yield Checkbox("java", id="f-lang-java")
+                yield Checkbox("python", id="f-lang-python")
+                yield Checkbox("dart", id="f-lang-dart")
+                yield Checkbox("typescript", id="f-lang-typescript")
+            with Vertical(classes="filter-group"):
+                yield Static("[bold]Concurrency[/bold]", classes="group-title")
+                yield Checkbox("is_suspend", id="f-is-suspend")
+                yield Checkbox("uses_coroutines", id="f-uses-coroutines")
+                yield Checkbox("uses_flow", id="f-uses-flow")
+                yield Checkbox("uses_async_java", id="f-uses-async-java")
+            with Vertical(classes="filter-group"):
+                yield Static("[bold]Pattern[/bold]", classes="group-title")
+                yield Checkbox("is_singleton", id="f-is-singleton")
+                yield Checkbox("is_data_class", id="f-is-data-class")
+                yield Checkbox("is_sealed", id="f-is-sealed")
+                yield Checkbox("is_interface", id="f-is-interface")
+                yield Checkbox("is_composable", id="f-is-composable")
+                yield Checkbox("is_di_component", id="f-is-di-component")
+            with Vertical(classes="filter-group"):
+                yield Static("[bold]Strategy override[/bold]", classes="group-title")
+                with RadioSet(id="f-strategy"):
+                    yield RadioButton("auto (planner)", value=True, id="strat-auto")
+                    yield RadioButton("hybrid", id="strat-hybrid")
+                    yield RadioButton("filtered", id="strat-filtered")
+                    yield RadioButton("graph_walk", id="strat-graph_walk")
+                    yield RadioButton("aggregate", id="strat-aggregate")
+                    yield RadioButton("global", id="strat-global")
+                    yield RadioButton("naive", id="strat-naive")
 
 
-class LogsTab(Vertical):
-    """Live log tail from daemon /events/recent."""
+# ---------- Logs ----------
+
+
+class LogsScreen(ScreenBase):
+    title = "Logs Tail"
 
     DEFAULT_CSS = """
-    LogsTab {
+    LogsScreen #logs-view {
         height: 1fr;
-    }
-    #logs-view {
-        height: 1fr;
-        border: solid $accent;
+        border: round $primary 30%;
         margin: 0 1;
     }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Static("[dim]Live event stream from daemon. Bound to last 500 events.[/dim]")
-        yield RichLog(highlight=True, markup=True, id="logs-view", wrap=False, max_lines=2000)
-
-
-class OverviewTab(VerticalScroll):
-    """Module summaries + KG communities + top nodes."""
-
-    DEFAULT_CSS = """
-    OverviewTab {
-        height: 1fr;
-        padding: 1;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Static("[bold]Module Summaries[/bold]", id="ov-summaries-title")
-        yield Static("[dim]loading...[/dim]", id="ov-summaries")
-        yield Static("\n[bold]Graph Communities[/bold]", id="ov-comm-title")
-        yield Static("[dim]loading...[/dim]", id="ov-communities")
-        yield Static("\n[bold]Top Connected Nodes[/bold]", id="ov-nodes-title")
-        yield Static("[dim]loading...[/dim]", id="ov-nodes")
-
-
-class DiffTab(Vertical):
-    """Wrap rag diff CLI: enter query + since-ref, render output."""
-
-    DEFAULT_CSS = """
-    DiffTab {
-        height: 1fr;
+    LogsScreen #logs-heatmap {
+        height: 4;
+        border: round $primary 30%;
+        margin: 0 1;
         padding: 0 1;
-    }
-    #diff-row {
-        height: 3;
-    }
-    #diff-q {
-        width: 2fr;
-    }
-    #diff-since {
-        width: 1fr;
-    }
-    #diff-go {
-        width: 1fr;
-    }
-    #diff-output {
-        height: 1fr;
-        border: solid $accent;
+        color: $text-muted;
     }
     """
 
-    def compose(self) -> ComposeResult:
-        with Horizontal(id="diff-row"):
-            yield Input(placeholder="Query", id="diff-q")
-            yield Input(placeholder="--since (e.g. HEAD~5)", value="HEAD~5", id="diff-since")
-            yield Button("Run", id="diff-go", variant="primary")
-        yield RichLog(highlight=True, markup=True, id="diff-output")
+    def compose_body(self) -> ComposeResult:
+        yield RichLog(highlight=True, markup=True, id="logs-view", wrap=False, max_lines=2000)
+        yield Static(
+            "[bold]24h event volume (5-min bins)[/bold]\n"
+            "[cyan]▁▁▂▂▃▃▄▄▅▅▆▆▇▇██▇▇▆▆▅▅▄▄▃▃▂▂▁▁▁▁▂▂▃▃▄▄▅▅▆▆▇▇██▇▇▆▆▅▅▄▄▃▃▂▂▁▁▁▁▂▂▃▃▄▄▅▅▆▆▇▇██▇▇▆▆▅▅[/cyan]\n"
+            "[dim]00:00                                 12:00                                 23:59[/dim]",
+            id="logs-heatmap",
+        )
 
 
-class HelpTab(VerticalScroll):
-    """Help modal content — hotkeys + config snapshot."""
+# ---------- Overview ----------
+
+
+class OverviewScreen(ScreenBase):
+    title = "Overview"
 
     DEFAULT_CSS = """
-    HelpTab {
+    OverviewScreen .overview-mid { height: 1fr; }
+    OverviewScreen .panel {
+        border: round $primary 30%;
+        padding: 1 1;
+        margin: 0 1;
         height: 1fr;
-        padding: 1;
     }
     """
 
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(classes="overview-mid"):
+            with VerticalScroll(classes="panel"):
+                yield Static("[bold]Module summaries[/bold]")
+                yield Static("[dim]loading...[/dim]", id="ov-summaries")
+            with VerticalScroll(classes="panel"):
+                yield Static("[bold]Graph communities[/bold]")
+                yield Static("[dim]loading...[/dim]", id="ov-communities")
+                yield Static("")
+                yield Static("[bold]Top connected nodes[/bold]")
+                yield Static("[dim]loading...[/dim]", id="ov-nodes")
+
+
+# ---------- Help ----------
+
+
+class HelpScreen(ScreenBase):
+    title = "Help"
+
+    DEFAULT_CSS = """
+    HelpScreen .help-grid { height: 1fr; }
+    HelpScreen .panel {
+        border: round $primary 30%;
+        padding: 1 2;
+        margin: 0 1;
+        height: 1fr;
+    }
+    """
+
+    def compose_body(self) -> ComposeResult:
+        with Horizontal(classes="help-grid"):
+            with VerticalScroll(classes="panel"):
+                yield Static("[bold]Hotkeys[/bold]\n")
+                yield Static(
+                    "  [cyan]q[/cyan]           Quit\n"
+                    "  [cyan]?[/cyan]           Toggle Help screen\n"
+                    "  [cyan]ctrl+k[/cyan]      Command palette\n"
+                    "  [cyan]:[/cyan]           Focus command line\n"
+                    "  [cyan]h[/cyan]           Home\n"
+                    "  [cyan]s[/cyan]           Search\n"
+                    "  [cyan]a[/cyan]           Ask\n"
+                    "  [cyan]i[/cyan]           Index\n"
+                    "  [cyan]f[/cyan]           Filters\n"
+                    "  [cyan]o[/cyan]           Overview\n"
+                    "  [cyan]l[/cyan]           Logs\n"
+                    "  [cyan]c[/cyan]           Clear active log / results\n"
+                )
+            with VerticalScroll(classes="panel"):
+                yield Static("[bold]Active config[/bold]\n")
+                yield Static("[dim]loading...[/dim]", id="help-config")
+                yield Static("")
+                yield Static("[bold]:cmd line examples[/bold]\n")
+                yield Static(
+                    "  [cyan]:search[/cyan] payment processing\n"
+                    "  [cyan]:ask[/cyan] how does checkout work\n"
+                    "  [cyan]:list[/cyan] is_singleton --lang kotlin\n"
+                    "  [cyan]:index[/cyan] /path/to/repo\n"
+                    "  [cyan]:filter[/cyan] lang=kotlin\n"
+                    "  [cyan]:strategy[/cyan] hybrid\n"
+                    "  [cyan]:goto[/cyan] logs\n"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Command palette modal (⌘K)
+# ---------------------------------------------------------------------------
+
+
+class CommandPalette(ModalScreen):
+    """Fuzzy-search modal for any verb in the TUI.
+
+    Returns the selected command string via ``self.dismiss(cmd)``.
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "Cancel")]
+
+    DEFAULT_CSS = """
+    CommandPalette {
+        align: center middle;
+    }
+    CommandPalette > Container {
+        background: $surface;
+        border: thick $accent;
+        padding: 1 2;
+        width: 80;
+        height: 24;
+    }
+    CommandPalette Input {
+        width: 1fr;
+        margin-bottom: 1;
+    }
+    CommandPalette ListView {
+        height: 1fr;
+    }
+    CommandPalette .pal-group { color: $accent; }
+    """
+
+    COMMANDS = [
+        ("ACTIONS", [
+            ("search ...", "search"),
+            ("ask ...", "ask"),
+            ("list is_singleton", "list is_singleton"),
+            ("list is_suspend", "list is_suspend"),
+            ("list uses_coroutines", "list uses_coroutines"),
+            ("index <path>", "index"),
+            ("reload config", "reload"),
+            ("clear log", "clear"),
+        ]),
+        ("NAVIGATE", [
+            ("go to Home", "goto home"),
+            ("go to Search", "goto search"),
+            ("go to Ask", "goto ask"),
+            ("go to Index", "goto index"),
+            ("go to Filters", "goto filters"),
+            ("go to Overview", "goto overview"),
+            ("go to Logs", "goto logs"),
+            ("go to Help", "goto help"),
+        ]),
+        ("DAEMON", [
+            ("show /status", "status"),
+            ("show /health detail", "health"),
+            ("show recent events", "events"),
+            ("show collections", "collections"),
+            ("show plugins", "plugins"),
+        ]),
+    ]
+
     def compose(self) -> ComposeResult:
-        yield Static("[bold]Hotkeys[/bold]")
-        yield Static(
-            "  q          Quit\n"
-            "  ?          Toggle this help\n"
-            "  i          Focus Index tab\n"
-            "  s          Focus Search tab\n"
-            "  a          Focus Ask tab\n"
-            "  l          Focus Logs tab\n"
-            "  f          Focus Filters tab\n"
-            "  o          Focus Overview tab\n"
-            "  d          Focus Diff tab\n"
-            "  c          Clear active log/results\n"
-            "  t          Toggle theme (dark/light)\n"
-            "  Ctrl+A     Toggle Ask vs Search mode in Search tab",
-            id="help-hotkeys",
-        )
-        yield Static("\n[bold]Config[/bold]", id="help-config-title")
-        yield Static("[dim]loading...[/dim]", id="help-config")
+        with Container():
+            yield Static("[bold cyan]⌘ Command Palette[/bold cyan]  [dim]· type to filter, ↵ run, esc cancel[/dim]")
+            yield Input(placeholder="Type a command…", id="pal-input")
+            yield ListView(id="pal-list")
+
+    async def on_mount(self) -> None:
+        await self._populate("")
+
+    async def _populate(self, q: str) -> None:
+        lv = self.query_one("#pal-list", ListView)
+        await lv.clear()
+        q_low = q.strip().lower()
+        for group_name, items in self.COMMANDS:
+            await lv.append(ListItem(Static(f"[dim]{group_name}[/dim]")))
+            for label, cmd in items:
+                if q_low and q_low not in label.lower() and q_low not in cmd.lower():
+                    continue
+                item = ListItem(Static(f"  [bold]{label}[/bold]   [dim]→ {cmd}[/dim]"))
+                item.command_value = cmd  # type: ignore[attr-defined]
+                await lv.append(item)
+
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "pal-input":
+            await self._populate(event.value)
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Submit the first non-group item that matches
+        lv = self.query_one("#pal-list", ListView)
+        for item in lv.children:
+            if isinstance(item, ListItem) and hasattr(item, "command_value"):
+                self.dismiss(item.command_value)  # type: ignore[attr-defined]
+                return
+        self.dismiss(None)
+
+    async def on_list_view_selected(self, event: ListView.Selected) -> None:
+        item = event.item
+        if hasattr(item, "command_value"):
+            self.dismiss(item.command_value)  # type: ignore[attr-defined]
 
 
-class Dashboard(Vertical):
-    """Main dashboard layout — tabbed."""
+# ---------------------------------------------------------------------------
+# Dashboard frame — composes everything
+# ---------------------------------------------------------------------------
+
+
+class Dashboard(Container):
+    """Outer frame: status bar (top), sidebar (left), cmd line (bottom),
+    screen swap area (center)."""
 
     DEFAULT_CSS = """
     Dashboard {
         height: 1fr;
     }
+    Dashboard #screen-area {
+        height: 1fr;
+        padding: 0 0;
+    }
     """
+
+    SCREENS = {
+        "home": HomeScreen,
+        "search": SearchScreen,
+        "ask": AskScreen,
+        "index": IndexScreen,
+        "filters": FiltersScreen,
+        "overview": OverviewScreen,
+        "logs": LogsScreen,
+        "help": HelpScreen,
+    }
 
     def __init__(self, host: str, port: int, **kwargs):
         super().__init__(**kwargs)
         self._host = host
         self._port = port
+        self._active = "home"
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield ConnectionPanel(self._host, self._port, id="conn-bar")
-        with TabbedContent(initial="tab-home"):
-            with TabPane("Home", id="tab-home"):
-                with Horizontal():
-                    with Vertical(id="home-left"):
-                        yield ModelsPanel()
-                        yield IndexPanel()
-                        yield LSPPanel()
-                        yield StatsPanel(id="stats-panel")
-                    with Vertical(id="home-right"):
-                        yield ServerPanel(self._host, self._port)
-                        yield CollectionsPanel(id="collections-panel")
-                        yield PluginsPanel(id="plugins-panel")
-                        yield QueryLogPanel(id="query-log")
-            with TabPane("Search", id="tab-search"):
-                yield SearchTab()
-            with TabPane("Ask", id="tab-ask"):
-                yield AskTab()
-            with TabPane("Index", id="tab-index"):
-                yield IndexTab()
-            with TabPane("Filters", id="tab-filters"):
-                yield FiltersTab()
-            with TabPane("Overview", id="tab-overview"):
-                yield OverviewTab()
-            with TabPane("Diff", id="tab-diff"):
-                yield DiffTab()
-            with TabPane("Logs", id="tab-logs"):
-                yield LogsTab()
-            with TabPane("Help", id="tab-help"):
-                yield HelpTab()
-        yield Footer()
+        yield StatusBar(id="status-bar")
+        yield Sidebar(id="sidebar")
+        yield CmdLine(id="cmd-line")
+        with Container(id="screen-area"):
+            yield HomeScreen(id="screen-home")
+
+    async def switch_screen(self, name: str) -> None:
+        """Replace the screen-area contents with a new screen widget."""
+        if name not in self.SCREENS:
+            return
+        if name == self._active:
+            return
+        self._active = name
+        area = self.query_one("#screen-area", Container)
+        for child in list(area.children):
+            await child.remove()
+        cls = self.SCREENS[name]
+        new = cls(id=f"screen-{name}")
+        await area.mount(new)
+        try:
+            self.query_one("#sidebar", Sidebar).active = name
+            self.query_one("#status-bar", StatusBar).screen_name = cls.title
+        except Exception:
+            pass

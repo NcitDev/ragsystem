@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG for Refactoring — An Honest Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --font-body: 'Inter', system-ui, sans-serif;
+    --font-mono: 'Geist Mono', 'SF Mono', Consolas, monospace;
+    --bg: #0a0e14;
+    --surface: #12161e;
+    --surface2: #1a1f2a;
+    --surface-elevated: #222836;
+    --border: rgba(94, 230, 208, 0.08);
+    --border-bright: rgba(94, 230, 208, 0.18);
+    --text: #c8d6e5;
+    --text-dim: #5a6a7a;
+    --text-bright: #e8f0f5;
+    --accent: #5ee6d0;
+    --accent-dim: rgba(94, 230, 208, 0.1);
+    --green: #7fd18b;
+    --red: #e5687a;
+    --amber: #e0b466;
+    --violet: #b084eb;
+    --blue: #7fb6f0;
+    --code-bg: #060a10;
+    --code-text: #c8d6e5;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-body);
+    color: var(--text);
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  .deck { height: 100dvh; overflow-y: auto; scroll-snap-type: y mandatory; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; }
+
+  .slide {
+    height: 100dvh;
+    scroll-snap-align: start;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: clamp(40px, 6vh, 80px) clamp(40px, 8vw, 120px);
+    isolation: isolate;
+    opacity: 0;
+    transform: translateY(40px) scale(0.98);
+    transition: opacity .6s cubic-bezier(.16,1,.3,1), transform .6s cubic-bezier(.16,1,.3,1);
+  }
+  .slide.visible { opacity: 1; transform: none; }
+  .slide .reveal { opacity: 0; transform: translateY(20px); transition: opacity .5s cubic-bezier(.16,1,.3,1), transform .5s cubic-bezier(.16,1,.3,1); }
+  .slide.visible .reveal { opacity: 1; transform: none; }
+  .slide.visible .reveal:nth-child(1) { transition-delay: .1s; }
+  .slide.visible .reveal:nth-child(2) { transition-delay: .2s; }
+  .slide.visible .reveal:nth-child(3) { transition-delay: .3s; }
+  .slide.visible .reveal:nth-child(4) { transition-delay: .4s; }
+  .slide.visible .reveal:nth-child(5) { transition-delay: .5s; }
+  .slide.visible .reveal:nth-child(6) { transition-delay: .6s; }
+  @media (prefers-reduced-motion: reduce) { .slide,.slide .reveal { opacity:1 !important; transform:none !important; transition:none !important; } }
+
+  /* Background grid for terminal feel */
+  .deck::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: radial-gradient(circle, rgba(94,230,208,0.04) 1px, transparent 1px);
+    background-size: 32px 32px;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  /* Nav chrome */
+  .deck-progress { position: fixed; top: 0; left: 0; height: 2px; background: var(--accent); z-index: 100; transition: width .3s ease; pointer-events: none; box-shadow: 0 0 8px var(--accent); }
+  .deck-dots { position: fixed; right: 18px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 100; padding: 10px 8px; background: color-mix(in srgb, var(--bg) 70%, transparent); border-radius: 24px; backdrop-filter: blur(8px); border: 1px solid var(--border); }
+  .deck-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); opacity: 0.3; border: none; padding: 0; cursor: pointer; transition: opacity .2s, transform .2s; }
+  .deck-dot:hover { opacity: 0.6; }
+  .deck-dot.active { opacity: 1; transform: scale(1.6); background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .deck-counter { position: fixed; bottom: 16px; right: 24px; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); z-index: 100; font-variant-numeric: tabular-nums; letter-spacing: 1px; }
+  .deck-hints { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); opacity: 0.7; z-index: 100; transition: opacity .5s; white-space: nowrap; letter-spacing: 1.5px; text-transform: uppercase; }
+  .deck-hints.faded { opacity: 0; pointer-events: none; }
+
+  /* Typography */
+  .slide__display { font-family: var(--font-mono); font-size: clamp(40px, 8vw, 92px); font-weight: 700; letter-spacing: -2px; line-height: 0.98; text-wrap: balance; }
+  .slide__heading { font-size: clamp(28px, 4.5vw, 44px); font-weight: 700; letter-spacing: -0.5px; line-height: 1.1; text-wrap: balance; color: var(--text-bright); }
+  .slide__body { font-size: clamp(16px, 2.2vw, 22px); line-height: 1.6; color: var(--text-dim); text-wrap: pretty; }
+  .slide__subtitle { font-family: var(--font-mono); font-size: clamp(12px, 1.4vw, 16px); color: var(--text-dim); letter-spacing: 2px; text-transform: uppercase; }
+  .slide__label { font-family: var(--font-mono); font-size: clamp(10px, 1.1vw, 13px); font-weight: 600; text-transform: uppercase; letter-spacing: 2.5px; color: var(--accent); margin-bottom: 16px; }
+
+  /* Title */
+  .slide--title { justify-content: center; align-items: flex-start; padding-left: clamp(60px, 12vw, 180px); background-image: radial-gradient(ellipse at 20% 70%, rgba(94,230,208,0.08) 0%, transparent 50%); }
+  .slide--title .slide__display .accent { color: var(--accent); }
+  .slide--title .prompt-line { font-family: var(--font-mono); font-size: clamp(14px, 1.8vw, 20px); color: var(--text-dim); margin-bottom: 24px; }
+  .slide--title .prompt-line .cursor { display:inline-block; width:.6em; height:1.1em; background:var(--accent); margin-left:4px; vertical-align:text-bottom; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Divider */
+  .slide--divider { justify-content: center; }
+  .slide--divider .slide__number { font-family: var(--font-mono); font-size: clamp(120px, 24vw, 280px); font-weight: 200; line-height: 0.85; opacity: 0.08; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -55%); pointer-events: none; font-variant-numeric: tabular-nums; color: var(--accent); }
+  .slide--divider .corner { position: absolute; font-family: var(--font-mono); color: var(--accent); opacity: 0.4; font-size: 18px; }
+
+  /* Content slide */
+  .slide--content .slide__inner { display: grid; grid-template-columns: 3fr 2fr; gap: clamp(24px, 4vw, 60px); align-items: center; width: 100%; }
+  .slide__bullets { list-style: none; padding: 0; }
+  .slide__bullets li { padding: 10px 0 10px 28px; position: relative; font-size: clamp(15px, 1.9vw, 21px); line-height: 1.5; color: var(--text); }
+  .slide__bullets li::before { content: '▸'; position: absolute; left: 0; top: 10px; color: var(--accent); font-family: var(--font-mono); font-size: 18px; }
+  .slide__bullets li code { font-family: var(--font-mono); font-size: 0.85em; background: var(--accent-dim); color: var(--accent); padding: 2px 6px; border-radius: 3px; }
+
+  /* Dashboard */
+  .slide--dashboard .slide__kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(clamp(160px, 22vw, 240px), 1fr)); gap: clamp(14px, 2vw, 24px); margin-top: clamp(20px, 3vh, 40px); }
+  .slide__kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: clamp(20px, 3vh, 36px) clamp(18px, 2vw, 28px); position: relative; overflow: hidden; }
+  .slide__kpi::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent); opacity: 0.6; }
+  .slide__kpi-val { font-family: var(--font-mono); font-size: clamp(40px, 6vw, 72px); font-weight: 700; letter-spacing: -2px; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--accent); }
+  .slide__kpi-label { font-family: var(--font-mono); font-size: clamp(10px, 1.1vw, 12px); font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: var(--text-dim); margin-top: 12px; }
+  .slide__kpi-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+
+  /* Table */
+  .slide--table { padding: clamp(24px, 4vh, 48px) clamp(40px, 6vw, 80px); }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex: 1; min-height: 0; margin-top: clamp(12px, 2vh, 24px); }
+  .table-scroll { overflow-x: auto; height: 100%; }
+  .data-table { width: 100%; border-collapse: collapse; }
+  .data-table th { background: var(--surface2); font-family: var(--font-mono); font-size: clamp(10px, 1.1vw, 13px); font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--accent); text-align: left; padding: clamp(10px, 1.5vh, 14px) clamp(14px, 2vw, 22px); border-bottom: 1px solid var(--border-bright); white-space: nowrap; }
+  .data-table td { padding: clamp(8px, 1.2vh, 14px) clamp(14px, 2vw, 22px); border-bottom: 1px solid var(--border); font-size: clamp(13px, 1.5vw, 17px); vertical-align: top; }
+  .data-table tbody tr:last-child td { border-bottom: none; }
+  .data-table tbody tr:nth-child(even) { background: rgba(94,230,208,0.02); }
+  .data-table td.mono { font-family: var(--font-mono); font-size: 0.9em; color: var(--accent); }
+  .data-table td.num { font-family: var(--font-mono); text-align: right; font-variant-numeric: tabular-nums; color: var(--text-bright); }
+  .data-table td.ok { color: var(--green); }
+  .data-table td.no { color: var(--red); }
+  .data-table td.mid { color: var(--amber); }
+
+  /* Split */
+  .slide--split { padding: 0; }
+  .slide--split .slide__panels { display: grid; grid-template-columns: 1fr 1fr; height: 100%; gap: 1px; background: var(--border); }
+  .slide--split .slide__panel { padding: clamp(40px, 6vh, 80px) clamp(32px, 5vw, 60px); display: flex; flex-direction: column; justify-content: center; }
+  .slide--split .slide__panel--primary { background: var(--surface); }
+  .slide--split .slide__panel--secondary { background: var(--surface2); }
+  .slide--split .panel-label { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 2px; margin-bottom: 12px; }
+
+  /* Code block */
+  .code-block { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: clamp(20px, 3vh, 32px); position: relative; font-family: var(--font-mono); font-size: clamp(13px, 1.5vw, 17px); line-height: 1.7; color: var(--code-text); white-space: pre; overflow-x: auto; }
+  .code-block .filename { position: absolute; top: -10px; left: 16px; font-size: 10px; padding: 3px 10px; border-radius: 3px; background: var(--accent); color: var(--bg); font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }
+  .code-block .c { color: var(--text-dim); }
+  .code-block .k { color: var(--violet); }
+  .code-block .s { color: var(--amber); }
+  .code-block .a { color: var(--accent); }
+  .code-block .n { color: var(--blue); }
+
+  /* Bucket card */
+  .bucket-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(16px, 2vw, 28px); margin-top: clamp(16px, 2vh, 28px); flex: 1; min-height: 0; align-content: start; }
+  .bucket-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; padding: clamp(16px, 2.5vh, 24px) clamp(18px, 2.5vw, 28px); }
+  .bucket-card .label { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 2px; text-transform: uppercase; }
+  .bucket-card .name { font-family: var(--font-mono); font-size: clamp(14px, 1.8vw, 18px); font-weight: 600; margin: 4px 0 6px 0; color: var(--text-bright); }
+  .bucket-card .body { font-size: clamp(12px, 1.4vw, 14px); color: var(--text-dim); line-height: 1.5; }
+
+  /* Full-bleed */
+  .slide--bleed { padding: 0; justify-content: flex-end; }
+  .slide--bleed .slide__bg { position: absolute; inset: 0; background: linear-gradient(135deg, rgba(94,230,208,0.15) 0%, var(--bg) 60%, rgba(176,132,235,0.15) 100%); z-index: 0; }
+  .slide--bleed .slide__scrim { position: absolute; inset: 0; background: linear-gradient(to top, rgba(10,14,20,0.85) 0%, rgba(10,14,20,0.2) 50%, transparent 100%); z-index: 1; }
+  .slide--bleed .slide__content { position: relative; z-index: 2; padding: clamp(60px, 10vh, 120px) clamp(60px, 10vw, 160px); }
+
+  /* Marker styles */
+  .m-ok { color: var(--green); font-weight: 700; }
+  .m-mid { color: var(--amber); font-weight: 700; }
+  .m-no { color: var(--red); font-weight: 700; }
+  .pill { display: inline-block; padding: 2px 8px; border: 1px solid var(--border-bright); border-radius: 999px; font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.5px; }
+
+  /* Quote */
+  .slide--quote { justify-content: center; padding: clamp(60px, 10vh, 120px) clamp(60px, 10vw, 160px); }
+  .slide--quote blockquote { font-size: clamp(28px, 5vw, 56px); font-weight: 600; line-height: 1.25; color: var(--text-bright); text-wrap: balance; }
+  .slide--quote blockquote .accent { color: var(--accent); }
+  .slide--quote cite { font-family: var(--font-mono); font-size: 12px; font-style: normal; margin-top: 32px; display: block; letter-spacing: 2px; text-transform: uppercase; color: var(--text-dim); }
+  .slide--quote .mark { font-family: var(--font-mono); color: var(--accent); opacity: 0.3; font-size: clamp(60px, 10vw, 140px); line-height: 1; }
+
+  @media (max-height: 700px) {
+    .slide { padding: clamp(24px, 4vh, 40px) clamp(32px, 6vw, 80px); }
+    .slide__display { font-size: clamp(32px, 7vw, 60px); }
+    .slide--divider .slide__number { font-size: clamp(90px, 18vw, 180px); }
+  }
+  @media (max-width: 768px) {
+    .slide--content .slide__inner { grid-template-columns: 1fr; }
+    .slide--split .slide__panels { grid-template-columns: 1fr; }
+    .bucket-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="deck">
+
+  <!-- 1. TITLE -->
+  <section class="slide slide--title">
+    <div class="prompt-line reveal">$ rag-audit --refactoring --honest<span class="cursor"></span></div>
+    <h1 class="slide__display reveal">RAG for<br>Refactoring<br><span class="accent">— An Honest Audit</span></h1>
+    <div class="reveal" style="margin-top:36px;">
+      <p class="slide__subtitle">62 refactorings &nbsp;·&nbsp; 22 patterns &nbsp;·&nbsp; 7 tools &nbsp;·&nbsp; 5 buckets</p>
+    </div>
+  </section>
+
+  <!-- 2. THESIS QUOTE -->
+  <section class="slide slide--quote">
+    <div class="mark reveal">&gt;_</div>
+    <blockquote class="reveal">
+      RAG is <span class="accent">not</span> a grep replacement —<br>it's a <span class="accent">complement</span>.
+    </blockquote>
+    <cite class="reveal">37 of 62 refactorings benefit from RAG. 25 don't.</cite>
+  </section>
+
+  <!-- 3. SECTION 01 -->
+  <section class="slide slide--divider">
+    <span class="slide__number">01</span>
+    <span class="corner" style="top:60px;left:80px;">┌─────</span>
+    <span class="corner" style="bottom:60px;right:80px;">─────┘</span>
+    <div class="reveal" style="text-align:center;">
+      <p class="slide__label" style="text-align:center;">Chapter One</p>
+      <h2 class="slide__heading">The Catalog</h2>
+      <p class="slide__subtitle" style="margin-top:12px;">Source: refactoring.guru, fetched 2026-05-22</p>
+    </div>
+  </section>
+
+  <!-- 4. CATALOG OVERVIEW DASHBOARD -->
+  <section class="slide slide--dashboard">
+    <p class="slide__label reveal">Catalog at a Glance</p>
+    <h2 class="slide__heading reveal">Refactorings + Patterns We Audited</h2>
+    <div class="slide__kpis">
+      <div class="slide__kpi reveal">
+        <div class="slide__kpi-val">62</div>
+        <div class="slide__kpi-label">Refactorings</div>
+        <div class="slide__kpi-sub">across 6 categories</div>
+      </div>
+      <div class="slide__kpi reveal">
+        <div class="slide__kpi-val">22</div>
+        <div class="slide__kpi-label">Design Patterns</div>
+        <div class="slide__kpi-sub">Creational · Structural · Behavioral</div>
+      </div>
+      <div class="slide__kpi reveal">
+        <div class="slide__kpi-val">7</div>
+        <div class="slide__kpi-label">Tools Compared</div>
+        <div class="slide__kpi-sub">grep · LSP · AST · 4× RAG</div>
+      </div>
+      <div class="slide__kpi reveal">
+        <div class="slide__kpi-val">5</div>
+        <div class="slide__kpi-label">Buckets</div>
+        <div class="slide__kpi-sub">A · B · C · D · E</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. REFACTORING CATEGORIES TABLE -->
+  <section class="slide slide--table">
+    <p class="slide__label reveal">Section 1</p>
+    <h2 class="slide__heading reveal">Refactoring Categories</h2>
+    <div class="table-wrap reveal">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Category</th><th>Count</th><th>Examples</th></tr></thead>
+          <tbody>
+            <tr><td>Composing Methods</td><td class="num">9</td><td>Extract Method · Inline Method · Substitute Algorithm</td></tr>
+            <tr><td>Moving Features Between Objects</td><td class="num">8</td><td>Move Method · Extract Class · Hide Delegate</td></tr>
+            <tr><td>Organizing Data</td><td class="num">15</td><td>Encapsulate Field · Replace Type Code · Self Encapsulate</td></tr>
+            <tr><td>Simplifying Conditional Expressions</td><td class="num">8</td><td>Decompose · Replace with Polymorphism · Null Object</td></tr>
+            <tr><td>Simplifying Method Calls</td><td class="num">14</td><td>Rename Method · Introduce Parameter Object · Hide Method</td></tr>
+            <tr><td>Dealing with Generalization</td><td class="num">12</td><td>Pull Up · Extract Superclass · Form Template Method</td></tr>
+            <tr><td style="color:var(--accent);font-weight:600">Total</td><td class="num" style="color:var(--accent);font-weight:700">62</td><td style="color:var(--text-dim);font-style:italic">No "Big Refactorings" on the canonical site</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. DESIGN PATTERNS SPLIT -->
+  <section class="slide slide--split">
+    <div class="slide__panels">
+      <div class="slide__panel slide__panel--primary">
+        <p class="panel-label reveal">Section 2 · Patterns</p>
+        <h2 class="slide__heading reveal" style="margin-bottom:24px;">The Gang of Four<br>+ 2 cousins</h2>
+        <ul class="slide__bullets">
+          <li class="reveal"><strong style="color:var(--accent)">Creational (5)</strong><br><span style="font-family:var(--font-mono);font-size:0.85em;color:var(--text-dim)">Factory Method · Abstract Factory · Builder · Prototype · Singleton</span></li>
+          <li class="reveal"><strong style="color:var(--accent)">Structural (7)</strong><br><span style="font-family:var(--font-mono);font-size:0.85em;color:var(--text-dim)">Adapter · Bridge · Composite · Decorator · Facade · Flyweight · Proxy</span></li>
+          <li class="reveal"><strong style="color:var(--accent)">Behavioral (10)</strong><br><span style="font-family:var(--font-mono);font-size:0.85em;color:var(--text-dim)">CoR · Command · Iterator · Mediator · Memento · Observer · State · Strategy · Template · Visitor</span></li>
+        </ul>
+      </div>
+      <div class="slide__panel slide__panel--secondary">
+        <p class="panel-label reveal">Per-Pattern Question</p>
+        <h2 class="slide__heading reveal" style="font-size:clamp(20px,2.6vw,30px);margin-bottom:24px;">"Where does this codebase<br>already <span style="color:var(--accent)">implement</span> (or imitate)<br>this pattern?"</h2>
+        <p class="slide__body reveal" style="font-size:clamp(14px,1.7vw,18px);">Detection ≠ application.<br>Detection is where mRAG + AST shine.<br><br>Application = LLM-grounded design call (askRAG).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7. SECTION 02 -->
+  <section class="slide slide--divider">
+    <span class="slide__number">02</span>
+    <span class="corner" style="top:60px;left:80px;">┌─────</span>
+    <span class="corner" style="bottom:60px;right:80px;">─────┘</span>
+    <div class="reveal" style="text-align:center;">
+      <p class="slide__label" style="text-align:center;">Chapter Two</p>
+      <h2 class="slide__heading">The Taxonomy</h2>
+      <p class="slide__subtitle" style="margin-top:12px;">Seven tools. Four phases. One matrix.</p>
+    </div>
+  </section>
+
+  <!-- 8. TOOL TAXONOMY TABLE -->
+  <section class="slide slide--table">
+    <p class="slide__label reveal">The Seven Tools</p>
+    <h2 class="slide__heading reveal">What each one actually does</h2>
+    <div class="table-wrap reveal">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Tool</th><th>Substrate</th><th>Best At</th><th>Weakness</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">grep</td><td>Plain text</td><td>Exact-symbol enumeration, magic numbers, literals</td><td>No semantics, no scope</td></tr>
+            <tr><td class="mono">LSP</td><td>Symbol table + types</td><td>Rename · find-refs · call-hierarchy</td><td>Stops at the symbol boundary</td></tr>
+            <tr><td class="mono">AST</td><td>Syntax tree</td><td>Structural patterns: nesting, signature shape</td><td>No cross-file reasoning</td></tr>
+            <tr><td class="mono" style="color:var(--violet)">vRAG</td><td>Dense embeddings</td><td>Semantic similarity, "code like this"</td><td>Top-k cutoff · not exhaustive</td></tr>
+            <tr><td class="mono" style="color:var(--violet)">mRAG</td><td>Vectors + payload filters</td><td>Exhaustive filtered lookups: <code style="font-family:var(--font-mono);color:var(--accent)">is_suspend</code>, <code style="font-family:var(--font-mono);color:var(--accent)">complexity_cyclomatic</code></td><td>Only as smart as the metadata</td></tr>
+            <tr><td class="mono" style="color:var(--violet)">gRAG</td><td>Call / dep graph</td><td>Fan-in/out, centrality, Feature Envy</td><td>Needs accurate graph build</td></tr>
+            <tr><td class="mono" style="color:var(--violet)">askRAG</td><td>Retrieved chunks + LLM</td><td>Synthesis, design calls, codegen</td><td>Slow, costs tokens, can hallucinate</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. THE 4 PHASES -->
+  <section class="slide slide--content">
+    <div class="slide__inner">
+      <div>
+        <p class="slide__label reveal">Decomposing Every Refactoring</p>
+        <h2 class="slide__heading reveal">D · P · E · V</h2>
+        <ul class="slide__bullets" style="margin-top:24px;">
+          <li class="reveal"><strong style="color:var(--accent)">D — Detection</strong><br><span style="color:var(--text-dim)">"Where does this smell live?"</span></li>
+          <li class="reveal"><strong style="color:var(--accent)">P — Planning</strong><br><span style="color:var(--text-dim)">"What sites are affected if I change it?"</span></li>
+          <li class="reveal"><strong style="color:var(--accent)">E — Execution</strong><br><span style="color:var(--text-dim)">"Rewrite tokens safely."</span></li>
+          <li class="reveal"><strong style="color:var(--accent)">V — Verification</strong><br><span style="color:var(--text-dim)">"Are call sites, types, tests consistent?"</span></li>
+        </ul>
+      </div>
+      <div class="reveal" style="font-family:var(--font-mono);font-size:clamp(11px,1.4vw,14px);color:var(--text-dim);line-height:1.8;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:24px;">
+<span style="color:var(--accent)">refactoring</span>(query) {
+  phase_D: <span style="color:var(--amber)">find_candidates</span>()
+  phase_P: <span style="color:var(--amber)">trace_impact</span>()
+  phase_E: <span style="color:var(--amber)">rewrite</span>()
+  phase_V: <span style="color:var(--amber)">prove_safe</span>()
+}
+
+<span style="color:var(--text-dim)">// each phase picks
+// a different tool</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10. SECTION 03 -->
+  <section class="slide slide--divider">
+    <span class="slide__number">03</span>
+    <span class="corner" style="top:60px;left:80px;">┌─────</span>
+    <span class="corner" style="bottom:60px;right:80px;">─────┘</span>
+    <div class="reveal" style="text-align:center;">
+      <p class="slide__label" style="text-align:center;">Chapter Three</p>
+      <h2 class="slide__heading">The Five Buckets</h2>
+      <p class="slide__subtitle" style="margin-top:12px;">Where does RAG actually earn its keep?</p>
+    </div>
+  </section>
+
+  <!-- 11. BUCKET DISTRIBUTION DASHBOARD -->
+  <section class="slide slide--dashboard" style="background-image:radial-gradient(ellipse at 70% 30%, rgba(94,230,208,0.08), transparent 50%);">
+    <p class="slide__label reveal">Distribution</p>
+    <h2 class="slide__heading reveal">62 Refactorings, Sorted Honestly</h2>
+    <div class="slide__kpis">
+      <div class="slide__kpi reveal" style="border-left:3px solid var(--green);">
+        <div class="slide__kpi-val" style="color:var(--green)">~15</div>
+        <div class="slide__kpi-label">A · RAG Wins</div>
+        <div class="slide__kpi-sub">strictly beats grep/LSP/AST</div>
+      </div>
+      <div class="slide__kpi reveal" style="border-left:3px solid var(--accent);">
+        <div class="slide__kpi-val">~12</div>
+        <div class="slide__kpi-label">B · RAG + LSP</div>
+        <div class="slide__kpi-sub">RAG narrows, LSP applies</div>
+      </div>
+      <div class="slide__kpi reveal" style="border-left:3px solid var(--red);">
+        <div class="slide__kpi-val" style="color:var(--red)">~25</div>
+        <div class="slide__kpi-label">C · grep/LSP wins</div>
+        <div class="slide__kpi-sub">RAG adds nothing</div>
+      </div>
+      <div class="slide__kpi reveal" style="border-left:3px solid var(--violet);">
+        <div class="slide__kpi-val" style="color:var(--violet)">~10</div>
+        <div class="slide__kpi-label">D · gRAG only</div>
+        <div class="slide__kpi-sub">graph-walk is the unlock</div>
+      </div>
+      <div class="slide__kpi reveal" style="border-left:3px solid var(--amber);">
+        <div class="slide__kpi-val" style="color:var(--amber)">E</div>
+        <div class="slide__kpi-label">askRAG</div>
+        <div class="slide__kpi-sub">LLM-grounded synthesis</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12. BUCKET A -->
+  <section class="slide slide--table">
+    <p class="slide__label reveal" style="color:var(--green)">Bucket A</p>
+    <h2 class="slide__heading reveal">RAG strictly wins <span style="color:var(--green)">·</span> ~15 refactorings</h2>
+    <p class="slide__body reveal" style="margin:8px 0 16px 0;font-size:clamp(14px,1.6vw,18px);">Semantic judgement no syntactic tool can express.</p>
+    <div class="table-wrap reveal">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Refactoring</th><th>Why grep/LSP fails</th><th>RAG flavor</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Substitute Algorithm</strong></td><td>Roll-your-own sort/dedup looks nothing like the library call</td><td class="mono" style="color:var(--violet)">vRAG + askRAG</td></tr>
+            <tr><td><strong>Parameterize Method</strong></td><td>Near-duplicates differing only by one literal</td><td class="mono" style="color:var(--violet)">mRAG · near_dup hash</td></tr>
+            <tr><td><strong>Rename Method (detection)</strong></td><td>"Name doesn't match body" — LLM must read code</td><td class="mono" style="color:var(--violet)">askRAG</td></tr>
+            <tr><td><strong>Pull Up Method · Form Template</strong></td><td>Semantically-identical bodies, syntactically different</td><td class="mono" style="color:var(--violet)">vRAG + gRAG</td></tr>
+            <tr><td><strong>Extract Superclass · Interface</strong></td><td>Unrelated classes share logical API but no parent</td><td class="mono" style="color:var(--violet)">vRAG + mRAG</td></tr>
+            <tr><td><strong>Adapter · Facade · Mediator</strong> (legacy)</td><td>Pattern shape is fuzzy, names don't advertise role</td><td class="mono" style="color:var(--violet)">vRAG + gRAG</td></tr>
+            <tr><td><strong>Introduce Foreign Method</strong></td><td>Repeated wrappers around foreign API</td><td class="mono" style="color:var(--violet)">vRAG · dup_block_hash</td></tr>
+            <tr><td><strong>Introduce Assertion</strong></td><td>Precondition encoded in comments, not code</td><td class="mono" style="color:var(--violet)">askRAG</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13. BUCKET B -->
+  <section class="slide slide--table">
+    <p class="slide__label reveal">Bucket B</p>
+    <h2 class="slide__heading reveal">RAG + LSP combo <span style="color:var(--accent)">·</span> ~12 refactorings</h2>
+    <p class="slide__body reveal" style="margin:8px 0 16px 0;font-size:clamp(14px,1.6vw,18px);">RAG narrows the haystack in milliseconds. LSP makes the change safe.</p>
+    <div class="table-wrap reveal">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Refactoring</th><th>RAG filter</th><th>LSP step</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Extract Method</strong></td><td class="mono">complexity_cyclomatic &gt; 10 · line_count &gt; 40</td><td>extract-method code-action</td></tr>
+            <tr><td><strong>Extract Class</strong></td><td class="mono">line_count &gt; 500 · method_count &gt; 20</td><td>move-symbol</td></tr>
+            <tr><td><strong>Introduce Parameter Object</strong></td><td class="mono">parameter_count ≥ 4</td><td>change-signature</td></tr>
+            <tr><td><strong>Replace Nested w/ Guards</strong></td><td class="mono">nesting_depth ≥ 3</td><td>code-action</td></tr>
+            <tr><td><strong>Replace Conditional w/ Polymorphism</strong></td><td class="mono">patterns = switch_on_type</td><td>create subclass + dispatch</td></tr>
+            <tr><td><strong>Replace Constructor w/ Factory</strong></td><td class="mono">patterns = factory</td><td>rename + redirect callers</td></tr>
+            <tr><td><strong>Hide Method</strong></td><td class="mono">external_fan_in == 0</td><td>change visibility</td></tr>
+            <tr><td><strong>Replace Error Code w/ Exception</strong></td><td class="mono">returns_sentinel = true</td><td>propagate throws</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 14. BUCKET C -->
+  <section class="slide slide--table">
+    <p class="slide__label reveal" style="color:var(--red)">Bucket C</p>
+    <h2 class="slide__heading reveal">grep/LSP/AST wins <span style="color:var(--red)">·</span> ~25 refactorings</h2>
+    <p class="slide__body reveal" style="margin:8px 0 16px 0;font-size:clamp(14px,1.6vw,18px);">RAG would burn latency without buying anything. Don't invoke it.</p>
+    <div class="table-wrap reveal">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Refactoring</th><th>Right tool</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>Extract Variable · Inline Temp · Split Temp</td><td class="mono">AST</td><td>Local, syntactic</td></tr>
+            <tr><td>Encapsulate Field · Encapsulate Collection</td><td class="mono">AST + LSP</td><td>IDE code-action</td></tr>
+            <tr><td>Add / Remove / Rename Parameter</td><td class="mono">LSP</td><td>change-signature is type-aware</td></tr>
+            <tr><td>Rename Method (the rename itself)</td><td class="mono">LSP</td><td>Exhaustive, scope-aware</td></tr>
+            <tr><td>Replace Magic Number w/ Constant</td><td class="mono">grep + LSP</td><td>Literal find + rename</td></tr>
+            <tr><td>Consolidate Conditional · Remove Control Flag</td><td class="mono">AST</td><td>Tree shape</td></tr>
+            <tr><td>Pull Up / Push Down (execution)</td><td class="mono">LSP</td><td>Hierarchy edit</td></tr>
+            <tr><td>Iterator pattern detection</td><td class="mono">AST</td><td>Language feature</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 15. BUCKET D -->
+  <section class="slide slide--table">
+    <p class="slide__label reveal" style="color:var(--violet)">Bucket D</p>
+    <h2 class="slide__heading reveal">gRAG only <span style="color:var(--violet)">·</span> ~10 refactorings</h2>
+    <p class="slide__body reveal" style="margin:8px 0 16px 0;font-size:clamp(14px,1.6vw,18px);">Cannot be answered by single-chunk similarity. Needs the structural relationship between chunks.</p>
+    <div class="table-wrap reveal">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Refactoring</th><th>Graph signal</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Move Method · Move Field</strong> (Feature Envy)</td><td class="mono">fan-out by callee-class &gt; own class</td></tr>
+            <tr><td><strong>Inline Class</strong></td><td class="mono">fan_in_external ≤ 1</td></tr>
+            <tr><td><strong>Hide Delegate · Remove Middle Man</strong></td><td class="mono">call-chain depth ≥ 3</td></tr>
+            <tr><td><strong>Hide Method</strong></td><td class="mono">external_fan_in == 0</td></tr>
+            <tr><td><strong>Push Down Field · Method</strong></td><td class="mono">readership concentrated in 1 subclass</td></tr>
+            <tr><td><strong>Replace Inheritance w/ Delegation</strong></td><td class="mono">parent_usage_ratio &lt; 0.5 (Refused Bequest)</td></tr>
+            <tr><td><strong>Change Bidirectional → Unidirectional</strong></td><td class="mono">back-edge fan_in == 0</td></tr>
+            <tr><td><strong>Mediator · CoR · Observer</strong> (detection)</td><td class="mono">graph signature is the pattern</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 16. BUCKET E -->
+  <section class="slide slide--content">
+    <div class="slide__inner">
+      <div>
+        <p class="slide__label reveal" style="color:var(--amber)">Bucket E</p>
+        <h2 class="slide__heading reveal">askRAG required</h2>
+        <p class="slide__body reveal" style="margin-top:12px;">Cannot reduce to a query. Needs <span style="color:var(--accent)">synthesis</span> — model reads code and reasons.</p>
+        <ul class="slide__bullets" style="margin-top:24px;">
+          <li class="reveal">Substitute Algorithm (LLM writes replacement)</li>
+          <li class="reveal">Extract Class / Subclass / Superclass / Interface execution</li>
+          <li class="reveal">Form Template Method — identify variant points</li>
+          <li class="reveal">Introduce Null Object — design the null class</li>
+          <li class="reveal">Strategy / State application — design call</li>
+          <li class="reveal">Memento detection in legacy — semantic concept</li>
+        </ul>
+      </div>
+      <div class="reveal" style="font-family:var(--font-mono);font-size:clamp(11px,1.3vw,14px);color:var(--text-dim);line-height:1.8;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:24px;">
+<span style="color:var(--text-dim)"># every E task</span>
+<span style="color:var(--violet)">retrieve</span>(query) →
+  top_k chunks
+<span style="color:var(--violet)">prompt</span>(system, chunks,
+       question) →
+  qwen3:8b ↓
+  grounded answer
+  + citations [N]
+
+<span style="color:var(--text-dim)"># 10–30s · costs tokens
+# only fire when needed</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 17. CODE COMPARISON SPLIT -->
+  <section class="slide slide--split">
+    <div class="slide__panels">
+      <div class="slide__panel slide__panel--primary">
+        <p class="panel-label reveal" style="color:var(--red)">grep approach</p>
+        <h2 class="slide__heading reveal" style="font-size:clamp(20px,2.6vw,30px);margin-bottom:18px;">Finds the text.<br>Misses the intent.</h2>
+        <div class="code-block reveal" style="margin-top:8px;">
+<span class="filename">shell</span><span class="c"># find candidates for Pull Up Method</span>
+<span class="a">$</span> rg <span class="s">'fun \w+\(.*\): \w+ \{'</span> \
+     -t kotlin <span class="n">|</span> awk <span class="s">'...'</span>
+
+<span class="c"># now diff every pair? manually?
+# semantic dupes are invisible
+# to text search</span></div>
+      </div>
+      <div class="slide__panel slide__panel--secondary">
+        <p class="panel-label reveal" style="color:var(--accent)">RAG approach</p>
+        <h2 class="slide__heading reveal" style="font-size:clamp(20px,2.6vw,30px);margin-bottom:18px;">One metadata query.<br>Exhaustive.</h2>
+        <div class="code-block reveal" style="margin-top:8px;">
+<span class="filename">cli</span><span class="c"># precomputed at index time</span>
+<span class="a">$</span> rag list <span class="n">near_duplicate_method_hash</span> \
+     --group-by hash --min-count 2
+
+<span class="c"># groups semantically-equivalent
+# methods regardless of names,
+# whitespace, identifier renames</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 18. SECTION 04 -->
+  <section class="slide slide--divider">
+    <span class="slide__number">04</span>
+    <span class="corner" style="top:60px;left:80px;">┌─────</span>
+    <span class="corner" style="bottom:60px;right:80px;">─────┘</span>
+    <div class="reveal" style="text-align:center;">
+      <p class="slide__label" style="text-align:center;">Chapter Four</p>
+      <h2 class="slide__heading">The Roadmap</h2>
+      <p class="slide__subtitle" style="margin-top:12px;">Metadata fields that turn askRAG queries into mRAG queries</p>
+    </div>
+  </section>
+
+  <!-- 19. TIER 1 TABLE -->
+  <section class="slide slide--table">
+    <p class="slide__label reveal" style="color:var(--green)">Tier 1 · Highest ROI</p>
+    <h2 class="slide__heading reveal">Each field unlocks ≥3 refactorings</h2>
+    <div class="table-wrap reveal">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Field</th><th>Type</th><th>Unlocks</th></tr></thead>
+          <tbody>
+            <tr style="background:rgba(94,230,208,0.06)"><td class="mono" style="color:var(--accent);font-weight:700">duplicated_block_hash</td><td>KEYWORD</td><td><strong>★ biggest single unlock</strong> — Extract Method, Pull Up, Form Template, Parameterize</td></tr>
+            <tr style="background:rgba(94,230,208,0.06)"><td class="mono" style="color:var(--accent);font-weight:700">near_duplicate_method_hash</td><td>KEYWORD</td><td>LSH on body w/ literals masked — paired w/ above</td></tr>
+            <tr><td class="mono">method_count</td><td>INTEGER</td><td>Extract Class · Inline Class · Collapse Hierarchy</td></tr>
+            <tr><td class="mono">field_count</td><td>INTEGER</td><td>Extract Class · Large Class smell</td></tr>
+            <tr><td class="mono">cohesion_lcom</td><td>INTEGER</td><td>Extract Class</td></tr>
+            <tr><td class="mono">external_fan_in</td><td>INTEGER</td><td>Hide Method · Inline Class · Move Method</td></tr>
+            <tr><td class="mono">feature_envy_target</td><td>KEYWORD</td><td>Move Method · Move Field</td></tr>
+            <tr><td class="mono">null_check_density</td><td>INTEGER</td><td>Introduce Null Object</td></tr>
+            <tr><td class="mono">passthrough_ratio</td><td>INTEGER</td><td>Remove Middle Man · Inline Class</td></tr>
+            <tr><td class="mono">parent_usage_ratio</td><td>INTEGER</td><td>Refused Bequest detection</td></tr>
+            <tr><td class="mono">has_side_effects</td><td>KEYWORD</td><td>Separate Query from Modifier</td></tr>
+            <tr><td class="mono">returns_sentinel</td><td>KEYWORD</td><td>Replace Error Code w/ Exception</td></tr>
+            <tr><td class="mono">boolean_complexity</td><td>INTEGER</td><td>Decompose · Consolidate Conditional</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 20. TIER 2 PATTERN BUCKETS -->
+  <section class="slide" style="padding:clamp(24px,4vh,48px) clamp(40px,6vw,80px);">
+    <p class="slide__label reveal">Tier 2 · Pattern-shape booleans</p>
+    <h2 class="slide__heading reveal">Pre-tagged at index. mRAG answers in 1 ms.</h2>
+    <div class="bucket-grid reveal" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
+      <div class="bucket-card">
+        <div class="label">Decorator</div>
+        <div class="name">is_decorator_shape</div>
+        <div class="body">Implements interface I AND holds field of I</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Proxy</div>
+        <div class="name">is_proxy_shape</div>
+        <div class="body">Decorator-shape + passthrough_ratio ≥ 0.8</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Composite</div>
+        <div class="name">is_recursive_aggregate</div>
+        <div class="body">Holds collection of its own type</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Visitor</div>
+        <div class="name">is_visitor_shape</div>
+        <div class="body">visit* + double-dispatch via accept</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Chain of Responsibility</div>
+        <div class="name">is_chained_handler</div>
+        <div class="body">Field of own type + delegates to it</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Observer</div>
+        <div class="name">is_observer_subject</div>
+        <div class="body">add/removeListener · holds callback collection</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Adapter</div>
+        <div class="name">wraps_external_api</div>
+        <div class="body">Every public method delegates to one external dep</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Flyweight</div>
+        <div class="name">uses_object_pool</div>
+        <div class="body">Static Map&lt;K,V&gt; cache returning V</div>
+      </div>
+      <div class="bucket-card">
+        <div class="label">Mediator</div>
+        <div class="name">mediator_centrality_score</div>
+        <div class="body">fan_in × fan_out, top decile = candidate</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 21. DAEMON DECISION RULE CODE -->
+  <section class="slide" style="align-items:center;justify-content:center;">
+    <p class="slide__label reveal" style="text-align:center;">Daemon Router</p>
+    <h2 class="slide__heading reveal" style="text-align:center;margin-bottom:32px;">The Decision Rule</h2>
+    <div class="code-block reveal" style="max-width:900px;width:100%;margin:0 auto;">
+<span class="filename">router.py</span><span class="k">def</span> <span class="n">route</span>(query: str) -&gt; <span class="n">Plan</span>:
+    smell = classify(query)              <span class="c"># refactoring intent</span>
+
+    <span class="k">if</span> smell.bucket == <span class="s">"C"</span>:        <span class="c"># grep/LSP/AST wins outright</span>
+        <span class="k">return</span> Plan(skip_rag=<span class="a">True</span>, hint=<span class="s">"use rg / LSP rename"</span>)
+
+    <span class="k">if</span> smell.bucket == <span class="s">"A"</span>:        <span class="c"># semantic-only smells</span>
+        <span class="k">return</span> Plan(retrieve=<span class="s">"mRAG+gRAG"</span>, synthesize=<span class="s">"askRAG"</span>)
+
+    <span class="k">if</span> smell.bucket == <span class="s">"B"</span>:        <span class="c"># filter, then hand to LSP</span>
+        <span class="k">return</span> Plan(retrieve=<span class="s">"mRAG"</span>, execute=<span class="s">"LSP code-action"</span>)
+
+    <span class="k">if</span> smell.bucket == <span class="s">"D"</span>:        <span class="c"># graph signatures</span>
+        <span class="k">return</span> Plan(retrieve=<span class="s">"gRAG"</span>, traverse=<span class="s">"call-graph"</span>)
+
+    <span class="k">if</span> smell.bucket == <span class="s">"E"</span>:        <span class="c"># synthesis required</span>
+        <span class="k">return</span> Plan(retrieve=<span class="s">"mRAG"</span>, synthesize=<span class="s">"askRAG"</span>)</div>
+  </section>
+
+  <!-- 22. CLOSE FULL-BLEED -->
+  <section class="slide slide--bleed">
+    <div class="slide__bg"></div>
+    <div class="slide__scrim"></div>
+    <div class="slide__content">
+      <p class="slide__label reveal">The Honest Answer</p>
+      <h2 class="slide__heading reveal" style="font-size:clamp(36px,6vw,72px);max-width:14ch;">RAG <span style="color:var(--accent)">replaces grep</span> on ~37/62 refactorings.<br>Not 62.<br>Not zero.</h2>
+      <p class="slide__body reveal" style="margin-top:32px;max-width:60ch;color:var(--text);">Build the Tier-1 metadata. Wire <code style="font-family:var(--font-mono);color:var(--accent);background:var(--accent-dim);padding:2px 8px;border-radius:3px;">duplicated_block_hash</code> first. Route the rest by bucket.</p>
+      <p class="slide__subtitle reveal" style="margin-top:36px;color:var(--text-dim);">docs/refactoring_rag_strategies.md &nbsp;·&nbsp; refactoring.guru</p>
+    </div>
+  </section>
+
+</div><!-- /deck -->
+
+<script>
+  function SlideEngine(){
+    this.deck=document.querySelector('.deck');
+    this.slides=[].slice.call(document.querySelectorAll('.slide'));
+    this.current=0;
+    this.total=this.slides.length;
+    this.buildChrome();
+    this.bindEvents();
+    this.observe();
+    this.update();
+  }
+  SlideEngine.prototype.buildChrome=function(){
+    var bar=document.createElement('div');bar.className='deck-progress';document.body.appendChild(bar);this.bar=bar;
+    var dots=document.createElement('div');dots.className='deck-dots';var self=this;
+    this.slides.forEach(function(_,i){var d=document.createElement('button');d.className='deck-dot';d.title='Slide '+(i+1);d.onclick=function(){self.goTo(i);};dots.appendChild(d);});
+    document.body.appendChild(dots);this.dots=[].slice.call(dots.children);
+    var ctr=document.createElement('div');ctr.className='deck-counter';document.body.appendChild(ctr);this.counter=ctr;
+    var hints=document.createElement('div');hints.className='deck-hints';hints.textContent='← → or scroll to navigate';document.body.appendChild(hints);this.hints=hints;
+    this.hintTimer=setTimeout(function(){hints.classList.add('faded');},4000);
+  };
+  SlideEngine.prototype.bindEvents=function(){
+    var self=this;
+    document.addEventListener('keydown',function(e){
+      if(e.target.closest('.table-scroll,input,textarea,[contenteditable]'))return;
+      if(['ArrowDown','ArrowRight',' ','PageDown'].indexOf(e.key)>-1){e.preventDefault();self.next();}
+      else if(['ArrowUp','ArrowLeft','PageUp'].indexOf(e.key)>-1){e.preventDefault();self.prev();}
+      else if(e.key==='Home'){e.preventDefault();self.goTo(0);}
+      else if(e.key==='End'){e.preventDefault();self.goTo(self.total-1);}
+      self.fadeHints();
+    });
+    var tY;
+    this.deck.addEventListener('touchstart',function(e){tY=e.touches[0].clientY;},{passive:true});
+    this.deck.addEventListener('touchend',function(e){var dy=tY-e.changedTouches[0].clientY;if(Math.abs(dy)>50){dy>0?self.next():self.prev();}});
+  };
+  SlideEngine.prototype.observe=function(){
+    var self=this;
+    var obs=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting){entry.target.classList.add('visible');self.current=self.slides.indexOf(entry.target);self.update();}});},{threshold:0.5});
+    this.slides.forEach(function(s){obs.observe(s);});
+  };
+  SlideEngine.prototype.goTo=function(i){this.slides[Math.max(0,Math.min(i,this.total-1))].scrollIntoView({behavior:'smooth'});};
+  SlideEngine.prototype.next=function(){if(this.current<this.total-1)this.goTo(this.current+1);};
+  SlideEngine.prototype.prev=function(){if(this.current>0)this.goTo(this.current-1);};
+  SlideEngine.prototype.update=function(){
+    this.bar.style.width=((this.current+1)/this.total*100)+'%';
+    var c=this.current;this.dots.forEach(function(d,i){d.classList.toggle('active',i===c);});
+    this.counter.textContent=String(this.current+1).padStart(2,'0')+' / '+String(this.total).padStart(2,'0');
+  };
+  SlideEngine.prototype.fadeHints=function(){clearTimeout(this.hintTimer);this.hints.classList.add('faded');};
+  document.addEventListener('DOMContentLoaded',function(){new SlideEngine();});
+</script>
+
+</body>
+</html>
