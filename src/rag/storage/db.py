@@ -268,13 +268,13 @@ _RATE_TABLE_SQL = (
 )
 
 
-def check_rate_bucket(token: str, capacity: int = 120, refill_per_sec: float = 2.0) -> bool:
+def check_rate_bucket(token: str, capacity: int = 600, refill_per_sec: float = 20.0) -> bool:
     """Token-bucket rate limit per client.
 
     Returns True if the request is allowed (and consumes one token);
-    False if the bucket is empty. Default settings allow ~120 burst with
-    a steady-state of ~120 req/min (2 per second), matching the previous
-    deque-based limit.
+    False if the bucket is empty. Local single-user daemon — generous limit
+    so the TUI's polling loops (events 1s, stats 5s, etc.) don't starve user
+    actions. ~1200 req/min sustained, 600 burst.
     """
     try:
         _ensure_table(_RATE_TABLE_SQL)

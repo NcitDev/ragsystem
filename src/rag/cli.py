@@ -243,6 +243,106 @@ def search(
 
 
 @app.command()
+def ask(
+    question: str = typer.Argument(..., help="Question about the indexed codebase"),
+    top_k: int = typer.Option(8, "--top-k", "-k", help="Chunks to retrieve as grounding context"),
+    repo: str = typer.Option(None, "--repo", "-r", help="Restrict to file_path prefix"),
+):
+    """Ask a grounded question (retrieves + LLM-generates with citations)."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/ask",
+            json={"question": question, "top_k": top_k, "repo": repo},
+            headers=_auth_headers(),
+            timeout=300,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Ask failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Q:[/bold] {data['question']}")
+    console.print(f"[dim]model={data['model']} retrieval={data['retrieval_ms']}ms gen={data['generation_ms']}ms total={data['latency_ms']}ms[/dim]\n")
+    console.print(f"[bold green]A:[/bold green] {data['answer']}\n")
+
+    if data["citations"]:
+        console.print("[bold]Citations:[/bold]")
+        for i, c in enumerate(data["citations"], 1):
+            console.print(f"  [cyan]\\[{i}][/cyan] {c['file_path']}:{c['lines']} [dim]({c['name']}) score={c['score']}[/dim]")
+
+
+@app.command("list")
+def list_cmd(
+    flag: str = typer.Argument(..., help="Payload flag (e.g. is_singleton, is_suspend, uses_coroutines, is_data_class)"),
+    language: str = typer.Option(None, "--lang", help="Restrict to language (kotlin, java, python, ...)"),
+    limit: int = typer.Option(500, "--limit", help="Max results"),
+    value: str = typer.Option("true", "--value", help="Expected payload value (default 'true')"),
+    show_lines: bool = typer.Option(False, "--lines", help="Show line ranges"),
+):
+    """Exhaustively enumerate all chunks matching a payload flag.
+
+    Examples:
+        rag list is_singleton --lang kotlin
+        rag list is_suspend
+        rag list uses_coroutines --lang kotlin --limit 2000
+        rag list is_data_class
+    """
+    _require_daemon()
+    import httpx
+
+    filters: dict = {flag: value}
+    if language:
+        filters["language"] = language
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/enumerate",
+            json={
+                "filters": filters,
+                "limit": limit,
+                "fields": ["file_path", "name", "language", "chunk_type", "start_line", "end_line"],
+            },
+            headers=_auth_headers(),
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]List failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    results = data.get("results", [])
+    console.print(f"[bold]{data['count']}[/bold] matches for [cyan]{filters}[/cyan]"
+                  + (" [yellow](truncated)[/yellow]" if data.get("truncated") else ""))
+    # Dedupe by file_path for cleaner output
+    seen_paths = set()
+    for r in results:
+        fp = r.get("file_path", "")
+        if not show_lines:
+            if fp in seen_paths:
+                continue
+            seen_paths.add(fp)
+            console.print(f"  {fp}  [dim]{r.get('language', '?')} {r.get('chunk_type', '?')} {r.get('name') or ''}[/dim]")
+        else:
+            lines = f"{r.get('start_line', '?')}-{r.get('end_line', '?')}"
+            console.print(f"  {fp}:{lines}  [dim]{r.get('chunk_type', '?')} {r.get('name') or ''}[/dim]")
+    if not show_lines and len(seen_paths) < data["count"]:
+        console.print(f"\n[dim]Deduplicated to {len(seen_paths)} files. Use --lines to see all chunks.[/dim]")
+
+
+@app.command()
 def index(
     path: str = typer.Argument(".", help="Path to repository"),
     full: bool = typer.Option(False, "--full", help="Force full re-index"),

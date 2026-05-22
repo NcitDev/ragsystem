@@ -68,6 +68,8 @@ class RerankerSettings(BaseModel):
 class LLMSettings(BaseModel):
     ollama_url: str = "http://localhost:11434"
     agent_model: str = "qwen3:8b"
+    # Generation model for /ask (RAG synthesis). Defaults to agent_model when unset.
+    gen_model: str = ""
 
     @field_validator("ollama_url")
     @classmethod

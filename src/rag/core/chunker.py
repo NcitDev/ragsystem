@@ -64,6 +64,114 @@ class Chunk:
                 self.content, self.name, test_files=test_files
             )
             self.metadata.update(rich_meta)
+        elif self.language in ("kotlin", "java") and self.content:
+            self.metadata.update(_detect_kotlin_java_coroutines(self.content, self.language))
+
+
+_KOTLIN_COROUTINE_BUILDERS = (
+    "launch", "async", "withContext", "runBlocking",
+    "coroutineScope", "supervisorScope", "flow {", ".collect",
+    "delay(", "awaitAll", "asFlow", "channelFlow", "callbackFlow",
+)
+
+_JAVA_ASYNC_BUILDERS = (
+    "CompletableFuture", "ExecutorService", "Executors.",
+    "submit(", "supplyAsync", "runAsync", "thenApply", "thenCompose",
+)
+
+
+def _strip_line_comments(text: str) -> str:
+    """Remove // line comments and /* */ block comments cheaply (no full parse).
+    Avoids false positives where keyword appears only in commentary."""
+    out_lines = []
+    in_block = False
+    for line in text.splitlines():
+        if in_block:
+            end = line.find("*/")
+            if end >= 0:
+                line = line[end + 2 :]
+                in_block = False
+            else:
+                continue
+        # strip block-comment starts on the same line
+        while "/*" in line:
+            start = line.find("/*")
+            end = line.find("*/", start + 2)
+            if end >= 0:
+                line = line[:start] + line[end + 2 :]
+            else:
+                line = line[:start]
+                in_block = True
+                break
+        # strip // comments
+        slash = line.find("//")
+        if slash >= 0:
+            line = line[:slash]
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def _detect_kotlin_java_coroutines(content: str, language: str) -> dict[str, str]:
+    """Cheap text-level detection of suspend/coroutine/singleton/etc. usage.
+    Returns string-typed flags suitable for Qdrant KEYWORD payload index."""
+    meta: dict[str, str] = {}
+    cleaned = _strip_line_comments(content)
+    head = cleaned[:300]  # signature/declaration window
+
+    if language == "kotlin":
+        if "suspend fun " in head or head.lstrip().startswith("suspend "):
+            meta["is_suspend"] = "true"
+        if any(b in cleaned for b in _KOTLIN_COROUTINE_BUILDERS):
+            meta["uses_coroutines"] = "true"
+        if "Flow<" in cleaned or ": Flow<" in cleaned:
+            meta["uses_flow"] = "true"
+        # Singletons: @Singleton (Dagger/Hilt/javax.inject) OR `object` declaration.
+        if "@Singleton" in cleaned or "javax.inject.Singleton" in cleaned:
+            meta["is_singleton"] = "true"
+        # Kotlin `object Foo` is a singleton by definition.
+        # Skip `companion object` here — those aren't standalone singletons.
+        for line in cleaned.splitlines()[:5]:
+            stripped = line.lstrip()
+            if stripped.startswith("object ") and not stripped.startswith("object {"):
+                meta["is_singleton"] = "true"
+                meta["is_kotlin_object"] = "true"
+                break
+        # Sealed class (common ADT signal)
+        if "sealed class " in head or "sealed interface " in head:
+            meta["is_sealed"] = "true"
+        # Data class
+        if "data class " in head:
+            meta["is_data_class"] = "true"
+        # Interface decl
+        if head.lstrip().startswith("interface ") or "\ninterface " in head:
+            meta["is_interface"] = "true"
+        # Composable function (Jetpack Compose)
+        if "@Composable" in cleaned:
+            meta["is_composable"] = "true"
+        # Hilt/Dagger module
+        if "@Module" in cleaned or "@HiltViewModel" in cleaned or "@AndroidEntryPoint" in cleaned:
+            meta["is_di_component"] = "true"
+
+    elif language == "java":
+        if any(b in cleaned for b in _JAVA_ASYNC_BUILDERS):
+            meta["uses_async_java"] = "true"
+        if "@Singleton" in cleaned or "javax.inject.Singleton" in cleaned:
+            meta["is_singleton"] = "true"
+        # Classic singleton pattern: getInstance() + private ctor
+        if "getInstance(" in cleaned and "private " in cleaned and "static " in cleaned:
+            meta["is_singleton_pattern"] = "true"
+        # Enum singleton (Effective Java item)
+        if head.lstrip().startswith("public enum ") or "\npublic enum " in head or "\nenum " in head:
+            meta["is_enum"] = "true"
+        if "interface " in head and ("public interface" in head or head.lstrip().startswith("interface ")):
+            meta["is_interface"] = "true"
+        if "abstract class " in head:
+            meta["is_abstract"] = "true"
+        # JUnit test class signal
+        if "@Test" in cleaned or "extends TestCase" in cleaned:
+            meta["has_unit_test"] = "true"
+
+    return meta
 
     def to_index_metadata(self) -> dict[str, Any]:
         return {
