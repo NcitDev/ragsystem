@@ -72,12 +72,11 @@ _DEFAULT_TOP_K = 8
 _SPARK_CHARS = " ▁▂▃▄▅▆▇█"
 
 
-def _sparkline(values: list[float], width: int = 24) -> str:
-    """Render unicode block sparkline. Pads/truncates to `width` bins."""
+def _resize(values: list[float], width: int) -> list[float]:
+    """Pad-left or bin-average so values has exactly `width` entries."""
     if not values:
-        return "─" * width
+        return [0.0] * width
     if len(values) > width:
-        # Bin down: average chunks
         step = len(values) / width
         binned = []
         for i in range(width):
@@ -85,15 +84,57 @@ def _sparkline(values: list[float], width: int = 24) -> str:
             hi = int((i + 1) * step) or lo + 1
             chunk = values[lo:hi] or [0.0]
             binned.append(sum(chunk) / len(chunk))
-        values = binned
-    elif len(values) < width:
-        values = [0.0] * (width - len(values)) + values
+        return binned
+    if len(values) < width:
+        return [0.0] * (width - len(values)) + values
+    return values
+
+
+def _sparkline(values: list[float], width: int = 24) -> str:
+    """Render single-row unicode block sparkline."""
+    if not values:
+        return "─" * width
+    values = _resize(values, width)
     vmax = max(values) or 1.0
     out = []
     for v in values:
         idx = min(len(_SPARK_CHARS) - 1, max(0, int(v / vmax * (len(_SPARK_CHARS) - 1))))
         out.append(_SPARK_CHARS[idx])
     return "".join(out)
+
+
+def _bars(values: list[float], width: int, height: int) -> str:
+    """Render a multi-row bar chart using unicode block chars.
+
+    Each column shows a bar from the bottom up; columns above the bar are
+    blank. Returns a newline-joined string of `height` rows × `width` chars.
+    """
+    if height <= 0 or width <= 0:
+        return ""
+    values = _resize(values, width)
+    vmax = max(values) or 1.0
+    # Each row contributes 8 sub-levels via the partial-block chars.
+    levels = height * 8
+    col_levels = [
+        min(levels, max(0, int(v / vmax * levels))) for v in values
+    ]
+    rows: list[str] = []
+    for row_idx in range(height):
+        # Row 0 is the top; row height-1 is the bottom.
+        from_bottom = height - 1 - row_idx
+        row_chars: list[str] = []
+        for col in col_levels:
+            # How much of this row is filled?
+            row_start = from_bottom * 8
+            row_end = row_start + 8
+            if col >= row_end:
+                row_chars.append("█")
+            elif col <= row_start:
+                row_chars.append(" ")
+            else:
+                row_chars.append(_SPARK_CHARS[col - row_start])
+        rows.append("".join(row_chars))
+    return "\n".join(rows)
 
 
 def _bin_timestamps(timestamps: list[float], window_sec: int, bin_sec: int) -> list[int]:
@@ -394,10 +435,12 @@ class RAGApp(App):
                                     pass
                         spark_bins = _bin_timestamps(ts_list, window_sec=24 * 3600, bin_sec=3600)
                         peak = max(spark_bins) if spark_bins else 0
-                        spark = _sparkline([float(x) for x in spark_bins], width=24)
+                        bars = _bars([float(x) for x in spark_bins], width=48, height=6)
                         try:
                             self.query_one("#qpm-spark", Static).update(
-                                f"[#5ee6d0]{spark}[/]   [dim]peak[/] [bold]{peak}[/bold] [dim]/ hour[/]"
+                                f"[#5ee6d0]{bars}[/]\n"
+                                f"[dim]00:00                                       23:59[/dim]   "
+                                f"[dim]peak[/] [bold]{peak}[/bold] [dim]/ hour[/]"
                             )
                         except Exception:
                             pass

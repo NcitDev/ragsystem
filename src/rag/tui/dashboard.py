@@ -96,19 +96,20 @@ class StatusBar(Static):
         lights = "[red]●[/red] [yellow]●[/yellow] [green]●[/green]"
         dot = "[green]●[/green]" if self.daemon_ok else "[red]●[/red]"
         clock = datetime.now().strftime("%H:%M")
-        # Shorten model names to keep bar readable on narrow terminals
-        embed_short = self.embedder.split(":")[0].replace("qwen3-embedding", "qwen3-emb")[:16]
-        gen_short = self.gen_model[:12]
-        repo_short = self.repo_name[:18]
+        # Aggressive truncation to keep bar single-line at any reasonable width.
+        screen_short = self.screen_name.split(" / ")[0][:12]
+        embed_short = self.embedder.split(":")[0].replace("qwen3-embedding", "qwen3-emb")[:12]
+        gen_short = self.gen_model[:10]
+        repo_short = self.repo_name[:14]
         return (
-            f"{lights}  [#5ee6d0 b]» {self.screen_name}[/]"
-            f"  {dot} daemon"
-            f"  [dim]repo=[/dim][#7fb6f0]{repo_short}[/]"
-            f"  [dim]emb=[/dim][#5ee6d0]{embed_short}[/]"
-            f"  [dim]gen=[/dim][#b084eb]{gen_short}[/]"
-            f"  [dim]qpm=[/dim]{self.qpm:.0f}"
-            f"  [dim]mem=[/dim]{self.mem_mb}MB"
-            f"  [dim]·[/dim]  [#5a6a7a]{clock}[/]"
+            f"{lights}  [#5ee6d0 b]{screen_short}[/]"
+            f"   {dot}"
+            f"  [dim]repo[/dim] [#7fb6f0]{repo_short}[/]"
+            f"  [dim]emb[/dim] [#5ee6d0]{embed_short}[/]"
+            f"  [dim]gen[/dim] [#b084eb]{gen_short}[/]"
+            f"  [dim]qpm[/dim] {self.qpm:.0f}"
+            f"  [dim]mem[/dim] {self.mem_mb}M"
+            f"   [#5a6a7a]{clock}[/]"
         )
 
 
@@ -226,14 +227,14 @@ class CmdLine(Container):
 class ScreenBase(Container):
     """Common scaffolding for a screen — content slot only.
 
-    The screen name lives in the StatusBar (top row), so individual
-    screens don't repeat their own title.
+    Fixed-height layout. Every screen has the same outer padding so
+    the active area starts at a predictable row across all screens.
     """
 
     DEFAULT_CSS = """
     ScreenBase {
         height: 1fr;
-        padding: 1 1;
+        padding: 1 1 0 1;
     }
     """
 
@@ -254,28 +255,47 @@ class HomeScreen(ScreenBase):
 
     DEFAULT_CSS = """
     HomeScreen .home-kpis {
-        height: 7;
+        height: 5;
     }
     HomeScreen .kpi {
         border: round $primary 30%;
-        padding: 1 2;
+        padding: 0 1;
         width: 1fr;
-        height: 7;
+        height: 5;
         margin: 0 1;
-    }
-    HomeScreen .kpi-val {
-        color: $accent;
-        text-style: bold;
     }
     HomeScreen .home-mid {
         height: 1fr;
     }
     HomeScreen .panel {
         border: round $primary 30%;
-        padding: 1 1;
+        padding: 0 1;
         margin: 0 1;
         height: 1fr;
     }
+    HomeScreen #qpm-spark {
+        height: 8;
+        padding: 0;
+        margin: 0;
+    }
+    HomeScreen #qpm-title {
+        height: 1;
+        padding: 0;
+    }
+    HomeScreen #qpm-divider {
+        height: 1;
+    }
+    HomeScreen #queries-title {
+        height: 1;
+        padding: 0;
+    }
+    HomeScreen #home-recent-queries {
+        height: 1fr;
+    }
+    HomeScreen #plugins-title { height: 1; }
+    HomeScreen #home-plugins  { height: 6; }
+    HomeScreen #collections-title { height: 1; }
+    HomeScreen #home-collections { height: 1fr; }
     """
 
     def compose_body(self) -> ComposeResult:
@@ -302,19 +322,15 @@ class HomeScreen(ScreenBase):
             )
         with Horizontal(classes="home-mid"):
             with Vertical(classes="panel"):
-                yield Static("[bold]QPM (last 24h)[/bold]")
-                yield Static(
-                    "[cyan]▁▂▃▅▆▇█▇▆▅▃▂▁▂▄▆██▇▅▃▂▁▁[/cyan]   peak 38",
-                    id="qpm-spark",
-                )
-                yield Static("")
-                yield Static("[bold]Recent queries[/bold]")
+                yield Static("[bold]QPM (last 24h)[/bold]", id="qpm-title")
+                yield Static("[dim]waiting for data...[/dim]", id="qpm-spark")
+                yield Static("", id="qpm-divider")
+                yield Static("[bold]Recent queries[/bold]", id="queries-title")
                 yield ListView(id="home-recent-queries")
             with Vertical(classes="panel"):
-                yield Static("[bold]Plugins[/bold]")
+                yield Static("[bold]Plugins[/bold]", id="plugins-title")
                 yield Static("[dim]loading...[/dim]", id="home-plugins")
-                yield Static("")
-                yield Static("[bold]Collections[/bold]")
+                yield Static("[bold]Collections[/bold]", id="collections-title")
                 yield Static("[dim]loading...[/dim]", id="home-collections")
 
 
@@ -332,14 +348,16 @@ class SearchScreen(ScreenBase):
         width: 2fr;
         border: round $primary 30%;
         margin: 0 1;
+        padding: 0 1;
     }
     SearchScreen #search-detail {
         width: 3fr;
         border: round $primary 30%;
         margin: 0 1;
+        padding: 0 1;
     }
     SearchScreen #search-plan {
-        height: 6;
+        height: 5;
         border: round $primary 30%;
         margin: 0 1;
         padding: 0 1;
