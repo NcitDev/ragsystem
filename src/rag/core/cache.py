@@ -104,6 +104,11 @@ class EmbeddingCache:
     """Thread-safe, TTL-based embedding cache with binary storage."""
 
     def __init__(self, ttl_days: int = _DEFAULT_TTL_DAYS) -> None:
+        # A non-positive TTL would treat every entry as expired -> 100% miss
+        # rate (every chunk re-embedded every run). Guard against misconfig.
+        if ttl_days <= 0:
+            logger.warning("cache_ttl_invalid", ttl_days=ttl_days, fallback=_DEFAULT_TTL_DAYS)
+            ttl_days = _DEFAULT_TTL_DAYS
         self._ttl_seconds = ttl_days * 86400
 
     def get(self, content_hash: str) -> EmbeddingResult | None:

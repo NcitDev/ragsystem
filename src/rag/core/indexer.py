@@ -48,6 +48,61 @@ def _state_file_for(path: Path) -> Path:
     return _state_dir_for(path) / "state.json"
 
 
+def _lock_file_for(path: Path) -> Path:
+    return _state_dir_for(path) / "index.lock"
+
+
+class IndexLockError(Exception):
+    """Raised when another index run already holds the per-repo lock."""
+
+
+class _RepoIndexLock:
+    """Non-blocking advisory file lock serializing index runs for one repo.
+
+    Two concurrent ``index_repository`` calls on the same repo would race the
+    shared ``state.json`` (interleaved hash maps, one overwriting the other).
+    An exclusive ``flock`` makes the second caller fail fast instead of
+    corrupting state. Best-effort: if locking is unsupported, we proceed.
+    """
+
+    def __init__(self, repo_path: Path) -> None:
+        self._lock_path = _lock_file_for(repo_path)
+        self._fd: int | None = None
+
+    def __enter__(self) -> "_RepoIndexLock":
+        import os as _os
+
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - non-POSIX
+            return self
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = _os.open(str(self._lock_path), _os.O_CREAT | _os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            _os.close(self._fd)
+            self._fd = None
+            raise IndexLockError(
+                f"Another index run is in progress for {self._lock_path.parent.name}; "
+                "refusing to run concurrently."
+            )
+        return self
+
+    def __exit__(self, *exc) -> None:
+        import os as _os
+
+        if self._fd is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            _os.close(self._fd)
+            self._fd = None
+
+
 @dataclass
 class IndexState:
     last_commit: str = ""
@@ -199,15 +254,32 @@ async def index_repository(
     """Index a git repository into the vector store.
 
     Supports incremental indexing — only re-indexes files that changed since last run.
-    """
-    settings = get_settings()
-    collection = collection or settings.qdrant.code_collection
-    path = Path(repo_path).resolve()
-    result = IndexResult()
 
+    Serialized per-repo via an advisory file lock so two concurrent runs can't
+    race the shared state.json.
+    """
+    path = Path(repo_path).resolve()
     if not path.exists():
+        result = IndexResult()
         result.errors.append(f"Repository path does not exist: {repo_path}")
         return result
+    with _RepoIndexLock(path):
+        return await _index_repository_locked(
+            path, vectorstore, collection, full, languages, on_progress
+        )
+
+
+async def _index_repository_locked(
+    path: Path,
+    vectorstore: QdrantVectorStore,
+    collection: str | None = None,
+    full: bool = False,
+    languages: list[str] | None = None,
+    on_progress: ProgressCallback = None,
+) -> IndexResult:
+    settings = get_settings()
+    collection = collection or settings.qdrant.code_collection
+    result = IndexResult()
 
     state = IndexState() if full else IndexState.load(path)
     if full:
@@ -256,10 +328,20 @@ async def index_repository(
     # NOTE: TODO: stream to SQLite via storage.db.file_hashes table when repos
     # exceed ~100k files. Current in-memory approach OK for typical repos.
     new_hashes: dict[str, str] = dict(state.file_hashes)
+    processed_files: set[str] = set()  # rel_paths actually re-chunked this run (for LOD scoping)
     batch: list[ChunkDocument] = []
     batch_size = 64  # aligns with embedder sub-batch for one-HTTP-call-per-flush
     detected_langs: set[str] = set()
     pending_upsert: asyncio.Task | None = None
+
+    # Crash-consistency: a file's hash is only promoted into ``new_hashes`` once
+    # the batch carrying its chunks has been confirmed upserted to Qdrant. Until
+    # then it sits in ``staged_hashes`` (this run) / ``pending_hashes`` (the
+    # batch currently being upserted). If indexing crashes mid-flush, the file's
+    # hash never gets saved, so the next run re-processes it instead of skipping
+    # it and leaving its chunks permanently missing.
+    staged_hashes: dict[str, str] = {}
+    pending_hashes: dict[str, str] = {}
 
     # Initialize embedding cache
     from rag.core.cache import EmbeddingCache
@@ -294,15 +376,21 @@ async def index_repository(
             docs = await asyncio.to_thread(_process_file, file_path, rel_path)
             batch.extend(docs)
 
-            # Pipeline: await previous upsert, start new one
+            # Stage this file's hash; it is only promoted to new_hashes once the
+            # batch carrying its chunks is confirmed flushed.
+            staged_hashes[rel_path] = _file_hash(file_path)
+            processed_files.add(rel_path)
+            result.files_processed += 1
+
+            # Pipeline: await previous upsert (committing its hashes), start new one
             if len(batch) >= batch_size:
                 if pending_upsert is not None:
                     result.chunks_indexed += await pending_upsert
+                    new_hashes.update(pending_hashes)
                 pending_upsert = asyncio.create_task(_flush_batch(list(batch)))
+                pending_hashes = staged_hashes
+                staged_hashes = {}
                 batch = []
-
-            new_hashes[rel_path] = _file_hash(file_path)
-            result.files_processed += 1
 
             if on_progress:
                 on_progress(rel_path, idx + 1, total_files)
@@ -311,16 +399,22 @@ async def index_repository(
             logger.warning("file_index_error", file=rel_path, error=str(e))
             result.errors.append(f"{rel_path}: {e}")
 
-    # Await pending + flush remaining
+    # Await pending + flush remaining. Each confirmed upsert promotes its
+    # staged hashes; the trailing partial batch (still in ``staged_hashes``)
+    # is committed only after its own upsert returns.
     if pending_upsert is not None:
         result.chunks_indexed += await pending_upsert
+        new_hashes.update(pending_hashes)
     if batch:
         if settings.lsp.enabled:
             await _lsp_enrich_batch(batch, str(path), list(detected_langs))
-        result.chunks_indexed += await vectorstore.upsert(collection, batch)
+        result.chunks_indexed += await vectorstore.upsert(collection, batch, cache=embed_cache)
         _update_overview_stats(batch)
+    new_hashes.update(staged_hashes)
 
-    # Delete chunks for removed files
+    # Delete chunks for removed files. Delete the vectors BEFORE dropping the
+    # file from new_hashes so a crash between the two leaves the file still
+    # tracked (next run retries the delete) rather than orphaning its chunks.
     indexed_files = set(new_hashes.keys())
     current_files = {str(f.relative_to(path)) for f in all_files}
     removed = indexed_files - current_files
@@ -338,7 +432,10 @@ async def index_repository(
         logger.info("graph_build_skipped", reason="RAG_SKIP_GRAPH=1")
     else:
         try:
-            await _build_graph_and_summaries(vectorstore, collection)
+            # Pass changed-file set so LOD regen scopes to affected dirs/files.
+            # On --full runs we pass None to force a full rebuild.
+            lod_scope = None if full else processed_files
+            await _build_graph_and_summaries(vectorstore, collection, lod_scope)
         except Exception as e:
             logger.warning("graph_build_error", error=str(e))
 
@@ -362,10 +459,16 @@ async def index_repository(
 async def _build_graph_and_summaries(
     vectorstore: QdrantVectorStore,
     collection: str,
+    changed_files: set[str] | None = None,
 ) -> None:
-    """Build knowledge graph, detect communities, generate summaries."""
+    """Build knowledge graph, detect communities, generate community + LOD summaries.
+
+    Args:
+        changed_files: relative file paths that changed in this run. Used to
+            scope L0/L1 regeneration to only the affected dirs/files.
+    """
     from rag.core.graph import CodeGraph, get_graph
-    from rag.core.summaries import generate_community_summaries
+    from rag.core.summaries import generate_community_summaries, generate_lod_summaries
 
     # Collect all chunk payloads from Qdrant
     client = await vectorstore._get_client()
@@ -399,6 +502,14 @@ async def _build_graph_and_summaries(
 
     # Generate summaries for each community
     await generate_community_summaries(graph, vectorstore, all_chunks)
+
+    # Hierarchical LOD summaries (L0 = module/dir, L1 = file). Scoped to
+    # changed files when incremental; full pass otherwise. Skipped when
+    # RAG_SKIP_SUMMARIES=1 (checked inside generate_lod_summaries).
+    try:
+        await generate_lod_summaries(all_chunks, vectorstore, changed_files)
+    except Exception as e:
+        logger.warning("lod_summaries_error", error=str(e))
 
     # Save graph to disk for query-time use
     graph.save()

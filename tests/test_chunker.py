@@ -149,3 +149,35 @@ def test_chunk_id_deterministic():
 def test_content_hash():
     c = Chunk(content="hello", chunk_type=ChunkType.FUNCTION, file_path="a.py", language="python")
     assert len(c.content_hash) == 16
+
+
+def test_to_index_metadata_is_a_chunk_method():
+    """Regression: to_index_metadata was once mis-indented after a `return` in
+    enrich_metadata's module function, so it was never attached to Chunk and
+    every call site (indexer.py) raised AttributeError — indexing was broken."""
+    assert "to_index_metadata" in Chunk.__dict__, "to_index_metadata must be a Chunk method"
+
+    c = Chunk(
+        content="def f(): pass",
+        chunk_type=ChunkType.FUNCTION,
+        file_path="pkg/mod.py",
+        language="python",
+        name="f",
+        parent_name="C",
+        start_line=10,
+        end_line=12,
+        metadata={"complexity": 1, "is_test": "false"},
+    )
+    meta = c.to_index_metadata()
+
+    assert meta["file_path"] == "pkg/mod.py"
+    assert meta["language"] == "python"
+    assert meta["chunk_type"] == "function"  # enum .value, not the enum
+    assert meta["name"] == "f"
+    assert meta["parent_name"] == "C"
+    assert meta["start_line"] == 10
+    assert meta["end_line"] == 12
+    assert meta["content_hash"] == c.content_hash
+    # extra metadata is spread in
+    assert meta["complexity"] == 1
+    assert meta["is_test"] == "false"

@@ -161,16 +161,25 @@ def start(
     _ = headless  # accepted for back-compat; default behavior is server-only now.
     import uvicorn
 
+    from rag.integration.logging_setup import configure_logging
     from rag.server import app as fastapi_app
+
+    # Rotated structured logging so the supervised daemon can't fill the disk.
+    log_path = configure_logging(to_file=True)
 
     settings = get_settings()
     console.print(
         f"[green]Starting RAG server on {settings.server.host}:{settings.server.port}[/green]"
     )
+    if log_path:
+        console.print(f"[dim]Logging to {log_path} (rotating, ~50 MB cap)[/dim]")
     uvicorn.run(
         fastapi_app,
         host=settings.server.host,
         port=settings.server.port,
+        # Logging is owned by our rotating handler; don't let uvicorn install
+        # its own root config on top of it.
+        log_config=None,
         log_level="info",
     )
 

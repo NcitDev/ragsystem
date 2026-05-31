@@ -97,20 +97,37 @@ def _pattern_score(payload: dict[str, Any], query: str) -> float:
     return 0.2
 
 
+def _truthy(value: Any, default: bool = False) -> bool:
+    """Normalize a payload flag to bool.
+
+    Chunk enrichment stores boolean signals as the STRINGS "true"/"false"
+    (Qdrant payloads keep them verbatim), and the non-empty string "false" is
+    truthy in Python — so ``payload.get("has_docstring")`` would wrongly fire
+    for "false". Treat real bools, and the string forms, correctly.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    if value is None:
+        return default
+    return bool(value)
+
+
 def _quality_score(payload: dict[str, Any]) -> float:
     """Score -1 to 1 based on code quality signals. Bad quality = negative."""
     score = 0.0
 
     # Dead code candidate: penalize
-    if payload.get("dead_code_candidate", False):
+    if _truthy(payload.get("dead_code_candidate")):
         score -= 0.5
 
     # Has docstring: small boost
-    if payload.get("has_docstring", False):
+    if _truthy(payload.get("has_docstring")):
         score += 0.2
 
     # Public: slight boost (more likely to be relevant API)
-    if payload.get("is_public", True):
+    if _truthy(payload.get("is_public"), default=True):
         score += 0.1
 
     # Very high complexity: slight penalty (harder to understand)
@@ -119,7 +136,7 @@ def _quality_score(payload: dict[str, Any]) -> float:
         score -= 0.2
 
     # Has tests: boost (more trustworthy code)
-    if payload.get("has_unit_test", False):
+    if _truthy(payload.get("has_unit_test")):
         score += 0.3
 
     return max(-1.0, min(1.0, score))

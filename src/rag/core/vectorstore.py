@@ -66,6 +66,9 @@ PAYLOAD_INDEXES = [
     ("inherits_from", models.PayloadSchemaType.KEYWORD),
     ("decorator_tags", models.PayloadSchemaType.KEYWORD),
     ("concurrency_patterns", models.PayloadSchemaType.KEYWORD),
+    # LOD (hierarchical drill-down)
+    ("module_path", models.PayloadSchemaType.KEYWORD),
+    ("lod_level", models.PayloadSchemaType.KEYWORD),
 ]
 
 
@@ -223,10 +226,28 @@ class QdrantVectorStore:
         collections = await client.get_collections()
         existing = [c.name for c in collections.collections]
 
-        if collection in existing:
-            return
-
         await self._embedder.initialize()
+
+        if collection in existing:
+            # Guard against silent corruption: if the embedder's dimension no
+            # longer matches the dimension the collection was created with
+            # (e.g. the embedding model was swapped), upserts would push
+            # wrong-sized vectors and search would return garbage. Fail loud.
+            try:
+                info = await client.get_collection(collection)
+                params = info.config.params.vectors
+                dense = params["dense"] if isinstance(params, dict) else params
+                existing_dim = getattr(dense, "size", None)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("collection_dim_check_failed", collection=collection, error=str(e))
+                existing_dim = None
+            if existing_dim is not None and existing_dim != self._embedder.dim:
+                raise VectorStoreError(
+                    f"Collection '{collection}' was built with dim {existing_dim} but the "
+                    f"current embedder produces dim {self._embedder.dim}. The embedding model "
+                    f"likely changed — re-index with --full to rebuild the collection."
+                )
+            return
 
         await client.create_collection(
             collection_name=collection,
@@ -303,8 +324,28 @@ class QdrantVectorStore:
             if to_embed_texts:
                 logger.debug("embed_cache_stats", total=len(batch), cached=len(batch) - len(to_embed_texts), embedded=len(to_embed_texts))
 
+            expected_dim = self._embedder.dim
             points = []
             for doc, emb in zip(batch, embeddings):
+                # A None here means an embedding slot was never filled (cache
+                # miss not backfilled, or a partial embed failure). Upserting
+                # would crash on emb.dense; skip + log loudly instead.
+                if emb is None:
+                    logger.error(
+                        "upsert_missing_embedding",
+                        collection=collection,
+                        chunk_id=doc.chunk_id,
+                        file_path=doc.metadata.get("file_path"),
+                    )
+                    continue
+                # Dimension mismatch between produced vector and collection is a
+                # silent-corruption hazard; refuse rather than write garbage.
+                if len(emb.dense) != expected_dim:
+                    raise VectorStoreError(
+                        f"Embedding dim {len(emb.dense)} != expected {expected_dim} "
+                        f"for chunk {doc.chunk_id} ({doc.metadata.get('file_path')}). "
+                        f"Embedder/collection mismatch — re-index with --full."
+                    )
                 # Qdrant local mode requires valid UUIDs
                 raw_id = doc.chunk_id or str(uuid.uuid4())
                 try:

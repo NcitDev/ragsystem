@@ -280,38 +280,47 @@ def check_rate_bucket(token: str, capacity: int = 600, refill_per_sec: float = 2
         _ensure_table(_RATE_TABLE_SQL)
         conn = _get_conn()
         now = time.time()
-        row = conn.execute(
-            "SELECT tokens_remaining, refill_at FROM rate_buckets WHERE token = ?",
-            (token,),
-        ).fetchone()
-        if row is None:
-            # Fresh bucket — allow and store with one token consumed.
+        # Acquire the write lock up front so the SELECT..UPDATE read-modify-write
+        # is atomic. Without this, two concurrent requests for the same token
+        # can both read the same ``remaining`` and each consume a token,
+        # over-spending the bucket.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT tokens_remaining, refill_at FROM rate_buckets WHERE token = ?",
+                (token,),
+            ).fetchone()
+            if row is None:
+                # Fresh bucket — allow and store with one token consumed.
+                conn.execute(
+                    "INSERT INTO rate_buckets (token, tokens_remaining, refill_at) VALUES (?, ?, ?)",
+                    (token, capacity - 1, now),
+                )
+                conn.commit()
+                return True
+
+            remaining, refill_at = row
+            elapsed = max(0.0, now - refill_at)
+            refilled = remaining + int(elapsed * refill_per_sec)
+            if refilled > capacity:
+                refilled = capacity
+            if refilled <= 0:
+                # Still empty — update timestamp so refill keeps accruing.
+                conn.execute(
+                    "UPDATE rate_buckets SET tokens_remaining = ?, refill_at = ? WHERE token = ?",
+                    (0, now, token),
+                )
+                conn.commit()
+                return False
             conn.execute(
-                "INSERT INTO rate_buckets (token, tokens_remaining, refill_at) VALUES (?, ?, ?)",
-                (token, capacity - 1, now),
+                "UPDATE rate_buckets SET tokens_remaining = ?, refill_at = ? WHERE token = ?",
+                (refilled - 1, now, token),
             )
             conn.commit()
             return True
-
-        remaining, refill_at = row
-        elapsed = max(0.0, now - refill_at)
-        refilled = remaining + int(elapsed * refill_per_sec)
-        if refilled > capacity:
-            refilled = capacity
-        if refilled <= 0:
-            # Still empty — update timestamp so refill keeps accruing.
-            conn.execute(
-                "UPDATE rate_buckets SET tokens_remaining = ?, refill_at = ? WHERE token = ?",
-                (0, now, token),
-            )
-            conn.commit()
-            return False
-        conn.execute(
-            "UPDATE rate_buckets SET tokens_remaining = ?, refill_at = ? WHERE token = ?",
-            (refilled - 1, now, token),
-        )
-        conn.commit()
-        return True
+        except Exception:
+            conn.rollback()
+            raise
     except sqlite3.Error:
         # Fail open on storage trouble.
         return True

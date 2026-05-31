@@ -7,47 +7,60 @@ name = "rag"
 version = "0.1.0"
 description = "Standalone RAG system with TUI dashboard for code search"
 requires-python = ">=3.11"
+# Version policy: lower bound = the tested-good version (currently installed),
+# upper bound = the next major (next minor for the volatile tree-sitter
+# grammars, whose C bindings break across minors). This keeps `pip install`
+# reproducible enough for production while still taking security patches.
+# Run `uv lock` (or pip-compile) to materialize an exact lockfile for deploys.
 dependencies = [
     # TUI + CLI
-    "textual>=1.0.0",
-    "typer>=0.15.0",
-    "rich>=13.9.0",
+    "textual>=8.2.0,<9",
+    "typer>=0.26.0,<1",
+    "rich>=15.0.0,<16",
     # API server
-    "fastapi>=0.115.0",
-    "uvicorn>=0.32.0",
+    "fastapi>=0.136.0,<1",
+    "uvicorn>=0.48.0,<1",
     # Data validation + config
-    "pydantic>=2.10.0",
-    "pydantic-settings>=2.6.0",
+    "pydantic>=2.13.0,<3",
+    "pydantic-settings>=2.14.0,<3",
     # Vector store
-    "qdrant-client>=1.13.0",
+    "qdrant-client>=1.18.0,<2",
     # Dense embeddings via Ollama (FastEmbed was nuked)
-    "httpx>=0.27.0",
-    # Code parsing
-    "tree-sitter>=0.24.0",
-    "tree-sitter-python>=0.23.0",
-    "tree-sitter-javascript>=0.23.0",
-    "tree-sitter-typescript>=0.23.0",
-    "tree-sitter-go>=0.23.0",
-    "tree-sitter-rust>=0.23.0",
-    "tree-sitter-java>=0.23.0",
-    "tree-sitter-kotlin>=0.1.0",
-    "tree-sitter-c>=0.23.0",
-    "tree-sitter-cpp>=0.23.0",
+    "httpx>=0.28.0,<1",
+    # Code parsing. tree-sitter grammars are C extensions whose ABI shifts
+    # across minor releases — pin to the next minor, not the next major.
+    "tree-sitter>=0.25.0,<0.26",
+    "tree-sitter-python>=0.25.0,<0.26",
+    "tree-sitter-javascript>=0.25.0,<0.26",
+    "tree-sitter-typescript>=0.23.0,<0.24",
+    "tree-sitter-go>=0.25.0,<0.26",
+    "tree-sitter-rust>=0.24.0,<0.25",
+    "tree-sitter-java>=0.23.0,<0.24",
+    "tree-sitter-kotlin>=1.1.0,<2",
+    "tree-sitter-c>=0.24.0,<0.25",
+    "tree-sitter-cpp>=0.23.0,<0.24",
     # Dart has no standalone PyPI wheel — pulled in via the community
     # tree-sitter-language-pack (also a fallback for any other languages).
-    "tree-sitter-language-pack>=0.7.0",
+    "tree-sitter-language-pack>=1.8.0,<2",
     # Agent framework
-    "agno>=1.0.0",
-    "ollama>=0.4.0",
-    "openai>=1.0.0",
+    "agno>=2.6.0,<3",
+    "ollama>=0.6.0,<1",
+    "openai>=2.38.0,<3",
     # Storage
-    "aiosqlite>=0.20.0",
+    "aiosqlite>=0.22.0,<1",
     # Logging
-    "structlog>=24.0.0",
+    "structlog>=25.0.0,<26",
     # Plugin config parsing
-    "pyyaml>=6.0",
+    "pyyaml>=6.0,<7",
     # Code knowledge graph
-    "networkx>=3.0",
+    "networkx>=3.0,<4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-asyncio>=0.24,<1",
+    "ruff>=0.8,<1",
 ]
 
 [project.scripts]

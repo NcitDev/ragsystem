@@ -67,6 +67,19 @@ class Chunk:
         elif self.language in ("kotlin", "java") and self.content:
             self.metadata.update(_detect_kotlin_java_coroutines(self.content, self.language))
 
+    def to_index_metadata(self) -> dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "language": self.language,
+            "chunk_type": self.chunk_type.value,
+            "name": self.name,
+            "parent_name": self.parent_name,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "content_hash": self.content_hash,
+            **self.metadata,
+        }
+
 
 _KOTLIN_COROUTINE_BUILDERS = (
     "launch", "async", "withContext", "runBlocking",
@@ -172,19 +185,6 @@ def _detect_kotlin_java_coroutines(content: str, language: str) -> dict[str, str
             meta["has_unit_test"] = "true"
 
     return meta
-
-    def to_index_metadata(self) -> dict[str, Any]:
-        return {
-            "file_path": self.file_path,
-            "language": self.language,
-            "chunk_type": self.chunk_type.value,
-            "name": self.name,
-            "parent_name": self.parent_name,
-            "start_line": self.start_line,
-            "end_line": self.end_line,
-            "content_hash": self.content_hash,
-            **self.metadata,
-        }
 
 
 LANGUAGE_CONFIG: dict[str, dict[str, Any]] = {

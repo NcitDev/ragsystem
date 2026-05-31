@@ -21,6 +21,18 @@ def test_server_port_validation():
     assert s.port == 8080
 
 
+def test_server_host_rejects_wildcard_bind():
+    import pytest
+
+    # Wildcard binds expose the tokenless-over-the-wire daemon publicly.
+    for bad in ("0.0.0.0", "::", "[::]"):
+        with pytest.raises(Exception):
+            ServerSettings(host=bad)
+    # Loopback + a real LAN IP (explicit choice) are allowed.
+    assert ServerSettings(host="127.0.0.1").host == "127.0.0.1"
+    assert ServerSettings(host="192.168.1.10").host == "192.168.1.10"
+
+
 def test_embedding_provider_validation():
     import pytest
 

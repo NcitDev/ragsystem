@@ -30,6 +30,19 @@ class ServerSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=7890, ge=1, le=65535)
 
+    @field_validator("host")
+    @classmethod
+    def reject_wildcard_bind(cls, v: str) -> str:
+        # The daemon has no TLS and a single bearer token; binding to all
+        # interfaces exposes it (and the token, in plaintext over the wire) to
+        # the whole network. Force loopback; expose via a reverse proxy instead.
+        if v.strip() in ("0.0.0.0", "::", "[::]"):
+            raise ValueError(
+                f"server.host={v!r} binds all interfaces and exposes the daemon "
+                "publicly. Use 127.0.0.1 and put a TLS reverse proxy in front."
+            )
+        return v
+
 
 class EmbeddingSettings(BaseModel):
     model: str = "Qwen/Qwen3-Embedding-4B"

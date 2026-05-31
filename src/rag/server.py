@@ -167,6 +167,11 @@ class StatusResponse(BaseModel):
     reranker_enabled: bool = False
     collections: list[dict[str, Any]]
     uptime_seconds: float
+    files_indexed: int = 0
+    embedder_warm_ms: float | None = None
+    restart_count: int = 0
+    gen_model: str = ""
+    gen_ctx_size: int | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -263,6 +268,37 @@ async def lifespan(app: FastAPI):
         _state["events"] = []  # bounded ring of recent log events
         _state["recent_indexed_files"] = []  # bounded ring
 
+        # Persistent restart counter — incremented every cold start.
+        try:
+            from rag.config import RAG_HOME
+            rc_path = RAG_HOME / "restart_count"
+            current = 0
+            if rc_path.exists():
+                try:
+                    current = int(rc_path.read_text().strip() or "0")
+                except Exception:
+                    current = 0
+            current += 1
+            rc_path.write_text(str(current))
+            _state["restart_count"] = current
+        except Exception as _e:
+            logger.debug("restart_count_persist_failed", error=str(_e))
+            _state["restart_count"] = 0
+
+        # Periodic embedder warm probe — first call pays cold cost; subsequent
+        # calls measure the steady-state hot latency that drives the KPI caption.
+        async def _warm_probe_loop():
+            await asyncio.sleep(2.0)  # let lifespan finish
+            while True:
+                try:
+                    t0 = time.time()
+                    await embedder.embed_query("warmup")
+                    _state["embedder_warm_ms"] = (time.time() - t0) * 1000.0
+                except Exception as _e:
+                    logger.debug("warm_probe_failed", error=str(_e))
+                await asyncio.sleep(60.0)
+        asyncio.create_task(_warm_probe_loop())
+
         # Initialize SQLite tables (query_log, index_runs, overview_stats, rate_buckets).
         try:
             from rag.storage import db as _db
@@ -297,10 +333,24 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def global_error_handler(request: Request, exc: Exception):
-        logger.error("unhandled_error", path=request.url.path, error=str(exc), exc_type=type(exc).__name__)
+        # Log the full exception server-side (with traceback) but never echo the
+        # raw message to the client — it can carry paths, config, or internals.
+        logger.error(
+            "unhandled_error",
+            path=request.url.path,
+            method=request.method,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+            exc_info=True,
+        )
         return JSONResponse(
             status_code=500,
-            content={"error": "Internal server error", "code": "INTERNAL_ERROR", "detail": str(exc)},
+            content={
+                "error": "Internal server error",
+                "code": "INTERNAL_ERROR",
+                # Only the exception class name leaks — enough to triage, no PII.
+                "detail": type(exc).__name__,
+            },
         )
 
     @app.exception_handler(HTTPException)
@@ -402,11 +452,16 @@ def create_app() -> FastAPI:
         rr = get_reranker()
         components["reranker"] = "enabled" if rr and rr.enabled else "disabled"
 
-        # Ollama
+        # Ollama — reuse the shared embedder's underlying client instead of
+        # constructing a fresh OllamaEmbedder on every /health hit (which is
+        # public + unauthenticated and would otherwise be a cheap amplification
+        # vector). Fall back to a transient instance only if not initialized.
         try:
-            from rag.core.embedder import OllamaEmbedder
-            ollama = OllamaEmbedder()
-            components["ollama"] = "ok" if await ollama.health_check() else "unavailable"
+            dense = getattr(embedder, "_dense", None) if embedder else None
+            if dense is None:
+                from rag.core.embedder import OllamaEmbedder
+                dense = OllamaEmbedder()
+            components["ollama"] = "ok" if await dense.health_check() else "unavailable"
         except Exception:
             components["ollama"] = "unavailable"
 
@@ -425,6 +480,23 @@ def create_app() -> FastAPI:
             code_info = await vectorstore.collection_info(settings.qdrant.code_collection)
             docs_info = await vectorstore.collection_info(settings.qdrant.docs_collection)
 
+            # files_indexed = sum of file_hashes counts across every repo's state.json
+            files_indexed = 0
+            try:
+                from rag.config import RAG_HOME
+                import json as _json
+                for sp in (RAG_HOME / "repos").glob("*/state.json"):
+                    try:
+                        data = _json.loads(sp.read_text())
+                        files_indexed += len(data.get("file_hashes", {}) or {})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            gen_model = settings.llm.gen_model or settings.llm.agent_model or ""
+            gen_ctx = getattr(settings.llm, "ctx_size", None) or getattr(settings.llm, "num_ctx", None)
+
             return StatusResponse(
                 status="running",
                 embedder_provider=embedder.provider,
@@ -433,10 +505,15 @@ def create_app() -> FastAPI:
                 reranker_enabled=settings.reranker.enabled,
                 collections=[code_info, docs_info],
                 uptime_seconds=time.time() - _state.get("start_time", time.time()),
+                files_indexed=files_indexed,
+                embedder_warm_ms=_state.get("embedder_warm_ms"),
+                restart_count=_state.get("restart_count", 0),
+                gen_model=gen_model,
+                gen_ctx_size=gen_ctx,
             )
         except Exception as e:
             logger.error("status_error", error=str(e))
-            raise HTTPException(status_code=500, detail=f"Status check failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Status check failed ({type(e).__name__})")
 
     # --- Recent queries (for TUI Live Log panel) ---
 
@@ -681,7 +758,81 @@ def create_app() -> FastAPI:
             plan = await plan_search(req.query)
 
             # Route by strategy
-            if plan.strategy == "global":
+            if plan.strategy == "lod_drill":
+                # Hierarchical drill-down: L0 (modules) → L1 (files) → L2 (chunks).
+                # Falls back to flat hybrid if L0/L1 collections empty (e.g.
+                # index pre-dates LOD or RAG_SKIP_SUMMARIES=1 was set).
+                from rag.core.summaries import LOD_L0_COLLECTION, LOD_L1_COLLECTION
+
+                l0_count = await vectorstore.count(LOD_L0_COLLECTION)
+                if l0_count == 0:
+                    # No LOD data — degrade to flat hybrid search.
+                    logger.info("lod_drill_degraded", reason="no_lod_data")
+                    result_map: dict[str, tuple[Any, list[int]]] = {}
+                    for qi, q in enumerate(plan.queries):
+                        merged_filters = {**(plan.filters or {}), **(req.filters or {})}
+                        query_results = await vectorstore.search(
+                            collection=settings.qdrant.code_collection,
+                            query=q,
+                            top_k=req.top_k or plan.top_k,
+                            filters=merged_filters if merged_filters else None,
+                        )
+                        for r in query_results:
+                            if r.point_id in result_map:
+                                result_map[r.point_id][1].append(qi)
+                            else:
+                                result_map[r.point_id] = (r, [qi])
+                    results = [r for r, _ in result_map.values()]
+                    matched_queries_map = {pid: qis for pid, (_, qis) in result_map.items()}
+                else:
+                    # Hop 1: top-3 modules
+                    l0_hits = await vectorstore.search(
+                        collection=LOD_L0_COLLECTION,
+                        query=req.query,
+                        top_k=3,
+                    )
+                    top_modules = [
+                        h.payload.get("module_path") for h in l0_hits
+                        if h.payload.get("module_path")
+                    ]
+
+                    # Hop 2: top-5 files within those modules
+                    l1_hits = []
+                    if top_modules:
+                        l1_hits = await vectorstore.search(
+                            collection=LOD_L1_COLLECTION,
+                            query=req.query,
+                            top_k=5,
+                            filters={"module_path": top_modules},
+                        )
+                    top_files = [
+                        h.payload.get("file_path") for h in l1_hits
+                        if h.payload.get("file_path")
+                    ]
+
+                    # Hop 3: chunks within those files
+                    results = []
+                    if top_files:
+                        merged_filters = {
+                            "file_path": top_files,
+                            **(plan.filters or {}),
+                            **(req.filters or {}),
+                        }
+                        results = await vectorstore.search(
+                            collection=settings.qdrant.code_collection,
+                            query=req.query,
+                            top_k=req.top_k or plan.top_k,
+                            filters=merged_filters,
+                        )
+                    matched_queries_map = {}
+                    logger.info(
+                        "lod_drill_executed",
+                        modules=len(top_modules),
+                        files=len(top_files),
+                        chunks=len(results),
+                    )
+
+            elif plan.strategy == "global":
                 # Search module summaries collection
                 from rag.core.summaries import SUMMARY_COLLECTION
                 results = await vectorstore.search(
@@ -769,7 +920,7 @@ def create_app() -> FastAPI:
                 and results
                 and reranker is not None
                 and reranker.enabled
-                and plan.strategy not in ("naive", "global")
+                and plan.strategy not in ("naive", "global", "lod_drill")
             ):
                 try:
                     results = await reranker.rerank(req.query, results)
@@ -816,7 +967,7 @@ def create_app() -> FastAPI:
             )
         except Exception as e:
             logger.error("search_error", query=req.query, error=str(e))
-            raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Search failed ({type(e).__name__})")
 
     # --- Enumerate (exhaustive metadata-only listing via Qdrant scroll) ---
 
@@ -878,7 +1029,7 @@ def create_app() -> FastAPI:
             )
         except Exception as e:
             logger.error("enumerate_error", error=str(e))
-            raise HTTPException(status_code=500, detail=f"Enumerate failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Enumerate failed ({type(e).__name__})")
 
     # --- Ask (RAG: retrieve + generate) ---
 
@@ -904,7 +1055,7 @@ def create_app() -> FastAPI:
             retrieval_ms = (time.time() - r_start) * 1000
         except Exception as e:
             logger.error("ask_retrieval_error", error=str(e))
-            raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Retrieval failed ({type(e).__name__})")
 
         gen_model = settings.llm.gen_model or settings.llm.agent_model
 
@@ -970,7 +1121,7 @@ def create_app() -> FastAPI:
                 answer = data.get("message", {}).get("content", "").strip()
         except Exception as e:
             logger.error("ask_generation_error", error=str(e))
-            raise HTTPException(status_code=502, detail=f"LLM generation failed: {e}")
+            raise HTTPException(status_code=502, detail=f"LLM generation failed ({type(e).__name__})")
         generation_ms = (time.time() - g_start) * 1000
 
         total = (time.time() - start) * 1000
@@ -1021,7 +1172,7 @@ def create_app() -> FastAPI:
             )
         except Exception as e:
             logger.error("index_error", repo_path=req.repo_path, error=str(e))
-            raise HTTPException(status_code=500, detail=f"Index failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Index failed ({type(e).__name__})")
 
     # --- Overview (P3-18: Codebase aggregation) ---
 
@@ -1096,7 +1247,7 @@ def create_app() -> FastAPI:
             }
         except Exception as e:
             logger.error("overview_error", error=str(e))
-            raise HTTPException(status_code=500, detail=f"Overview failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Overview failed ({type(e).__name__})")
 
     # --- Admin: hot-reload settings ---
 
@@ -1136,6 +1287,14 @@ def create_app() -> FastAPI:
             try:
                 new_embedder = HybridEmbedder()
                 await new_embedder.initialize()
+                # The embedding cache is keyed by content hash only — it has no
+                # idea which model produced a vector. After a model swap every
+                # cached vector is from the OLD model (likely a different dim),
+                # so reusing them would mix incompatible vectors into the index
+                # and break search. Clear it before any new upsert can hit it.
+                from rag.core.cache import EmbeddingCache
+                EmbeddingCache().clear()
+                logger.info("embed_cache_cleared", reason="embedding_model_changed")
                 # Replace embedder reference on the live vectorstore so
                 # subsequent searches use the new model.
                 vs = _state.get("vectorstore")
@@ -1145,7 +1304,7 @@ def create_app() -> FastAPI:
                 embedder_reinit = True
             except Exception as e:
                 logger.error("embedder_reinit_failed", error=str(e))
-                raise HTTPException(status_code=500, detail=f"Embedder reinit failed: {e}")
+                raise HTTPException(status_code=500, detail=f"Embedder reinit failed ({type(e).__name__})")
 
         return ReloadResponse(
             reloaded=True,

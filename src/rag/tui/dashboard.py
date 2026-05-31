@@ -126,6 +126,7 @@ class Sidebar(Static):
     Sidebar {
         dock: left;
         width: 24;
+        height: 100%;
         background: #10161d;
         padding: 1 0;
         border-right: tall #1a1f2a;
@@ -187,26 +188,36 @@ class CmdLine(Container):
     DEFAULT_CSS = """
     CmdLine {
         dock: bottom;
-        height: 1;
-        background: #12161e;
-        border-top: tall #1a1f2a;
+        height: 3;
+        background: #141b23;
+        border-top: solid #1a1f2a;
+        padding: 0 1;
     }
     CmdLine Label {
-        width: 3;
+        width: 2;
         color: #5ee6d0;
         text-style: bold;
-        padding: 0 1;
+        padding: 0;
+        height: 1;
     }
     CmdLine Input {
         border: none;
-        background: #12161e;
+        background: #141b23;
         color: #c8d6e5;
         height: 1;
         padding: 0;
+        width: 1fr;
     }
     CmdLine Input:focus {
         border: none;
-        background: #141b23;
+        background: #1a2330;
+    }
+    CmdLine #cmd-hints {
+        width: 32;
+        padding: 0 1;
+        color: #5a6a7a;
+        height: 1;
+        content-align: right middle;
     }
     """
 
@@ -216,6 +227,10 @@ class CmdLine(Container):
             yield Input(
                 placeholder='try: search payment · ask how does X work · list is_singleton --lang kotlin · goto logs',
                 id="cmd-input",
+            )
+            yield Static(
+                "[#5a6a7a]↵ run   ⌘K palette   ? help[/]",
+                id="cmd-hints",
             )
 
 
@@ -250,88 +265,162 @@ class ScreenBase(Container):
 # ---------- Home ----------
 
 
+class PanelHeader(Static):
+    """Header strip for a Home panel — title left, secondary text right.
+
+    Uses panel2-tone background and a 1px bottom border to match the Pencil
+    mock. Set `.title` and `.meta` via update_title()/update_meta().
+    """
+
+    DEFAULT_CSS = """
+    PanelHeader {
+        height: 1;
+        padding: 0 1;
+        background: #12161e;
+        color: #5a6a7a;
+    }
+    """
+
+    title_text = reactive("")
+    meta_text = reactive("")
+
+    def __init__(self, title: str = "", meta: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self.title_text = title
+        self.meta_text = meta
+
+    def render(self) -> str:
+        # Compose a single-line "title …………… meta" string. Use simple
+        # padding so the meta hugs the right edge inside the panel.
+        # Textual already wraps inside the widget width — we just keep it tight.
+        return (
+            f"[#5a6a7a]┌─[/] [#c8d6e5 b]{self.title_text}[/]"
+            f"     [#5a6a7a]{self.meta_text}[/]"
+        )
+
+    def update_meta(self, meta: str) -> None:
+        self.meta_text = meta
+
+
 class HomeScreen(ScreenBase):
     title = "Home / Dashboard"
 
     DEFAULT_CSS = """
+    HomeScreen { padding: 0 1; }
     HomeScreen .home-kpis {
         height: 5;
+        margin: 1 0 1 0;
     }
     HomeScreen .kpi {
-        border: round $primary 30%;
+        border: round #1a1f2a;
         padding: 0 1;
         width: 1fr;
         height: 5;
         margin: 0 1;
+        background: #10161d;
     }
     HomeScreen .home-mid {
         height: 1fr;
     }
-    HomeScreen .panel {
-        border: round $primary 30%;
-        padding: 0 1;
+    HomeScreen .home-left {
+        width: 1fr;
+        height: 1fr;
         margin: 0 1;
+    }
+    HomeScreen .home-right {
+        width: 32;
+        height: 1fr;
+        margin: 0 1;
+    }
+    HomeScreen .panel {
+        border: round #1a1f2a;
+        background: #10161d;
+        height: 1fr;
+    }
+    HomeScreen .panel-body {
+        padding: 1 1;
         height: 1fr;
     }
     HomeScreen #qpm-spark {
-        height: 8;
-        padding: 0;
-        margin: 0;
-    }
-    HomeScreen #qpm-title {
         height: 1;
-        padding: 0;
+        padding: 0 1;
+    }
+    HomeScreen #qpm-axis {
+        height: 1;
+        padding: 0 1;
+        color: #5a6a7a;
     }
     HomeScreen #qpm-divider {
         height: 1;
+        background: #1a1f2a;
+        margin: 0 1;
     }
     HomeScreen #queries-title {
         height: 1;
-        padding: 0;
+        padding: 0 1;
+        color: #5a6a7a;
     }
     HomeScreen #home-recent-queries {
         height: 1fr;
+        margin: 0 1;
+        background: transparent;
     }
-    HomeScreen #plugins-title { height: 1; }
-    HomeScreen #home-plugins  { height: 6; }
-    HomeScreen #collections-title { height: 1; }
-    HomeScreen #home-collections { height: 1fr; }
+    HomeScreen #home-recent-queries ListItem {
+        height: 1;
+        padding: 0;
+    }
+    HomeScreen .right-stack { height: 1fr; }
+    HomeScreen #plugins-panel { height: 1fr; }
+    HomeScreen #collections-panel { height: 1fr; margin-top: 1; }
+    HomeScreen #home-plugins  { height: 1fr; padding: 0 1; }
+    HomeScreen #home-collections { height: 1fr; padding: 0 1; }
     """
 
     def compose_body(self) -> ComposeResult:
         with Horizontal(classes="home-kpis"):
             yield Static(
-                "[dim]INDEX[/dim]\n[bold cyan]56 427[/bold cyan]\n[dim]chunks · 137 files[/dim]",
+                "[#5a6a7a]INDEX SIZE[/]\n[bold #5ee6d0]—[/]\n[dim]chunks[/dim]",
                 classes="kpi",
                 id="kpi-index",
             )
             yield Static(
-                "[dim]EMBEDDER[/dim]\n[bold cyan]qwen3-emb-4b[/bold cyan]\n[dim]Ollama · 12ms[/dim]",
+                "[#5a6a7a]EMBEDDER[/]\n[bold #5ee6d0]—[/]\n[dim]Ollama[/dim]",
                 classes="kpi",
                 id="kpi-embedder",
             )
             yield Static(
-                "[dim]GENERATOR[/dim]\n[bold magenta]qwen3:8b[/bold magenta]\n[dim]Ollama · streaming[/dim]",
+                "[#5a6a7a]GENERATOR[/]\n[bold #b084eb]—[/]\n[dim]Ollama[/dim]",
                 classes="kpi",
                 id="kpi-gen",
             )
             yield Static(
-                "[dim]UPTIME[/dim]\n[bold]4d 12h[/bold]\n[dim]42 restarts[/dim]",
+                "[#5a6a7a]UPTIME[/]\n[bold #7fd18b]—[/]\n[dim]daemon[/dim]",
                 classes="kpi",
                 id="kpi-uptime",
             )
         with Horizontal(classes="home-mid"):
-            with Vertical(classes="panel"):
-                yield Static("[bold]QPM (last 24h)[/bold]", id="qpm-title")
-                yield Static("[dim]waiting for data...[/dim]", id="qpm-spark")
-                yield Static("", id="qpm-divider")
-                yield Static("[bold]Recent queries[/bold]", id="queries-title")
-                yield ListView(id="home-recent-queries")
-            with Vertical(classes="panel"):
-                yield Static("[bold]Plugins[/bold]", id="plugins-title")
-                yield Static("[dim]loading...[/dim]", id="home-plugins")
-                yield Static("[bold]Collections[/bold]", id="collections-title")
-                yield Static("[dim]loading...[/dim]", id="home-collections")
+            with Vertical(classes="home-left"):
+                with Vertical(classes="panel"):
+                    yield PanelHeader("QPM (24h)", "avg — · peak —", id="qpm-header")
+                    with Vertical(classes="panel-body"):
+                        yield Static(
+                            "[#1f2a35]" + "▁" * 48 + "[/]",
+                            id="qpm-spark",
+                        )
+                        yield Static(
+                            "[#5a6a7a]00:00     06:00     12:00     18:00     now[/]",
+                            id="qpm-axis",
+                        )
+                        yield Static("", id="qpm-divider")
+                        yield Static("[#5a6a7a]RECENT QUERIES[/]", id="queries-title")
+                        yield ListView(id="home-recent-queries")
+            with Vertical(classes="home-right"):
+                with Vertical(classes="panel", id="plugins-panel"):
+                    yield PanelHeader("PLUGINS", "", id="plugins-header")
+                    yield Static("[dim]loading...[/dim]", id="home-plugins")
+                with Vertical(classes="panel", id="collections-panel"):
+                    yield PanelHeader("COLLECTIONS", "", id="collections-header")
+                    yield Static("[dim]loading...[/dim]", id="home-collections")
 
 
 # ---------- Search ----------

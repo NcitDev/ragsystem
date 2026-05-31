@@ -9,6 +9,7 @@ back-compat but is ignored at runtime.
 from __future__ import annotations
 
 import asyncio
+import random
 from dataclasses import dataclass
 from typing import Any  # noqa: F401  (kept for back-compat type hints)
 
@@ -19,6 +20,16 @@ from rag.config import get_settings
 from rag.core.errors import EmbeddingError
 
 logger = structlog.get_logger()
+
+# Per-request HTTP timeout to Ollama. Generous enough for a 64-text batch on
+# CPU, but far below the old 300s so a stuck request fails fast and retries.
+REQUEST_TIMEOUT = 60.0
+# Hard ceiling on total time spent retrying a single sub-batch (across all
+# attempts + backoff). Without this, three sequential request timeouts could
+# block an index/search for ~15 minutes.
+MAX_RETRY_SECONDS = 90.0
+# Cap on a single backoff sleep so exponential growth can't overshoot.
+MAX_BACKOFF = 8.0
 
 # Qwen3-Embedding uses instruction-based prefixes
 DOCUMENT_INSTRUCTION = "Instruct: Retrieve code that is semantically similar\nQuery: "
@@ -78,7 +89,7 @@ class OllamaEmbedder:
         semaphore = asyncio.Semaphore(max_concurrent)
         sub_batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
 
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             async def _run(batch: list[str]) -> list[list[float]]:
                 async with semaphore:
                     return await self._embed_batch_request(client, batch)
@@ -96,6 +107,8 @@ class OllamaEmbedder:
         batch: list[str],
         max_retries: int = 3,
     ) -> list[list[float]]:
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + MAX_RETRY_SECONDS
         for attempt in range(max_retries):
             try:
                 resp = await client.post(
@@ -111,12 +124,23 @@ class OllamaEmbedder:
                     )
                 return embeddings
             except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
-                if attempt < max_retries - 1:
-                    wait = 2 ** attempt
-                    logger.warning("embed_retry", attempt=attempt + 1, wait=wait, error=str(e))
+                remaining = deadline - loop.time()
+                # Exponential backoff with full jitter, capped, and never longer
+                # than the time we have left in the retry budget.
+                wait = min(MAX_BACKOFF, 2 ** attempt)
+                wait = random.uniform(0, wait)
+                if attempt < max_retries - 1 and remaining > wait:
+                    logger.warning(
+                        "embed_retry",
+                        attempt=attempt + 1,
+                        wait=round(wait, 2),
+                        remaining=round(remaining, 1),
+                        error=str(e),
+                    )
                     await asyncio.sleep(wait)
                 else:
-                    raise EmbeddingError(f"Embedding failed after {max_retries} retries: {e}") from e
+                    reason = "retry budget exhausted" if remaining <= wait else f"{max_retries} retries"
+                    raise EmbeddingError(f"Embedding failed after {reason}: {e}") from e
         raise EmbeddingError("Embedding failed: exhausted retries")
 
     async def health_check(self) -> bool:

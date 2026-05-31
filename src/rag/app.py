@@ -175,7 +175,14 @@ class RAGApp(App):
         color: #5a6a7a;
     }
     CmdLine {
-        background: #12161e;
+        background: #141b23;
+    }
+    CmdLine Input {
+        background: #141b23;
+    }
+    CmdLine Input:focus {
+        background: #1a2330;
+        border: none;
     }
     .screen-title {
         color: #5ee6d0;
@@ -367,33 +374,71 @@ class RAGApp(App):
                     cols = status.get("collections", []) or []
                     if cols:
                         sb.repo_name = cols[0].get("name", "?")
-                    # Update Home kpi if mounted
+                    # KPI cards — uppercase dim label, large coloured value, dim caption.
                     try:
                         kpi = self.query_one("#kpi-index", Static)
-                        if cols:
-                            n = cols[0].get("points_count", 0)
-                            kpi.update(f"[dim]INDEX[/dim]\n[bold cyan]{n:,}[/bold cyan]\n[dim]chunks[/dim]")
+                        n_chunks = cols[0].get("points_count", 0) if cols else 0
+                        # files_indexed comes from /status when available
+                        n_files = status.get("files_indexed") or status.get("file_count") or 0
+                        files_line = f"{n_files:,} files" if n_files else "indexed"
+                        kpi.update(
+                            f"[#5a6a7a]INDEX SIZE[/]\n"
+                            f"[bold #5ee6d0]{n_chunks:,}[/]\n"
+                            f"[#5a6a7a]chunks · {files_line}[/]"
+                        )
                     except Exception:
                         pass
                     try:
                         kpi = self.query_one("#kpi-embedder", Static)
+                        emb = (status.get("embedder_model") or "?").split(":")[0]
+                        emb_short = emb.replace("qwen3-embedding", "qwen3-emb")
+                        warm = status.get("embedder_warm_ms")
+                        if isinstance(warm, (int, float)) and warm < 500:
+                            warm_line = f"Ollama · {warm:.0f}ms warm"
+                        else:
+                            warm_line = "Ollama"
                         kpi.update(
-                            f"[dim]EMBEDDER[/dim]\n[bold cyan]{status.get('embedder_model','?')}[/bold cyan]\n[dim]Ollama[/dim]"
+                            f"[#5a6a7a]EMBEDDER[/]\n"
+                            f"[bold #5ee6d0]{emb_short}[/]\n"
+                            f"[#5a6a7a]{warm_line}[/]"
                         )
                     except Exception:
                         pass
                     try:
                         kpi = self.query_one("#kpi-gen", Static)
+                        gen = settings.llm.gen_model or settings.llm.agent_model or "?"
+                        ctx = settings.llm.ctx_size if hasattr(settings.llm, "ctx_size") else None
+                        ctx_line = f"ctx {ctx} · streaming" if ctx else "Ollama · streaming"
                         kpi.update(
-                            f"[dim]GENERATOR[/dim]\n[bold magenta]{settings.llm.gen_model or settings.llm.agent_model}[/bold magenta]\n[dim]Ollama[/dim]"
+                            f"[#5a6a7a]GENERATOR[/]\n"
+                            f"[bold #b084eb]{gen}[/]\n"
+                            f"[#5a6a7a]{ctx_line}[/]"
                         )
                     except Exception:
                         pass
                     try:
                         kpi = self.query_one("#kpi-uptime", Static)
                         up = status.get("uptime_seconds", 0) or 0
+                        days = int(up // 86400)
+                        hours = int((up % 86400) // 3600)
+                        minutes = int((up % 3600) // 60)
+                        if days:
+                            up_str = f"{days}d {hours}h"
+                        elif hours:
+                            up_str = f"{hours}h {minutes}m"
+                        else:
+                            up_str = f"{minutes}m"
+                        restarts = status.get("restart_count", 0) or 0
+                        if restarts == 0:
+                            caption = "no restarts"
+                        elif restarts == 1:
+                            caption = "1 restart"
+                        else:
+                            caption = f"{restarts} restarts"
                         kpi.update(
-                            f"[dim]UPTIME[/dim]\n[bold]{int(up // 3600)}h {int((up % 3600) // 60)}m[/bold]\n[dim]daemon[/dim]"
+                            f"[#5a6a7a]UPTIME[/]\n"
+                            f"[bold #7fd18b]{up_str}[/]\n"
+                            f"[#5a6a7a]{caption}[/]"
                         )
                     except Exception:
                         pass
@@ -420,7 +465,7 @@ class RAGApp(App):
                 # Pull more for sparkline binning; only render new entries to list.
                 data = await self._http_get("/queries/recent?limit=200")
                 rows = (data or {}).get("queries", []) if data else []
-                # Build sparkline: 24 bins over 24h
+                # Build sparkline: 48 bins over 24h (one bar = 30 min)
                 if rows:
                     try:
                         ts_list: list[float] = []
@@ -433,15 +478,19 @@ class RAGApp(App):
                                     ts_list.append(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
                                 except Exception:
                                     pass
-                        spark_bins = _bin_timestamps(ts_list, window_sec=24 * 3600, bin_sec=3600)
+                        spark_bins = _bin_timestamps(ts_list, window_sec=24 * 3600, bin_sec=30 * 60)
                         peak = max(spark_bins) if spark_bins else 0
-                        bars = _bars([float(x) for x in spark_bins], width=48, height=6)
+                        avg = (sum(spark_bins) / len(spark_bins)) if spark_bins else 0
+                        # Single-row tall sparkbar like the mockup.
+                        bar = _sparkline([float(x) for x in spark_bins], width=48)
                         try:
-                            self.query_one("#qpm-spark", Static).update(
-                                f"[#5ee6d0]{bars}[/]\n"
-                                f"[dim]00:00                                       23:59[/dim]   "
-                                f"[dim]peak[/] [bold]{peak}[/bold] [dim]/ hour[/]"
-                            )
+                            self.query_one("#qpm-spark", Static).update(f"[#5ee6d0]{bar}[/]")
+                        except Exception:
+                            pass
+                        try:
+                            from rag.tui.dashboard import PanelHeader
+                            hdr = self.query_one("#qpm-header", PanelHeader)
+                            hdr.update_meta(f"avg {avg:.0f} · peak {peak}")
                         except Exception:
                             pass
                     except Exception as e:
@@ -454,13 +503,16 @@ class RAGApp(App):
                             if key in self._seen_query_ts:
                                 continue
                             self._seen_query_ts.add(key)
-                            ts = str(row.get("timestamp", ""))[11:19]
+                            ts = str(row.get("timestamp", ""))[11:16]
+                            strategy = row.get("strategy") or "hybrid"
+                            score = row.get("score") or row.get("top_score")
+                            score_txt = f"{float(score):.2f}" if isinstance(score, (int, float, str)) and str(score).replace(".","",1).isdigit() else "—"
+                            query_text = str(row.get("query", ""))[:34]
                             await lv.append(
                                 ListItem(
                                     Static(
-                                        f"  [dim]{ts}[/dim]  {row.get('query','')[:60]}"
-                                        f"  [cyan]{row.get('results_count', 0)} hits[/cyan]"
-                                        f"  [dim]{row.get('latency_ms', 0):.0f}ms[/dim]"
+                                        f"[#5a6a7a]{ts}[/]  [#c8d6e5]{query_text:<34}[/]  "
+                                        f"[#b084eb]{strategy:<10}[/] [#5ee6d0]{score_txt}[/]"
                                     )
                                 )
                             )
@@ -495,11 +547,16 @@ class RAGApp(App):
                 if data:
                     cols = data.get("collections", [])
                     lines = []
+                    # 28-col right panel: name left, count right-aligned.
                     for c in cols:
-                        st = c.get("status", "?")
-                        color = "green" if st == "green" else ("yellow" if st == "ok" else "red")
+                        name = c.get("name", "?")
+                        pts = c.get("points_count", 0)
+                        pts_str = f"{pts:,}"
+                        # Pad name so the count hugs the right edge of the 26-col body.
+                        pad_width = max(1, 26 - len(name) - len(pts_str) - 2)
+                        spacer = " " * pad_width
                         lines.append(
-                            f"  [{color}]●[/{color}] {c.get('name','?')}  [dim]{c.get('points_count', 0):,} pts[/dim]"
+                            f"[#7fb6f0]▸[/] [#c8d6e5]{name}[/]{spacer}[#5a6a7a]{pts_str}[/]"
                         )
                     try:
                         self.query_one("#home-collections", Static).update(
@@ -517,11 +574,14 @@ class RAGApp(App):
                 data = await self._http_get("/plugins")
                 if data is not None:
                     plugins = data.get("plugins", [])
-                    lines = [
-                        f"  [cyan]{p.get('name','?')}[/cyan] v{p.get('version','?')}  "
-                        f"[dim]patterns={p.get('patterns', 0)} domains={p.get('domains', 0)}[/dim]"
-                        for p in plugins
-                    ]
+                    lines: list[str] = []
+                    for p in plugins:
+                        name = p.get("name", "?")
+                        enabled = p.get("enabled", True)
+                        if enabled:
+                            lines.append(f"[#7fd18b]●[/] [#c8d6e5]{name}[/]")
+                        else:
+                            lines.append(f"[#5a6a7a]○ {name}[/]")
                     try:
                         self.query_one("#home-plugins", Static).update(
                             "\n".join(lines) or "[dim]no plugins[/dim]"

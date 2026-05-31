@@ -7,6 +7,7 @@ Degrades gracefully to simple vector search if Ollama unavailable.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -87,7 +88,8 @@ class SearchPlan:
 
     queries: list[str] = field(default_factory=list)
     filters: dict[str, Any] = field(default_factory=dict)
-    strategy: str = "hybrid"  # hybrid | filtered | graph_walk | aggregate
+    # lod_drill = default. Other: hybrid | filtered | graph_walk | aggregate | global | naive
+    strategy: str = "lod_drill"
     top_k: int = 20
 
 
@@ -143,7 +145,10 @@ def _get_agent():
             '  - "top_k": number of results (default 20)',
             "",
             "Strategy guide:",
-            '  - "hybrid": default, uses dense + sparse vector search with reranking',
+            '  - "lod_drill": DEFAULT — hierarchical drill-down (module → file → chunk).',
+            '       Best for most queries. Cheaper than flat search; reads ~100-token',
+            '       summaries before fetching full code.',
+            '  - "hybrid": flat vector search across all chunks (no drill-down).',
             '  - "filtered": when user asks for specific patterns/language/complexity',
             '  - "graph_walk": when user asks about call chains or relationships',
             '  - "aggregate": when user asks about codebase-level stats',
@@ -159,6 +164,40 @@ def _get_agent():
     )
     logger.info("agno_agent_initialized", model=settings.llm.agent_model)
     return _agent
+
+
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Best-effort extraction of a single JSON object from an LLM response.
+
+    Tries, in order: (1) the contents of a ```json fenced block, (2) the raw
+    text, (3) the first balanced ``{...}`` span. Returns None if nothing
+    parses — the caller logs and falls back. This replaces a fragile
+    ``split("```")[1]`` that broke on 0 or 2+ fences.
+    """
+    candidates: list[str] = []
+    m = _FENCE_RE.search(text)
+    if m:
+        candidates.append(m.group(1).strip())
+    candidates.append(text.strip())
+    # First balanced object span (greedy from first { to last }).
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            obj = json.loads(cand)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 async def plan_search(query: str) -> SearchPlan:
@@ -178,21 +217,20 @@ async def plan_search(query: str) -> SearchPlan:
         if not content:
             return _fallback_plan(query)
 
-        # Try to extract JSON from response
-        text = content.strip()
-        # Handle markdown code blocks
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-
-        data = json.loads(text)
+        # Robustly extract a JSON object (handles fenced/unfenced/multi-block).
+        data = _extract_json_object(content)
+        if data is None:
+            logger.warning(
+                "agent_plan_unparseable",
+                query=query,
+                response_preview=content[:200],
+            )
+            return _fallback_plan(query)
 
         plan = SearchPlan(
             queries=data.get("queries", [query]),
             filters=_sanitize_filters(data.get("filters", {}) or {}),
-            strategy=data.get("strategy", "hybrid"),
+            strategy=data.get("strategy", "lod_drill"),
             top_k=data.get("top_k", 20),
         )
         return plan
@@ -242,8 +280,8 @@ def _fallback_plan(query: str) -> SearchPlan:
     if any(w in query_lower for w in ["complex", "complicated", "deeply nested"]):
         filters["complexity_cyclomatic"] = 10
 
-    # Strategy detection — now includes naive and global modes
-    strategy = "hybrid"
+    # Strategy detection — lod_drill is the default; specific signals override.
+    strategy = "lod_drill"
     if filters:
         strategy = "filtered"
     if any(w in query_lower for w in ["calls", "uses", "depends", "flow", "chain", "trace"]):

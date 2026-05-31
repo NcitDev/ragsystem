@@ -35,6 +35,13 @@ class FileWatcher:
         self._mtimes: dict[str, float] = {}
         self._task: asyncio.Task[None] | None = None
         self._running = False
+        # Single-flight callback dispatch: changes accumulate into a dirty set
+        # and are drained by at most one in-flight callback. A slow callback
+        # (e.g. a long re-index) never blocks the poll loop, and changes that
+        # arrive while it runs are coalesced into the next drain instead of
+        # spawning a second concurrent callback.
+        self._dirty: set[str] = set()
+        self._dispatch_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -64,13 +71,15 @@ class FileWatcher:
             return
 
         self._running = False
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        for attr in ("_task", "_dispatch_task"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, attr, None)
         logger.info("watcher_stopped", repo=str(self._repo_path))
 
     # ------------------------------------------------------------------
@@ -139,6 +148,36 @@ class FileWatcher:
             sample=changed[:5],
         )
 
-        result = self._on_change(changed)
-        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-            await result
+        # Accumulate into the dirty set and ensure a dispatcher is running.
+        # Never block the poll loop on the callback.
+        self._dirty.update(changed)
+        self._ensure_dispatch()
+
+    def _ensure_dispatch(self) -> None:
+        """Start the single-flight dispatch worker if it isn't already running."""
+        if self._dispatch_task is not None and not self._dispatch_task.done():
+            return
+        self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+
+    async def _dispatch_loop(self) -> None:
+        """Drain the dirty set, one callback at a time, until it's empty.
+
+        Changes that arrive mid-callback are picked up on the next drain, so
+        rapid bursts collapse into a small number of callbacks rather than one
+        per poll tick — and two callbacks never run concurrently.
+        """
+        while self._running and self._dirty:
+            batch = sorted(self._dirty)
+            self._dirty.clear()
+            try:
+                result = self._on_change(batch)
+                if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                    await result
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "watcher_callback_error",
+                    repo=str(self._repo_path),
+                    changed_files=len(batch),
+                )
