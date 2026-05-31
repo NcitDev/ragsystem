@@ -23,7 +23,13 @@ else:
 RAG_HOME = Path.home() / ".rag"
 CONFIG_PATH = RAG_HOME / "config.toml"
 TOKEN_PATH = RAG_HOME / "token"
-DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config" / "default.toml"
+_REPO_DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config" / "default.toml"
+_PACKAGE_DEFAULT_CONFIG = Path(__file__).with_name("default.toml")
+DEFAULT_CONFIG = (
+    _REPO_DEFAULT_CONFIG
+    if _REPO_DEFAULT_CONFIG.exists()
+    else _PACKAGE_DEFAULT_CONFIG
+)
 
 
 class ServerSettings(BaseModel):
@@ -74,7 +80,7 @@ class IndexSettings(BaseModel):
 
 class RerankerSettings(BaseModel):
     model: str = "dengcao/Qwen3-Reranker-4B:Q8_0"
-    enabled: bool = True
+    enabled: bool = False
     top_k: int = Field(default=5, ge=1, le=100)
 
 

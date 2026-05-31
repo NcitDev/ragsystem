@@ -9,18 +9,11 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import structlog
 
 from rag.config import RAG_HOME, get_settings
-from rag.core.chunker import (
-    Chunk,
-    chunk_code,
-    chunk_document,
-    detect_language,
-    supported_extensions,
-)
+from rag.core.chunker import chunk_code, chunk_document, detect_language, supported_extensions
 from rag.core.vectorstore import ChunkDocument, QdrantVectorStore
 
 logger = structlog.get_logger()
@@ -281,7 +274,8 @@ async def _index_repository_locked(
     collection = collection or settings.qdrant.code_collection
     result = IndexResult()
 
-    state = IndexState() if full else IndexState.load(path)
+    previous_state = IndexState.load(path)
+    state = IndexState() if full else previous_state
     if full:
         # Wipe the materialized overview counters — incremental upserts
         # below will rebuild them from scratch.
@@ -350,6 +344,16 @@ async def _index_repository_locked(
     async def _flush_batch(docs: list[ChunkDocument]) -> int:
         if settings.lsp.enabled:
             await _lsp_enrich_batch(docs, str(path), list(detected_langs))
+        # Upsert overwrites matching point IDs but does not remove points for
+        # chunks that disappeared or shifted line ranges. Clear each changed
+        # file first so the collection mirrors the current file contents.
+        file_paths = sorted({
+            doc.metadata.get("file_path", "")
+            for doc in docs
+            if doc.metadata.get("file_path")
+        })
+        for file_path in file_paths:
+            await vectorstore.delete_by_filter(collection, "file_path", file_path)
         count = await vectorstore.upsert(collection, docs, cache=embed_cache)
         _update_overview_stats(docs)
         return count
@@ -406,22 +410,25 @@ async def _index_repository_locked(
         result.chunks_indexed += await pending_upsert
         new_hashes.update(pending_hashes)
     if batch:
-        if settings.lsp.enabled:
-            await _lsp_enrich_batch(batch, str(path), list(detected_langs))
-        result.chunks_indexed += await vectorstore.upsert(collection, batch, cache=embed_cache)
-        _update_overview_stats(batch)
+        result.chunks_indexed += await _flush_batch(batch)
     new_hashes.update(staged_hashes)
 
     # Delete chunks for removed files. Delete the vectors BEFORE dropping the
     # file from new_hashes so a crash between the two leaves the file still
     # tracked (next run retries the delete) rather than orphaning its chunks.
-    indexed_files = set(new_hashes.keys())
+    indexed_files = set(previous_state.file_hashes.keys()) if full else set(new_hashes.keys())
     current_files = {str(f.relative_to(path)) for f in all_files}
     removed = indexed_files - current_files
     for removed_file in removed:
         await vectorstore.delete_by_filter(collection, "file_path", removed_file)
-        del new_hashes[removed_file]
+        new_hashes.pop(removed_file, None)
         result.files_deleted += 1
+
+    # Incremental runs replace changed files in-place. Rebuild materialized
+    # counters after deletes/upserts so /overview does not double-count old
+    # chunks. Full runs already reset at the start and rebuild while upserting.
+    if not full and (processed_files or removed):
+        await _rebuild_overview_stats(vectorstore, collection)
 
     # Build code graph + communities + summaries.
     # Set RAG_SKIP_SUMMARIES=1 to skip the (slow, Ollama-bound) module summary
@@ -467,7 +474,7 @@ async def _build_graph_and_summaries(
         changed_files: relative file paths that changed in this run. Used to
             scope L0/L1 regeneration to only the affected dirs/files.
     """
-    from rag.core.graph import CodeGraph, get_graph
+    from rag.core.graph import get_graph
     from rag.core.summaries import generate_community_summaries, generate_lod_summaries
 
     # Collect all chunk payloads from Qdrant
@@ -530,6 +537,37 @@ def _update_overview_stats(docs: list[ChunkDocument]) -> None:
             _db.incr_overview(lang, list(patterns), cc)
     except Exception as e:  # pragma: no cover - non-critical
         logger.warning("overview_incr_failed", error=str(e))
+
+
+async def _rebuild_overview_stats(vectorstore: QdrantVectorStore, collection: str) -> None:
+    """Recompute materialized overview counters from the current collection."""
+    try:
+        from rag.storage import db as _db
+
+        _db.reset_overview()
+        client = await vectorstore._get_client()
+        offset = None
+        while True:
+            points, offset = await client.scroll(
+                collection_name=collection,
+                limit=200,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            if not points:
+                break
+            for point in points:
+                payload = point.payload or {}
+                _db.incr_overview(
+                    payload.get("language", "unknown"),
+                    list(payload.get("patterns", []) or []),
+                    payload.get("complexity_cyclomatic"),
+                )
+            if offset is None:
+                break
+    except Exception as e:  # pragma: no cover - non-critical
+        logger.warning("overview_rebuild_failed", error=str(e))
 
 
 async def _lsp_enrich_batch(batch: list[ChunkDocument], repo_path: str, languages: list[str]) -> None:

@@ -47,7 +47,7 @@ rag service install
 | `rag repos` | List registered repositories. |
 | `rag export OUTPUT [--collection C]` | Export indexed data to JSONL. |
 | `rag import INPUT [--collection C]` | Import data from JSONL. |
-| `rag install_claude` | Install the `/rag` Claude Code slash command. |
+| `rag install-claude` | Install the `/rag` Claude Code slash command. |
 | `rag plugins` | List installed YAML plugin manifests. |
 | `rag collections list\|delete [name]` | Manage Qdrant collections. |
 | `rag config` | Open the config file in `$EDITOR`. |

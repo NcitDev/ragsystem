@@ -197,7 +197,7 @@ def _parse_unified_diff(diff_text: str) -> list[DiffChunk]:
     return chunks
 
 
-def search_in_diff(
+async def search_in_diff(
     repo_path: str,
     since: str,
     query: str,
@@ -215,10 +215,7 @@ def search_in_diff(
     query:
         Natural-language or keyword search query.
     vectorstore:
-        An object exposing an async ``search`` **or** a sync ``search`` method
-        that accepts ``query``, ``top_k``, and an optional ``filter_paths``
-        keyword argument.  The exact contract depends on the store
-        implementation (see :pymod:`rag.core.vectorstore`).
+        A :class:`rag.core.vectorstore.QdrantVectorStore`-compatible object.
     top_k:
         Maximum number of results to return.
 
@@ -237,25 +234,18 @@ def search_in_diff(
         top_k=top_k,
     )
 
-    # Ask the vectorstore for more results than needed so we have headroom
-    # after filtering.
-    fetch_k = top_k * 3
+    from rag.config import get_settings
 
-    results = vectorstore.search(query=query, top_k=fetch_k)
+    settings = get_settings()
+    results = await vectorstore.search(
+        collection=settings.qdrant.code_collection,
+        query=query,
+        top_k=top_k,
+        filters={"file_path": changed_files},
+    )
 
-    # Filter to only files that appear in the diff.
-    changed_set = set(changed_files)
-    filtered: list[Any] = []
-    for result in results:
-        # Support dict-like results and objects with a file_path / metadata attr.
-        file_path = _extract_file_path(result)
-        if file_path is not None and file_path in changed_set:
-            filtered.append(result)
-            if len(filtered) >= top_k:
-                break
-
-    logger.info("search_in_diff_results", total=len(results), filtered=len(filtered))
-    return filtered
+    logger.info("search_in_diff_results", total=len(results), filtered=len(results))
+    return results
 
 
 def _extract_file_path(result: Any) -> str | None:

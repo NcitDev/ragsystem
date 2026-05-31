@@ -4,7 +4,6 @@ from rag.core.patterns import (
     detect_patterns_from_name,
     detect_patterns_from_source,
     _cyclomatic_complexity,
-    _cognitive_complexity,
 )
 import ast
 

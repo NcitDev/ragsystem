@@ -71,6 +71,25 @@ class _CapturingVectorStore:
         return 0
 
 
+class _InMemoryVectorStore:
+    """Fake vector store that behaves like Qdrant for file-level replacement."""
+
+    def __init__(self):
+        self.points: dict[str, dict] = {}
+        self.deleted: list[tuple[str, str]] = []
+
+    async def upsert(self, collection, docs, cache=None):
+        for doc in docs:
+            self.points[doc.chunk_id] = {"content": doc.content, **doc.metadata}
+        return len(docs)
+
+    async def delete_by_filter(self, collection, field, value):
+        self.deleted.append((field, value))
+        for point_id, payload in list(self.points.items()):
+            if payload.get(field) == value:
+                del self.points[point_id]
+
+
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
     """Point RAG_HOME (and thus state.json) at a tmp dir; skip graph/summary."""
@@ -159,3 +178,31 @@ async def test_partial_state_lets_next_run_reprocess(big_repo, isolated_state):
         f"files lost in run 1 were not re-indexed in run 2: "
         f"{sorted(missing_after_run1 - flushed_run2)}"
     )
+
+
+async def test_incremental_reindex_removes_stale_chunks(tmp_path, isolated_state):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "sample.py"
+    source.write_text(
+        "class C:\n"
+        "    def keep(self):\n"
+        "        return 'keep'\n\n"
+        "    def old_method(self):\n"
+        "        return 'old'\n"
+    )
+
+    vs = _InMemoryVectorStore()
+    await index_repository(str(repo), vs, collection="code_chunks", full=True)
+    assert any("old_method" in p["content"] for p in vs.points.values())
+
+    source.write_text(
+        "class C:\n"
+        "    def keep(self):\n"
+        "        return 'keep'\n"
+    )
+
+    await index_repository(str(repo), vs, collection="code_chunks", full=False)
+
+    assert ("file_path", "sample.py") in vs.deleted
+    assert not any("old_method" in p["content"] for p in vs.points.values())

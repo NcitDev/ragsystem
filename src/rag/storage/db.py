@@ -9,7 +9,6 @@ import sqlite3
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 
 from rag.config import RAG_HOME
 

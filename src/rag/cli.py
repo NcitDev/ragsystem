@@ -69,7 +69,7 @@ def init(
 
     # Start daemon in background
     console.print("[green]Starting daemon...[/green]")
-    proc = subprocess.Popen(
+    subprocess.Popen(
         [sys.executable, "-m", "rag", "start", "--headless"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -136,8 +136,11 @@ def start(
             console.print(f"[green]Daemon already running on {_base_url()}[/green]")
         else:
             console.print("[green]Starting daemon in background...[/green]")
+            cmd = [sys.executable, "-m", "rag", "start"]
+            if watch:
+                cmd.append("--watch")
             subprocess.Popen(
-                [sys.executable, "-m", "rag", "start"],
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
@@ -159,6 +162,11 @@ def start(
     # Default + --headless: run the daemon (HTTP server) in this process.
     # This is the supervised entrypoint for launchd/systemd.
     _ = headless  # accepted for back-compat; default behavior is server-only now.
+    if watch:
+        import os
+
+        os.environ["RAG_WATCH_PATH"] = str(Path.cwd().resolve())
+        console.print(f"[green]Watching:[/green] {os.environ['RAG_WATCH_PATH']}")
     import uvicorn
 
     from rag.integration.logging_setup import configure_logging
@@ -215,7 +223,7 @@ def search(
     try:
         resp = httpx.post(
             f"{_base_url()}/search",
-            json={"query": query, "top_k": top_k, "rerank": not no_rerank},
+            json={"query": query, "top_k": top_k, "repo": repo, "rerank": not no_rerank},
             headers=_auth_headers(),
             timeout=60,
         )
@@ -255,7 +263,7 @@ def search(
 def ask(
     question: str = typer.Argument(..., help="Question about the indexed codebase"),
     top_k: int = typer.Option(8, "--top-k", "-k", help="Chunks to retrieve as grounding context"),
-    repo: str = typer.Option(None, "--repo", "-r", help="Restrict to file_path prefix"),
+    repo: str = typer.Option(None, "--repo", "-r", help="Restrict to named repo or file_path"),
 ):
     """Ask a grounded question (retrieves + LLM-generates with citations)."""
     _require_daemon()
@@ -365,10 +373,12 @@ def index(
     abs_path = str(Path(path).resolve())
 
     # Register as named repo if --name provided
+    collection = None
     if name:
         from rag.core.repos import RepoManager
         mgr = RepoManager()
-        mgr.register(name, abs_path)
+        repo_info = mgr.register(name, abs_path)
+        collection = repo_info.collection
         console.print(f"[green]Registered repo '{name}' at {abs_path}[/green]")
 
     console.print(f"[green]Indexing {abs_path}...[/green]")
@@ -376,7 +386,12 @@ def index(
     try:
         resp = httpx.post(
             f"{_base_url()}/index",
-            json={"repo_path": abs_path, "full": full, "languages": languages},
+            json={
+                "repo_path": abs_path,
+                "full": full,
+                "languages": languages,
+                "collection": collection,
+            },
             headers=_auth_headers(),
             timeout=600,
         )
@@ -884,7 +899,6 @@ def repair(
 @app.command()
 def diagnose():
     """Run full system health check."""
-    import asyncio
     import httpx
 
     console.print("\n[bold]RAG System Diagnostics[/bold]\n")

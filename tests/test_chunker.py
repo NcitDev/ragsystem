@@ -7,7 +7,6 @@ from rag.core.chunker import (
     chunk_document,
     detect_language,
     supported_languages,
-    supported_extensions,
 )
 
 

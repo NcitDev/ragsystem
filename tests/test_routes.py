@@ -164,6 +164,16 @@ def test_search_top_k_out_of_range_422(app_ctx):
     assert r.status_code == 422
 
 
+def test_search_unknown_repo_404(app_ctx):
+    client, token = app_ctx
+    r = client.post(
+        "/search",
+        json={"query": "x", "repo": "missing"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 404
+
+
 def test_index_nonexistent_path_422(app_ctx):
     client, token = app_ctx
     r = client.post("/index", json={"repo_path": "/no/such/dir"}, headers=_auth(token))

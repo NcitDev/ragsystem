@@ -24,6 +24,25 @@ from rich.syntax import Syntax
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.theme import Theme
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    ListItem,
+    ListView,
+    ProgressBar,
+    RichLog,
+    Static,
+)
+
+from rag.config import ensure_rag_home, get_or_create_token, get_settings
+from rag.tui.dashboard import (
+    CommandPalette,
+    Dashboard,
+    StatusBar,
+)
+
+logger = structlog.get_logger()
 
 RAG_THEME = Theme(
     name="rag-mono",
@@ -45,28 +64,6 @@ RAG_THEME = Theme(
         "footer-key-background": "#10161D",
     },
 )
-from textual.widgets import (
-    Button,
-    Checkbox,
-    Input,
-    ListItem,
-    ListView,
-    ProgressBar,
-    RadioSet,
-    RichLog,
-    Static,
-)
-
-from rag.config import ensure_rag_home, get_or_create_token, get_settings
-from rag.core.lsp import detect_lsp_servers
-from rag.tui.dashboard import (
-    CommandPalette,
-    Dashboard,
-    Sidebar,
-    StatusBar,
-)
-
-logger = structlog.get_logger()
 
 _DEFAULT_TOP_K = 8
 _SPARK_CHARS = " ▁▂▃▄▅▆▇█"

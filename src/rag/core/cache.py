@@ -9,12 +9,10 @@ Entries expire after a configurable TTL (default 30 days).
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import struct
 import threading
 import time
-from pathlib import Path
 
 import structlog
 

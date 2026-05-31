@@ -24,7 +24,6 @@ identifiers. JetBrains Mono / Geist Mono only.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -36,12 +35,9 @@ from textual.containers import (
 )
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
-    DataTable,
-    Footer,
     Input,
     Label,
     ListItem,
@@ -54,12 +50,6 @@ from textual.widgets import (
 )
 
 # Reuse the existing helper widgets for sub-content; full dashboard frame is new.
-from rag.tui.widgets import (
-    IndexStatsWidget,
-    LSPStatusWidget,
-    ModelCard,
-    QueryLogEntry,
-)
 
 
 # ---------------------------------------------------------------------------

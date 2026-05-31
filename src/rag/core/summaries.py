@@ -27,6 +27,47 @@ LOD_L0_COLLECTION = "lod_l0"
 LOD_L1_COLLECTION = "lod_l1"
 
 
+async def list_summaries(
+    vectorstore: QdrantVectorStore,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return recent summary payloads for the TUI overview screen."""
+    client = await vectorstore._get_client()
+    summaries: list[dict[str, Any]] = []
+    for collection in (SUMMARY_COLLECTION, LOD_L0_COLLECTION, LOD_L1_COLLECTION):
+        if len(summaries) >= limit:
+            break
+        try:
+            points, _ = await client.scroll(
+                collection_name=collection,
+                limit=max(1, limit - len(summaries)),
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as e:
+            logger.debug("summary_list_collection_skipped", collection=collection, error=str(e))
+            continue
+        for point in points:
+            payload = point.payload or {}
+            content = payload.get("content", "")
+            summaries.append(
+                {
+                    "collection": collection,
+                    "id": str(point.id),
+                    "content": content,
+                    "preview": content[:240],
+                    "chunk_type": payload.get("chunk_type", ""),
+                    "module_path": payload.get("module_path", ""),
+                    "file_path": payload.get("file_path", ""),
+                    "member_count": payload.get("member_count"),
+                    "file_count": payload.get("file_count"),
+                }
+            )
+            if len(summaries) >= limit:
+                break
+    return summaries
+
+
 async def generate_community_summaries(
     graph: CodeGraph,
     vectorstore: QdrantVectorStore,

@@ -424,6 +424,10 @@ class QdrantVectorStore:
     async def delete_by_filter(self, collection: str, field: str, value: str) -> None:
         """Delete points matching a filter."""
         client = await self._get_client()
+        collections = await client.get_collections()
+        if collection not in [c.name for c in collections.collections]:
+            logger.debug("delete_filter_collection_missing", collection=collection)
+            return
         await client.delete(
             collection_name=collection,
             points_selector=models.FilterSelector(

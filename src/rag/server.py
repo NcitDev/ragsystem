@@ -31,6 +31,7 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
     top_k: int | None = Field(None, ge=1, le=MAX_TOP_K)
     filters: dict[str, Any] | None = None
+    repo: str | None = None
     # ``rerank`` is kept for back-compat with existing clients but is
     # ignored — the cross-encoder reranker was removed alongside FastEmbed.
     rerank: bool = True
@@ -116,6 +117,7 @@ class IndexRequest(BaseModel):
     repo_path: str = Field(..., min_length=1)
     full: bool = False
     languages: list[str] | None = None
+    collection: str | None = None
 
     @field_validator("repo_path")
     @classmethod
@@ -254,14 +256,9 @@ async def lifespan(app: FastAPI):
         vectorstore = QdrantVectorStore(embedder=embedder)
         await vectorstore._get_client()
 
-        from rag.core.reranker import OllamaReranker
-        reranker = OllamaReranker()
-        # Fire-and-forget warmup — first /search shouldn't pay model-load cost.
-        asyncio.create_task(reranker.warmup())
-
         _state["vectorstore"] = vectorstore
         _state["embedder"] = embedder
-        _state["reranker"] = reranker
+        _state["reranker"] = None
         _state["start_time"] = time.time()
         # In-memory job + event tracking (TUI surfaces these)
         _state["jobs"] = {}  # job_id -> {status, files_processed, chunks_indexed, current_file, ...}
@@ -306,14 +303,51 @@ async def lifespan(app: FastAPI):
         except Exception as _e:
             logger.warning("db_init_failed", error=str(_e))
 
-        logger.info("server_ready", embedder_provider=embedder.provider, reranker=reranker._model)
+        # Optional file watcher used by `rag start --watch`.
+        watch_path = ""
+        try:
+            import os
+
+            watch_path = os.environ.get("RAG_WATCH_PATH", "")
+            if watch_path:
+                from rag.core.indexer import index_repository
+                from rag.core.watcher import FileWatcher
+
+                async def _on_change(changed: list[str]) -> None:
+                    _push_event("watch_reindex_start", path=watch_path, changed=len(changed))
+                    result = await index_repository(
+                        repo_path=watch_path,
+                        vectorstore=vectorstore,
+                        full=False,
+                    )
+                    _push_event(
+                        "watch_reindex_done",
+                        path=watch_path,
+                        files_processed=result.files_processed,
+                        chunks_indexed=result.chunks_indexed,
+                        errors=len(result.errors),
+                    )
+
+                watcher = FileWatcher(watch_path, _on_change)
+                await watcher.start()
+                _state["watcher"] = watcher
+        except Exception as _e:
+            logger.warning("watcher_start_failed", path=watch_path, error=str(_e))
+
+        logger.info("server_ready", embedder_provider=embedder.provider, reranker="removed")
     except Exception as e:
         logger.error("server_init_failed", error=str(e))
         raise
 
     yield
 
-    # Graceful shutdown — close resources
+    # Graceful shutdown — stop background work, then close resources.
+    try:
+        watcher = _state.get("watcher")
+        if watcher:
+            await watcher.stop()
+    except Exception as e:
+        logger.warning("watcher_shutdown_error", error=str(e))
     try:
         vs = _state.get("vectorstore")
         if vs:
@@ -448,9 +482,7 @@ def create_app() -> FastAPI:
         embedder: HybridEmbedder = _state.get("embedder")
         components["embedder"] = embedder.provider if embedder else "not_initialized"
 
-        # Reranker status
-        rr = get_reranker()
-        components["reranker"] = "enabled" if rr and rr.enabled else "disabled"
+        components["reranker"] = "disabled"
 
         # Ollama — reuse the shared embedder's underlying client instead of
         # constructing a fresh OllamaEmbedder on every /health hit (which is
@@ -501,8 +533,8 @@ def create_app() -> FastAPI:
                 status="running",
                 embedder_provider=embedder.provider,
                 embedder_model=settings.embeddings.model,
-                reranker_model=settings.reranker.model,
-                reranker_enabled=settings.reranker.enabled,
+                reranker_model="disabled",
+                reranker_enabled=False,
                 collections=[code_info, docs_info],
                 uptime_seconds=time.time() - _state.get("start_time", time.time()),
                 files_indexed=files_indexed,
@@ -654,16 +686,42 @@ def create_app() -> FastAPI:
         out: dict[str, Any] = {"summaries": [], "communities": [], "top_nodes": []}
         try:
             from rag.core.summaries import list_summaries
-            out["summaries"] = list_summaries(limit=20)
+
+            out["summaries"] = await list_summaries(get_vectorstore(), limit=20)
         except Exception as e:
             logger.debug("overview_summaries_error", error=str(e))
         try:
             from rag.core.graph import get_graph
+
             g = get_graph()
-            if hasattr(g, "communities"):
-                out["communities"] = g.communities(limit=10)
-            if hasattr(g, "top_nodes"):
-                out["top_nodes"] = g.top_nodes(limit=10)
+            communities = sorted(
+                g.communities.values(),
+                key=lambda c: len(c.members),
+                reverse=True,
+            )[:10]
+            out["communities"] = [
+                {
+                    "id": c.id,
+                    "label": c.label,
+                    "member_count": len(c.members),
+                    "files": c.files[:10],
+                }
+                for c in communities
+            ]
+            out["top_nodes"] = [
+                {
+                    "id": node,
+                    "degree": degree,
+                    "file_path": g.graph.nodes[node].get("file_path", ""),
+                    "name": g.graph.nodes[node].get("name", ""),
+                    "chunk_type": g.graph.nodes[node].get("chunk_type", ""),
+                }
+                for node, degree in sorted(
+                    g.graph.degree(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:10]
+            ]
         except Exception as e:
             logger.debug("overview_graph_error", error=str(e))
         return out
@@ -711,6 +769,7 @@ def create_app() -> FastAPI:
                 result = await index_repository(
                     repo_path=req.repo_path,
                     vectorstore=vectorstore,
+                    collection=req.collection,
                     full=req.full,
                     languages=req.languages,
                     on_progress=_progress,
@@ -752,10 +811,23 @@ def create_app() -> FastAPI:
         try:
             settings = get_settings()
             vectorstore = get_vectorstore()
+            code_collection = settings.qdrant.code_collection
+            if req.repo:
+                from rag.core.repos import RepoManager
+
+                repo_info = RepoManager().get(req.repo)
+                if repo_info is None:
+                    raise HTTPException(status_code=404, detail=f"Unknown repo: {req.repo}")
+                code_collection = repo_info.collection
 
             from rag.agents.retrieval import plan_search
 
             plan = await plan_search(req.query)
+            if req.repo and plan.strategy in ("lod_drill", "global", "graph_walk"):
+                # LOD summaries and the graph cache are shared process-wide,
+                # while named repos live in separate Qdrant collections.
+                # Keep repo-scoped searches strictly inside that collection.
+                plan.strategy = "hybrid"
 
             # Route by strategy
             if plan.strategy == "lod_drill":
@@ -772,7 +844,7 @@ def create_app() -> FastAPI:
                     for qi, q in enumerate(plan.queries):
                         merged_filters = {**(plan.filters or {}), **(req.filters or {})}
                         query_results = await vectorstore.search(
-                            collection=settings.qdrant.code_collection,
+                            collection=code_collection,
                             query=q,
                             top_k=req.top_k or plan.top_k,
                             filters=merged_filters if merged_filters else None,
@@ -819,7 +891,7 @@ def create_app() -> FastAPI:
                             **(req.filters or {}),
                         }
                         results = await vectorstore.search(
-                            collection=settings.qdrant.code_collection,
+                            collection=code_collection,
                             query=req.query,
                             top_k=req.top_k or plan.top_k,
                             filters=merged_filters,
@@ -848,7 +920,7 @@ def create_app() -> FastAPI:
                 graph = get_graph()
                 # Find entry point via vector search
                 seed_results = await vectorstore.search(
-                    collection=settings.qdrant.code_collection,
+                    collection=code_collection,
                     query=req.query,
                     top_k=3,
                 )
@@ -873,7 +945,7 @@ def create_app() -> FastAPI:
                 results = []
                 for fp in related_files_ordered[:10]:
                     file_results = await vectorstore.search(
-                        collection=settings.qdrant.code_collection,
+                        collection=code_collection,
                         query=req.query,
                         top_k=5,
                         filters={"file_path": fp},
@@ -896,7 +968,7 @@ def create_app() -> FastAPI:
                 for qi, q in enumerate(plan.queries):
                     merged_filters = {**(plan.filters or {}), **(req.filters or {})}
                     query_results = await vectorstore.search(
-                        collection=settings.qdrant.code_collection,
+                        collection=code_collection,
                         query=q,
                         top_k=req.top_k or plan.top_k,
                         filters=merged_filters if merged_filters else None,
@@ -910,23 +982,9 @@ def create_app() -> FastAPI:
                 results = [r for r, _ in result_map.values()]
                 matched_queries_map = {pid: qis for pid, (_, qis) in result_map.items()}
 
-            # Rerank via Ollama Qwen3-Reranker (yes/no template). Skip for
-            # ``naive`` and ``global`` strategies (per planner contract) and
-            # when the client opts out via ``rerank=False``.
+            # Reranker was removed. Keep the old request field accepted for
+            # back-compat, but scoring below is always dense + metadata boosts.
             did_rerank = False
-            reranker = get_reranker()
-            if (
-                req.rerank
-                and results
-                and reranker is not None
-                and reranker.enabled
-                and plan.strategy not in ("naive", "global", "lod_drill")
-            ):
-                try:
-                    results = await reranker.rerank(req.query, results)
-                    did_rerank = True
-                except Exception as e:
-                    logger.warning("rerank_degraded", error=repr(e))
 
             from rag.core.scoring import score_results
             results = score_results(results, req.query, reranked=did_rerank)
@@ -965,6 +1023,8 @@ def create_app() -> FastAPI:
                 total=len(results),
                 latency_ms=round(latency, 1),
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("search_error", query=req.query, error=str(e))
             raise HTTPException(status_code=500, detail=f"Search failed ({type(e).__name__})")
@@ -1042,15 +1102,25 @@ def create_app() -> FastAPI:
         start = time.time()
         settings = get_settings()
         vectorstore = get_vectorstore()
+        collection = settings.qdrant.code_collection
+        filters = None
+        if req.repo:
+            from rag.core.repos import RepoManager
+
+            repo_info = RepoManager().get(req.repo)
+            if repo_info is not None:
+                collection = repo_info.collection
+            else:
+                filters = {"file_path": req.repo}
 
         # 1. Retrieve — raw vector search, no planner filters.
         try:
             r_start = time.time()
             results = await vectorstore.search(
-                collection=settings.qdrant.code_collection,
+                collection=collection,
                 query=req.question,
                 top_k=req.top_k,
-                filters={"file_path": req.repo} if req.repo else None,
+                filters=filters,
             )
             retrieval_ms = (time.time() - r_start) * 1000
         except Exception as e:
@@ -1160,6 +1230,7 @@ def create_app() -> FastAPI:
             result = await index_repository(
                 repo_path=req.repo_path,
                 vectorstore=vectorstore,
+                collection=req.collection,
                 full=req.full,
                 languages=req.languages,
             )
