@@ -9,6 +9,8 @@ model = "Qwen/Qwen3-Embedding-4B"
 # user-config back-compat.
 provider = "ollama"
 dim = 2560
+batch_size = 64
+keep_alive = "30m"
 
 [reranker]
 model = "dengcao/Qwen3-Reranker-4B:Q8_0"
@@ -17,6 +19,8 @@ enabled = false
 top_k = 5
 
 [qdrant]
+mode = "server"
+url = "http://127.0.0.1:6333"
 path = "~/.rag/qdrant_data"
 code_collection = "code_chunks"
 docs_collection = "doc_chunks"

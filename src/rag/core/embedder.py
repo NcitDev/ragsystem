@@ -74,27 +74,25 @@ class OllamaEmbedder:
     async def _embed_batch(
         self,
         texts: list[str],
-        batch_size: int = 64,
-        max_concurrent: int = 4,
+        batch_size: int | None = None,
     ) -> list[list[float]]:
         """Embed texts using native Ollama batching.
 
         Ollama's /api/embed accepts ``input`` as a list — one HTTP call per
-        sub-batch beats one-per-text by a huge margin. We also run a small
-        number of sub-batches concurrently to overlap CPU/network with GPU.
-        Set ``OLLAMA_NUM_PARALLEL>=2`` on the Ollama side for real benefit.
+        sub-batch beats one-per-text by a huge margin. Sub-batches are sent
+        sequentially so indexing does not saturate a developer MacBook with
+        competing local model requests.
         """
         if not texts:
             return []
-        semaphore = asyncio.Semaphore(max_concurrent)
+        settings = get_settings()
+        batch_size = batch_size or settings.embeddings.batch_size
         sub_batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
 
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            async def _run(batch: list[str]) -> list[list[float]]:
-                async with semaphore:
-                    return await self._embed_batch_request(client, batch)
-
-            results = await asyncio.gather(*[_run(b) for b in sub_batches])
+            results = []
+            for batch in sub_batches:
+                results.append(await self._embed_batch_request(client, batch))
 
         flat: list[list[float]] = []
         for r in results:
@@ -113,7 +111,11 @@ class OllamaEmbedder:
             try:
                 resp = await client.post(
                     f"{self._base_url}/api/embed",
-                    json={"model": self._model, "input": batch},
+                    json={
+                        "model": self._model,
+                        "input": batch,
+                        "keep_alive": get_settings().embeddings.keep_alive,
+                    },
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -122,6 +124,13 @@ class OllamaEmbedder:
                     raise EmbeddingError(
                         f"Ollama returned {len(embeddings)} embeddings for batch of {len(batch)}"
                     )
+                logger.debug(
+                    "embed_batch_complete",
+                    batch_size=len(batch),
+                    total_ms=round(float(data.get("total_duration") or 0) / 1_000_000, 1),
+                    load_ms=round(float(data.get("load_duration") or 0) / 1_000_000, 1),
+                    prompt_eval_count=data.get("prompt_eval_count"),
+                )
                 return embeddings
             except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
                 remaining = deadline - loop.time()

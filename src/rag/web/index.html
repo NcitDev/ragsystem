@@ -518,17 +518,15 @@ async function pollStatus() {
     const s = await api("/status");
     $("st-daemon-dot").style.color = "var(--ok)";
     $("st-daemon").textContent = "daemon";
-    const code = (s.collections || []).find((c) => /code/.test(c.name)) || (s.collections || [])[0] || {};
-    const chunks = (s.collections || []).reduce((a, c) => a + (c.points_count || 0), 0);
+    const liveCollections = (s.collections || []).filter((c) => (c.points_count || 0) > 0);
+    const chunks = liveCollections.reduce((a, c) => a + (c.points_count || 0), 0);
     $("st-chunks").textContent = num(chunks);
     $("st-gen").textContent = s.gen_model || s.embedder_model || "—";
     $("st-warm").textContent = s.embedder_warm_ms != null ? Math.round(s.embedder_warm_ms) + "ms" : "—";
     $("st-up").textContent = fmtUptime(s.uptime_seconds);
 
-    // KPI cards — use the code collection's count when present (even if 0),
-    // falling back to the total only when there is no code collection at all.
-    const indexCount = code.points_count != null ? code.points_count : chunks;
-    $("kpi-index").textContent = num(indexCount);
+    // KPI cards — total live collections so named repo indexes are visible.
+    $("kpi-index").textContent = num(chunks);
     $("kpi-index-sub").textContent = `chunks · ${num(s.files_indexed)} files`;
     $("kpi-embed").textContent = s.embedder_model || "—";
     $("kpi-embed-sub").textContent = `${s.embedder_provider || "ollama"} · ${s.embedder_warm_ms != null ? Math.round(s.embedder_warm_ms) + "ms warm" : "warm"}`;
@@ -547,15 +545,22 @@ async function pollHealthRepo() {
     const c = await api("/collections");
     const repos = $("repos");
     repos.innerHTML = "";
-    // The daemon doesn't expose a project name directly; derive a friendly
-    // label from the indexed collection prefix, defaulting to "indexed".
     const live = (c.collections || []).filter((x) => (x.points_count || 0) > 0);
-    const repoName = live.length ? "indexed" : "empty";
-    $("st-repo").textContent = repoName;
-    const r = document.createElement("div");
-    r.className = "repo-item";
-    r.innerHTML = `<span class="dot" style="color:${live.length ? "var(--accent)" : "var(--muted)"}">●</span><span class="label">${esc(repoName)}</span>`;
-    repos.appendChild(r);
+    const repoNames = live.map((x) => x.repo || x.name);
+    $("st-repo").textContent = repoNames.length ? repoNames.join(", ") : "empty";
+    if (!live.length) {
+      const r = document.createElement("div");
+      r.className = "repo-item";
+      r.innerHTML = `<span class="dot" style="color:var(--muted)">●</span><span class="label">empty</span>`;
+      repos.appendChild(r);
+    } else {
+      live.forEach((x) => {
+        const r = document.createElement("div");
+        r.className = "repo-item";
+        r.innerHTML = `<span class="dot" style="color:var(--accent)">●</span><span class="label">${esc(x.repo || x.name)}</span>`;
+        repos.appendChild(r);
+      });
+    }
     // collections panel
     const col = $("collections");
     col.innerHTML = "";
@@ -563,7 +568,8 @@ async function pollHealthRepo() {
     c.collections.forEach((x) => {
       const el = document.createElement("div");
       el.className = "lrow";
-      el.innerHTML = `<span class="arrow">▸</span><span class="name">${x.name}</span><span class="count">${num(x.points_count || 0)}</span>`;
+      const label = x.repo ? `${x.repo} · ${x.name}` : x.name;
+      el.innerHTML = `<span class="arrow">▸</span><span class="name">${esc(label)}</span><span class="count">${num(x.points_count || 0)}</span>`;
       col.appendChild(el);
     });
   } catch (e) { /* keep last */ }

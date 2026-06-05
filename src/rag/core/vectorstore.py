@@ -1,4 +1,4 @@
-"""Qdrant embedded vector store with dense vector search.
+"""Qdrant vector store with dense vector search.
 
 Sparse BM25 vectors and RRF fusion were removed when FastEmbed was nuked.
 Search is now a single dense ``query_points`` call.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 import structlog
@@ -196,7 +197,7 @@ def _apply_filters(results: list[SearchResult], filters: dict[str, Any]) -> list
 
 
 class QdrantVectorStore:
-    """Qdrant embedded vector store, dense-only.
+    """Qdrant vector store, dense-only.
 
     Sparse + RRF fusion was removed alongside FastEmbed. Search is a
     single dense ``query_points`` call.
@@ -205,7 +206,8 @@ class QdrantVectorStore:
     def __init__(self, embedder: HybridEmbedder | None = None) -> None:
         self._embedder = embedder or HybridEmbedder()
         self._client: AsyncQdrantClient | None = None
-        self._is_embedded = True  # Using path-based local mode
+        self._is_embedded = get_settings().qdrant.mode == "embedded"
+        self._payload_indexed_collections: set[str] = set()
 
     @property
     def embedder(self) -> HybridEmbedder:
@@ -214,10 +216,15 @@ class QdrantVectorStore:
     async def _get_client(self) -> AsyncQdrantClient:
         if self._client is None:
             settings = get_settings()
-            path = settings.qdrant.resolved_path
-            path.mkdir(parents=True, exist_ok=True)
-            self._client = AsyncQdrantClient(path=str(path))
-            logger.info("qdrant_embedded_opened", path=str(path))
+            self._is_embedded = settings.qdrant.mode == "embedded"
+            if self._is_embedded:
+                path = settings.qdrant.resolved_path
+                path.mkdir(parents=True, exist_ok=True)
+                self._client = AsyncQdrantClient(path=str(path))
+                logger.info("qdrant_embedded_opened", path=str(path))
+            else:
+                self._client = AsyncQdrantClient(url=settings.qdrant.url)
+                logger.info("qdrant_server_opened", url=settings.qdrant.url)
         return self._client
 
     async def ensure_collection(self, collection: str) -> None:
@@ -227,6 +234,28 @@ class QdrantVectorStore:
         existing = [c.name for c in collections.collections]
 
         await self._embedder.initialize()
+
+        async def _ensure_payload_indexes() -> None:
+            if self._is_embedded:
+                logger.debug("payload_indexes_skipped", reason="embedded mode")
+                return
+            if collection in self._payload_indexed_collections:
+                return
+            for field_name, field_type in PAYLOAD_INDEXES:
+                try:
+                    await client.create_payload_index(
+                        collection_name=collection,
+                        field_name=field_name,
+                        field_schema=field_type,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "payload_index_create_skipped",
+                        collection=collection,
+                        field=field_name,
+                        error=str(e),
+                    )
+            self._payload_indexed_collections.add(collection)
 
         if collection in existing:
             # Guard against silent corruption: if the embedder's dimension no
@@ -247,6 +276,7 @@ class QdrantVectorStore:
                     f"current embedder produces dim {self._embedder.dim}. The embedding model "
                     f"likely changed — re-index with --full to rebuild the collection."
                 )
+            await _ensure_payload_indexes()
             return
 
         await client.create_collection(
@@ -259,16 +289,7 @@ class QdrantVectorStore:
             },
         )
 
-        # Payload indexes only work in server mode, skip for embedded
-        if not self._is_embedded:
-            for field_name, field_type in PAYLOAD_INDEXES:
-                await client.create_payload_index(
-                    collection_name=collection,
-                    field_name=field_name,
-                    field_schema=field_type,
-                )
-        else:
-            logger.debug("payload_indexes_skipped", reason="embedded mode")
+        await _ensure_payload_indexes()
 
         logger.info("collection_created", collection=collection)
 
@@ -278,13 +299,19 @@ class QdrantVectorStore:
         documents: list[ChunkDocument],
         batch_size: int = 50,
         cache: Any = None,
+        timings_ms: dict[str, float] | None = None,
     ) -> int:
         """Embed and upsert documents into Qdrant.
 
         Args:
             cache: Optional EmbeddingCache to skip re-embedding unchanged chunks.
         """
+        t0 = perf_counter()
         await self.ensure_collection(collection)
+        if timings_ms is not None:
+            timings_ms["ensure_collection_ms"] = timings_ms.get("ensure_collection_ms", 0.0) + (
+                perf_counter() - t0
+            ) * 1000.0
         client = await self._get_client()
 
         total = 0
@@ -296,6 +323,7 @@ class QdrantVectorStore:
             to_embed_indices: list[int] = []
             to_embed_texts: list[str] = []
 
+            t_cache = perf_counter()
             for j, doc in enumerate(batch):
                 cached_emb = None
                 if cache is not None:
@@ -309,23 +337,38 @@ class QdrantVectorStore:
                     embeddings.append(None)
                     to_embed_indices.append(j)
                     to_embed_texts.append(doc.content)
+            if timings_ms is not None:
+                timings_ms["cache_lookup_ms"] = timings_ms.get("cache_lookup_ms", 0.0) + (
+                    perf_counter() - t_cache
+                ) * 1000.0
 
             # Embed only uncached
             if to_embed_texts:
+                t0 = perf_counter()
                 new_embeddings = await self._embedder.embed_documents(to_embed_texts)
+                if timings_ms is not None:
+                    timings_ms["embed_ms"] = timings_ms.get("embed_ms", 0.0) + (
+                        perf_counter() - t0
+                    ) * 1000.0
                 for idx, emb in zip(to_embed_indices, new_embeddings):
                     embeddings[idx] = emb
                     # Store in cache
                     if cache is not None:
                         content_hash = batch[idx].metadata.get("content_hash", "")
                         if content_hash:
+                            t_cache_write = perf_counter()
                             cache.put(content_hash, emb)
+                            if timings_ms is not None:
+                                timings_ms["cache_write_ms"] = timings_ms.get("cache_write_ms", 0.0) + (
+                                    perf_counter() - t_cache_write
+                                ) * 1000.0
 
             if to_embed_texts:
                 logger.debug("embed_cache_stats", total=len(batch), cached=len(batch) - len(to_embed_texts), embedded=len(to_embed_texts))
 
             expected_dim = self._embedder.dim
             points = []
+            t_points = perf_counter()
             for doc, emb in zip(batch, embeddings):
                 # A None here means an embedding slot was never filled (cache
                 # miss not backfilled, or a partial embed failure). Upserting
@@ -361,8 +404,17 @@ class QdrantVectorStore:
                     vector=vectors,
                     payload={"content": doc.content, **doc.metadata},
                 ))
+            if timings_ms is not None:
+                timings_ms["point_build_ms"] = timings_ms.get("point_build_ms", 0.0) + (
+                    perf_counter() - t_points
+                ) * 1000.0
 
+            t0 = perf_counter()
             await client.upsert(collection_name=collection, points=points)
+            if timings_ms is not None:
+                timings_ms["qdrant_upsert_ms"] = timings_ms.get("qdrant_upsert_ms", 0.0) + (
+                    perf_counter() - t0
+                ) * 1000.0
             total += len(points)
             logger.debug("upserted_batch", collection=collection, count=len(points))
 
@@ -441,6 +493,16 @@ class QdrantVectorStore:
                 )
             ),
         )
+
+    async def drop_collection(self, collection: str) -> None:
+        """Delete a collection if it exists."""
+        client = await self._get_client()
+        collections = await client.get_collections()
+        if collection not in [c.name for c in collections.collections]:
+            return
+        await client.delete_collection(collection_name=collection)
+        self._payload_indexed_collections.discard(collection)
+        logger.info("collection_dropped", collection=collection)
 
     async def collection_info(self, collection: str) -> dict[str, Any]:
         """Get collection stats."""

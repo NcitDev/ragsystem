@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 
 import structlog
 
@@ -23,7 +24,7 @@ logger = structlog.get_logger()
 # user repositories.
 STATE_FILE = ".rag_index_state.json"
 
-ProgressCallback = Callable[[str, int, int], None] | None
+ProgressCallback = Callable[[dict[str, object]], None] | None
 
 
 def _state_dir_for(path: Path) -> Path:
@@ -163,6 +164,7 @@ class IndexResult:
     files_skipped: int = 0
     files_deleted: int = 0
     errors: list[str] = field(default_factory=list)
+    timings_ms: dict[str, float] = field(default_factory=dict)
 
 
 def _file_hash(path: Path) -> str:
@@ -274,6 +276,12 @@ async def _index_repository_locked(
     collection = collection or settings.qdrant.code_collection
     result = IndexResult()
 
+    def _add_timing(name: str, started: float) -> None:
+        result.timings_ms[name] = result.timings_ms.get(name, 0.0) + (
+            perf_counter() - started
+        ) * 1000.0
+
+    t_scan = perf_counter()
     previous_state = IndexState.load(path)
     state = IndexState() if full else previous_state
     if full:
@@ -284,6 +292,12 @@ async def _index_repository_locked(
             _db.reset_overview()
         except Exception as e:  # pragma: no cover - non-critical
             logger.warning("overview_reset_failed", error=str(e))
+        try:
+            t_collection_reset = perf_counter()
+            await vectorstore.drop_collection(collection)
+            _add_timing("collection_reset_ms", t_collection_reset)
+        except Exception as e:
+            logger.warning("collection_reset_failed", collection=collection, error=str(e))
     current_commit = _get_head_commit(path)
 
     # Determine extensions to scan
@@ -309,6 +323,7 @@ async def _index_repository_locked(
                 files_to_process.append(f)
     else:
         files_to_process = all_files
+    _add_timing("scan_ms", t_scan)
 
     total_files = len(files_to_process)
     logger.info(
@@ -327,6 +342,24 @@ async def _index_repository_locked(
     batch_size = 64  # aligns with embedder sub-batch for one-HTTP-call-per-flush
     detected_langs: set[str] = set()
     pending_upsert: asyncio.Task | None = None
+    chunks_seen = 0
+    chunks_total_estimate = 0
+    current_file_for_progress = ""
+
+    def _emit_progress(status: str = "running") -> None:
+        if not on_progress:
+            return
+        on_progress(
+            {
+                "status": status,
+                "current_file": current_file_for_progress,
+                "files_processed": result.files_processed,
+                "total_files": total_files,
+                "chunks_seen": chunks_seen,
+                "chunks_total_estimate": chunks_total_estimate,
+                "chunks_indexed": result.chunks_indexed,
+            }
+        )
 
     # Crash-consistency: a file's hash is only promoted into ``new_hashes`` once
     # the batch carrying its chunks has been confirmed upserted to Qdrant. Until
@@ -343,7 +376,9 @@ async def _index_repository_locked(
 
     async def _flush_batch(docs: list[ChunkDocument]) -> int:
         if settings.lsp.enabled:
+            t_lsp = perf_counter()
             await _lsp_enrich_batch(docs, str(path), list(detected_langs))
+            _add_timing("lsp_ms", t_lsp)
         # Upsert overwrites matching point IDs but does not remove points for
         # chunks that disappeared or shifted line ranges. Clear each changed
         # file first so the collection mirrors the current file contents.
@@ -352,10 +387,22 @@ async def _index_repository_locked(
             for doc in docs
             if doc.metadata.get("file_path")
         })
-        for file_path in file_paths:
-            await vectorstore.delete_by_filter(collection, "file_path", file_path)
-        count = await vectorstore.upsert(collection, docs, cache=embed_cache)
+        if not full:
+            t_delete = perf_counter()
+            for file_path in file_paths:
+                await vectorstore.delete_by_filter(collection, "file_path", file_path)
+            _add_timing("delete_old_chunks_ms", t_delete)
+        t_upsert = perf_counter()
+        count = await vectorstore.upsert(
+            collection,
+            docs,
+            cache=embed_cache,
+            timings_ms=result.timings_ms,
+        )
+        _add_timing("flush_total_ms", t_upsert)
+        t_overview_update = perf_counter()
         _update_overview_stats(docs)
+        _add_timing("overview_update_ms", t_overview_update)
         return count
 
     def _process_file(fp: Path, rel: str) -> list[ChunkDocument]:
@@ -377,27 +424,36 @@ async def _index_repository_locked(
         rel_path = str(file_path.relative_to(path))
         try:
             # Run CPU-bound chunking in thread pool to avoid blocking event loop
+            t_chunk = perf_counter()
             docs = await asyncio.to_thread(_process_file, file_path, rel_path)
+            _add_timing("chunk_ms", t_chunk)
             batch.extend(docs)
+            chunks_seen += len(docs)
 
             # Stage this file's hash; it is only promoted to new_hashes once the
             # batch carrying its chunks is confirmed flushed.
             staged_hashes[rel_path] = _file_hash(file_path)
             processed_files.add(rel_path)
             result.files_processed += 1
+            current_file_for_progress = rel_path
+            chunks_total_estimate = (
+                int((chunks_seen / result.files_processed) * total_files)
+                if result.files_processed
+                else 0
+            )
 
             # Pipeline: await previous upsert (committing its hashes), start new one
             if len(batch) >= batch_size:
                 if pending_upsert is not None:
                     result.chunks_indexed += await pending_upsert
                     new_hashes.update(pending_hashes)
+                    _emit_progress()
                 pending_upsert = asyncio.create_task(_flush_batch(list(batch)))
                 pending_hashes = staged_hashes
                 staged_hashes = {}
                 batch = []
 
-            if on_progress:
-                on_progress(rel_path, idx + 1, total_files)
+            _emit_progress()
 
         except Exception as e:
             logger.warning("file_index_error", file=rel_path, error=str(e))
@@ -409,8 +465,10 @@ async def _index_repository_locked(
     if pending_upsert is not None:
         result.chunks_indexed += await pending_upsert
         new_hashes.update(pending_hashes)
+        _emit_progress()
     if batch:
         result.chunks_indexed += await _flush_batch(batch)
+        _emit_progress()
     new_hashes.update(staged_hashes)
 
     # Delete chunks for removed files. Delete the vectors BEFORE dropping the
@@ -419,36 +477,45 @@ async def _index_repository_locked(
     indexed_files = set(previous_state.file_hashes.keys()) if full else set(new_hashes.keys())
     current_files = {str(f.relative_to(path)) for f in all_files}
     removed = indexed_files - current_files
+    t_removed = perf_counter()
     for removed_file in removed:
         await vectorstore.delete_by_filter(collection, "file_path", removed_file)
         new_hashes.pop(removed_file, None)
         result.files_deleted += 1
+    _add_timing("delete_removed_ms", t_removed)
 
     # Incremental runs replace changed files in-place. Rebuild materialized
     # counters after deletes/upserts so /overview does not double-count old
     # chunks. Full runs already reset at the start and rebuild while upserting.
     if not full and (processed_files or removed):
+        t_overview = perf_counter()
         await _rebuild_overview_stats(vectorstore, collection)
+        _add_timing("overview_rebuild_ms", t_overview)
 
-    # Build code graph + communities + summaries.
-    # Set RAG_SKIP_SUMMARIES=1 to skip the (slow, Ollama-bound) module summary
-    # generation step — useful for first-pass indexing or when no fast LLM is
-    # available. Graph + communities still get built unless RAG_SKIP_GRAPH=1.
+    # Build code graph + communities + optional summaries.
+    # No-change incremental runs do not need post-index maintenance. This keeps
+    # "is my repo current?" checks fast and predictable.
     import os
-    if os.environ.get("RAG_SKIP_GRAPH") == "1":
+    if not full and not processed_files and not removed:
+        logger.info("post_index_maintenance_skipped", reason="no_changes")
+    elif os.environ.get("RAG_SKIP_GRAPH") == "1":
         logger.info("graph_build_skipped", reason="RAG_SKIP_GRAPH=1")
     else:
         try:
             # Pass changed-file set so LOD regen scopes to affected dirs/files.
             # On --full runs we pass None to force a full rebuild.
             lod_scope = None if full else processed_files
+            t_graph = perf_counter()
             await _build_graph_and_summaries(vectorstore, collection, lod_scope)
+            _add_timing("graph_summary_ms", t_graph)
         except Exception as e:
             logger.warning("graph_build_error", error=str(e))
 
     # Save state
+    t_save = perf_counter()
     state = IndexState(last_commit=current_commit, file_hashes=new_hashes)
     state.save(path)
+    _add_timing("state_save_ms", t_save)
 
     result.files_skipped = len(all_files) - total_files
 
@@ -506,6 +573,12 @@ async def _build_graph_and_summaries(
 
     # Detect communities
     graph.detect_communities()
+
+    import os
+    if os.environ.get("RAG_ENABLE_SUMMARIES") != "1":
+        logger.info("summaries_skipped", reason="RAG_ENABLE_SUMMARIES not set")
+        graph.save()
+        return
 
     # Generate summaries for each community
     await generate_community_summaries(graph, vectorstore, all_chunks)

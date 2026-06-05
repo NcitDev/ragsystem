@@ -1,0 +1,8 @@
+task_id,rag_recall,grep_recall,rag_first_hit_rank,grep_first_hit_rank,rag_latency_ms,grep_latency_ms,rag_approx_tokens,grep_approx_tokens,token_savings_ratio,rag_passed,grep_passed
+dodo-1-card-payment-presenter,0.333,0.667,3,2,13998.8,304.4,1983,19171,0.897,0,1
+dodo-2-wait-for-paid-order,0.333,1.000,1,1,14731.6,433.1,1957,25570,0.923,0,1
+dodo-3-phone-formatting,0.000,1.000,,1,14473.0,422.4,1056,3043,0.653,0,1
+dodo-4-google-map-checkout-camera,0.000,0.667,,3,1805.5,302.7,3446,6198,0.444,0,0
+dodo-5-pizzeria-cluster-map,0.000,0.750,,1,9931.2,296.8,1,9640,1.000,0,1
+dodo-6-cache-validity,0.000,1.000,,1,3108.1,416.2,1960,4447,0.559,0,1
+dodo-7-coroutine-presentation-base,0.000,0.250,,3,19250.0,147.5,1005,16469,0.939,0,0

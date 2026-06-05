@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from rag.config import get_or_create_token, get_settings, reload_settings
 from rag.core.embedder import HybridEmbedder
+from rag.core.jobs import load_jobs, prune_jobs, save_job
 from rag.core.vectorstore import QdrantVectorStore
 
 logger = structlog.get_logger()
@@ -260,8 +261,9 @@ async def lifespan(app: FastAPI):
         _state["embedder"] = embedder
         _state["reranker"] = None
         _state["start_time"] = time.time()
-        # In-memory job + event tracking (TUI surfaces these)
-        _state["jobs"] = {}  # job_id -> {status, files_processed, chunks_indexed, current_file, ...}
+        # Persistent job + in-memory event tracking (TUI surfaces these)
+        _state["jobs"] = load_jobs()
+        prune_jobs()
         _state["events"] = []  # bounded ring of recent log events
         _state["recent_indexed_files"] = []  # bounded ring
 
@@ -362,6 +364,21 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="RAG System", version="0.1.0", lifespan=lifespan)
+
+    def _persist_job(job_id: str) -> None:
+        job = _state.get("jobs", {}).get(job_id)
+        if job is None:
+            return
+        try:
+            save_job(job_id, job)
+        except Exception as e:
+            logger.warning("job_persist_failed", job_id=job_id, error=str(e))
+
+    def _update_job(job_id: str, **updates: Any) -> dict[str, Any]:
+        job = _state.setdefault("jobs", {}).setdefault(job_id, {})
+        job.update(updates)
+        _persist_job(job_id)
+        return job
 
     # --- Global error handler ---
 
@@ -509,8 +526,44 @@ def create_app() -> FastAPI:
             vectorstore = get_vectorstore()
             embedder: HybridEmbedder = _state["embedder"]
 
-            code_info = await vectorstore.collection_info(settings.qdrant.code_collection)
-            docs_info = await vectorstore.collection_info(settings.qdrant.docs_collection)
+            collections: list[dict[str, Any]] = []
+            for name in (settings.qdrant.code_collection, settings.qdrant.docs_collection):
+                try:
+                    info = await vectorstore.collection_info(name)
+                    collections.append({"name": name, "kind": "default", **info})
+                except Exception:
+                    collections.append(
+                        {"name": name, "kind": "default", "status": "not_found", "points_count": 0}
+                    )
+
+            try:
+                from rag.core.repos import RepoManager
+
+                for repo in RepoManager().list_repos():
+                    try:
+                        info = await vectorstore.collection_info(repo.collection)
+                        collections.append(
+                            {
+                                "name": repo.collection,
+                                "repo": repo.name,
+                                "path": repo.path,
+                                "kind": "repo",
+                                **info,
+                            }
+                        )
+                    except Exception:
+                        collections.append(
+                            {
+                                "name": repo.collection,
+                                "repo": repo.name,
+                                "path": repo.path,
+                                "kind": "repo",
+                                "status": "not_found",
+                                "points_count": 0,
+                            }
+                        )
+            except Exception as e:
+                logger.debug("status_repo_collections_failed", error=str(e))
 
             # files_indexed = sum of file_hashes counts across every repo's state.json
             files_indexed = 0
@@ -535,7 +588,7 @@ def create_app() -> FastAPI:
                 embedder_model=settings.embeddings.model,
                 reranker_model="disabled",
                 reranker_enabled=False,
-                collections=[code_info, docs_info],
+                collections=collections,
                 uptime_seconds=time.time() - _state.get("start_time", time.time()),
                 files_indexed=files_indexed,
                 embedder_warm_ms=_state.get("embedder_warm_ms"),
@@ -608,9 +661,37 @@ def create_app() -> FastAPI:
         for name in (settings.qdrant.code_collection, settings.qdrant.docs_collection):
             try:
                 info = await vectorstore.collection_info(name)
-                results.append({"name": name, **info})
+                results.append({"name": name, "kind": "default", **info})
             except Exception:
-                results.append({"name": name, "status": "not_found", "points_count": 0})
+                results.append({"name": name, "kind": "default", "status": "not_found", "points_count": 0})
+        try:
+            from rag.core.repos import RepoManager
+
+            for repo in RepoManager().list_repos():
+                try:
+                    info = await vectorstore.collection_info(repo.collection)
+                    results.append(
+                        {
+                            "name": repo.collection,
+                            "repo": repo.name,
+                            "path": repo.path,
+                            "kind": "repo",
+                            **info,
+                        }
+                    )
+                except Exception:
+                    results.append(
+                        {
+                            "name": repo.collection,
+                            "repo": repo.name,
+                            "path": repo.path,
+                            "kind": "repo",
+                            "status": "not_found",
+                            "points_count": 0,
+                        }
+                    )
+        except Exception as e:
+            logger.debug("collections_repo_list_failed", error=str(e))
         return {"collections": results}
 
     # --- Plugins (loaded YAML manifests in ~/.rag/plugins/) ---
@@ -739,32 +820,54 @@ def create_app() -> FastAPI:
     async def index_start(req: IndexRequest):
         job_id = secrets.token_urlsafe(8)
         _state["jobs"][job_id] = {
-            "status": "running",
+            "status": "queued",
             "started_at": time.time(),
             "repo_path": req.repo_path,
             "full": req.full,
+            "collection": req.collection,
+            "languages": req.languages,
             "files_processed": 0,
+            "total_files": 0,
             "chunks_indexed": 0,
             "files_skipped": 0,
             "files_deleted": 0,
+            "chunks_seen": 0,
+            "chunks_total_estimate": 0,
+            "timings_ms": {},
             "current_file": "",
             "errors": [],
         }
+        _persist_job(job_id)
 
         async def _run():
             try:
                 from rag.core.indexer import index_repository
 
+                _update_job(job_id, status="scanning")
                 vectorstore = get_vectorstore()
 
-                def _progress(rel_path: str, current: int, total: int) -> None:
+                def _progress(progress: dict[str, Any]) -> None:
                     job = _state["jobs"].get(job_id)
                     if job is None:
                         return
-                    job["current_file"] = rel_path
-                    job["files_processed"] = current
-                    job["total_files"] = total
-                    _push_recent_file(rel_path, 0)
+                    rel_path = str(progress.get("current_file") or "")
+                    current = int(progress.get("files_processed") or 0)
+                    total = int(progress.get("total_files") or 0)
+                    job.update(
+                        {
+                            "status": progress.get("status") or "running",
+                            "current_file": rel_path,
+                            "files_processed": current,
+                            "total_files": total,
+                            "chunks_seen": int(progress.get("chunks_seen") or 0),
+                            "chunks_total_estimate": int(progress.get("chunks_total_estimate") or 0),
+                            "chunks_indexed": int(progress.get("chunks_indexed") or job.get("chunks_indexed") or 0),
+                        }
+                    )
+                    if rel_path:
+                        _push_recent_file(rel_path, 0)
+                    if current == total or current % 10 == 0:
+                        _persist_job(job_id)
 
                 result = await index_repository(
                     repo_path=req.repo_path,
@@ -774,23 +877,47 @@ def create_app() -> FastAPI:
                     languages=req.languages,
                     on_progress=_progress,
                 )
-                job = _state["jobs"][job_id]
-                job["status"] = "completed"
-                job["finished_at"] = time.time()
-                job["files_processed"] = getattr(result, "files_processed", job["files_processed"])
-                job["chunks_indexed"] = getattr(result, "chunks_indexed", 0)
-                job["files_skipped"] = getattr(result, "files_skipped", 0)
-                job["files_deleted"] = getattr(result, "files_deleted", 0)
-                job["errors"] = getattr(result, "errors", [])
+                _update_job(
+                    job_id,
+                    status="completed",
+                    finished_at=time.time(),
+                    files_processed=getattr(result, "files_processed", _state["jobs"][job_id]["files_processed"]),
+                    chunks_indexed=getattr(result, "chunks_indexed", 0),
+                    files_skipped=getattr(result, "files_skipped", 0),
+                    files_deleted=getattr(result, "files_deleted", 0),
+                    errors=getattr(result, "errors", []),
+                    timings_ms={
+                        key: round(value, 1)
+                        for key, value in getattr(result, "timings_ms", {}).items()
+                    },
+                )
+                if req.collection:
+                    try:
+                        from rag.core.repos import RepoManager
+
+                        mgr = RepoManager()
+                        for repo in mgr.list_repos():
+                            if repo.collection == req.collection:
+                                mgr.update_stats(repo.name, result.chunks_indexed)
+                                break
+                    except Exception as e:
+                        logger.warning(
+                            "repo_stats_update_failed",
+                            collection=req.collection,
+                            chunks_indexed=result.chunks_indexed,
+                            error=str(e),
+                        )
             except Exception as e:
-                job = _state["jobs"].get(job_id, {})
-                job["status"] = "failed"
-                job["error"] = str(e)
-                job["finished_at"] = time.time()
+                _update_job(
+                    job_id,
+                    status="failed",
+                    error=str(e),
+                    finished_at=time.time(),
+                )
                 logger.error("index_job_failed", job_id=job_id, error=str(e))
 
-        asyncio.create_task(_run())
-        return {"job_id": job_id, "status": "running"}
+        asyncio.get_running_loop().call_later(0.1, lambda: asyncio.create_task(_run()))
+        return {"job_id": job_id, "status": "queued"}
 
     @app.get("/index/progress/{job_id}", dependencies=[Depends(require_auth)])
     async def index_progress(job_id: str):
@@ -1234,6 +1361,22 @@ def create_app() -> FastAPI:
                 full=req.full,
                 languages=req.languages,
             )
+            if req.collection:
+                try:
+                    from rag.core.repos import RepoManager
+
+                    mgr = RepoManager()
+                    for repo in mgr.list_repos():
+                        if repo.collection == req.collection:
+                            mgr.update_stats(repo.name, result.chunks_indexed)
+                            break
+                except Exception as e:
+                    logger.warning(
+                        "repo_stats_update_failed",
+                        collection=req.collection,
+                        chunks_indexed=result.chunks_indexed,
+                        error=str(e),
+                    )
             return IndexResponse(
                 files_processed=result.files_processed,
                 chunks_indexed=result.chunks_indexed,

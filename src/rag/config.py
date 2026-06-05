@@ -57,12 +57,23 @@ class EmbeddingSettings(BaseModel):
     # provider="auto"|"ollama"|"fastembed") still parse without error.
     provider: str = Field(default="ollama", pattern=r"^(auto|ollama|fastembed)$")
     dim: int = Field(default=2560, ge=32, le=8192)
+    batch_size: int = Field(default=64, ge=1, le=512)
+    keep_alive: str = "30m"
 
 
 class QdrantSettings(BaseModel):
+    mode: str = Field(default="server", pattern=r"^(server|embedded)$")
+    url: str = "http://127.0.0.1:6333"
     path: str = "~/.rag/qdrant_data"
     code_collection: str = "code_chunks"
     docs_collection: str = "doc_chunks"
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("qdrant.url must start with http:// or https://")
+        return v.rstrip("/")
 
     @property
     def resolved_path(self) -> Path:

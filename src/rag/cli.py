@@ -6,6 +6,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from rag.config import CONFIG_PATH, ensure_rag_home, get_or_create_token, get_settings
@@ -16,6 +17,8 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+QDRANT_COMPOSE_FILE = PROJECT_ROOT / "compose.qdrant.yml"
 
 
 def _base_url() -> str:
@@ -190,6 +193,148 @@ def start(
         log_config=None,
         log_level="info",
     )
+
+
+@app.command("qdrant-up")
+def qdrant_up():
+    """Start local Qdrant server via Docker Compose."""
+    import subprocess
+
+    ensure_rag_home()
+    cmd = ["docker", "compose", "-f", str(QDRANT_COMPOSE_FILE), "up", "-d"]
+    try:
+        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
+    except FileNotFoundError:
+        console.print("[red]Docker is not installed or not on PATH.[/red]")
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to start Qdrant: {e}[/red]")
+        raise typer.Exit(e.returncode)
+    console.print("[green]Qdrant server running at http://127.0.0.1:6333[/green]")
+    console.print("[dim]Storage: ~/.rag/qdrant_server[/dim]")
+
+
+@app.command("qdrant-down")
+def qdrant_down():
+    """Stop local Qdrant server started by qdrant-up."""
+    import subprocess
+
+    cmd = ["docker", "compose", "-f", str(QDRANT_COMPOSE_FILE), "down"]
+    try:
+        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
+    except FileNotFoundError:
+        console.print("[red]Docker is not installed or not on PATH.[/red]")
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to stop Qdrant: {e}[/red]")
+        raise typer.Exit(e.returncode)
+    console.print("[green]Qdrant server stopped.[/green]")
+
+
+@app.command("qdrant-status")
+def qdrant_status():
+    """Show configured Qdrant backend and server health."""
+    import httpx
+
+    settings = get_settings()
+    console.print(f"Mode: [cyan]{settings.qdrant.mode}[/cyan]")
+    if settings.qdrant.mode == "server":
+        console.print(f"URL:  [cyan]{settings.qdrant.url}[/cyan]")
+        try:
+            resp = httpx.get(f"{settings.qdrant.url}/healthz", timeout=3)
+            ok = resp.status_code == 200
+            color = "green" if ok else "red"
+            console.print(f"Health: [{color}]{resp.status_code}[/{color}]")
+        except Exception as e:
+            console.print(f"Health: [red]unreachable[/red] ({e})")
+    else:
+        console.print(f"Path: [cyan]{settings.qdrant.resolved_path}[/cyan]")
+
+
+@app.command("benchmark-embeddings")
+def benchmark_embeddings(
+    path: str | None = typer.Argument(None, help="Optional repo path to sample real files"),
+    batch_sizes: str = typer.Option("64,128,256", "--batch-sizes", help="Comma-separated batch sizes"),
+    samples: int = typer.Option(256, "--samples", help="Number of texts to embed per batch size"),
+    chars: int = typer.Option(1600, "--chars", help="Max characters per sampled text"),
+):
+    """Benchmark sequential Ollama embedding throughput for batch-size tuning."""
+    import asyncio
+    from time import perf_counter
+
+    from rag.core.chunker import supported_extensions
+    from rag.core.embedder import DOCUMENT_INSTRUCTION, OllamaEmbedder
+
+    settings = get_settings()
+
+    def _parse_sizes() -> list[int]:
+        parsed = []
+        for part in batch_sizes.split(","):
+            value = part.strip()
+            if not value:
+                continue
+            parsed.append(int(value))
+        return parsed
+
+    def _sample_texts() -> list[str]:
+        texts: list[str] = []
+        if path:
+            root = Path(path).resolve()
+            skip_dirs = set(settings.index.skip_dirs)
+            exts = set(supported_extensions())
+            for fp in root.rglob("*"):
+                if len(texts) >= samples:
+                    break
+                if not fp.is_file() or fp.suffix not in exts:
+                    continue
+                if any(part in skip_dirs for part in fp.parts):
+                    continue
+                try:
+                    content = fp.read_text(encoding="utf-8", errors="replace").strip()
+                except Exception:
+                    continue
+                if content:
+                    texts.append(content[:chars])
+        if texts:
+            return texts[:samples]
+        template = (
+            "class OrderService {\n"
+            "  suspend fun loadOrder(id: String): Order {\n"
+            "    return repository.fetchOrder(id)\n"
+            "  }\n"
+            "}\n"
+        )
+        return [(template * max(1, chars // len(template)))[:chars] for _ in range(samples)]
+
+    async def _run() -> None:
+        sizes = _parse_sizes()
+        if not sizes:
+            console.print("[red]No batch sizes provided.[/red]")
+            raise typer.Exit(1)
+        texts = [f"{DOCUMENT_INSTRUCTION}{text}" for text in _sample_texts()]
+        embedder = OllamaEmbedder()
+        await embedder.verify_model()
+
+        table = Table(title="Embedding Batch Benchmark")
+        table.add_column("Batch", style="cyan", justify="right")
+        table.add_column("Texts", justify="right")
+        table.add_column("Seconds", justify="right")
+        table.add_column("Texts/sec", justify="right", style="green")
+
+        # Warm one tiny batch so model load cost does not dominate the first row.
+        await embedder._embed_batch(texts[:1], batch_size=1)
+
+        for size in sizes:
+            t0 = perf_counter()
+            await embedder._embed_batch(texts, batch_size=size)
+            elapsed = perf_counter() - t0
+            throughput = len(texts) / elapsed if elapsed else 0.0
+            table.add_row(str(size), str(len(texts)), f"{elapsed:.2f}", f"{throughput:.2f}")
+
+        console.print(table)
+        console.print("[dim]Pick the largest batch that improves throughput without hurting interactivity.[/dim]")
+
+    asyncio.run(_run())
 
 
 @app.command()
@@ -406,9 +551,105 @@ def index(
 
     console.print(f"[green]Indexing {abs_path}...[/green]")
 
+    def _matching_job_id() -> str | None:
+        try:
+            jobs_resp = httpx.get(
+                f"{_base_url()}/index/jobs",
+                headers=_auth_headers(),
+                timeout=10,
+            )
+            jobs_resp.raise_for_status()
+            jobs = jobs_resp.json().get("jobs", {})
+        except httpx.HTTPError:
+            return None
+        import time as _time
+
+        now = _time.time()
+        matches: list[tuple[float, str]] = []
+        for candidate_id, job in jobs.items():
+            status = job.get("status")
+            if status not in {"queued", "scanning", "running", "completed"}:
+                continue
+            if status == "completed" and now - float(job.get("finished_at") or 0) > 120:
+                continue
+            if job.get("repo_path") != abs_path:
+                continue
+            if job.get("collection") != collection:
+                continue
+            if bool(job.get("full")) != bool(full):
+                continue
+            if (job.get("languages") or None) != (languages or None):
+                continue
+            matches.append((float(job.get("started_at") or 0), candidate_id))
+        if not matches:
+            return None
+        return max(matches)[1]
+
+    def _poll_job(job_id: str) -> dict:
+        data = {}
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.fields[files_label]}"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task_id = progress.add_task("indexing", total=1, files_label="0/0 files")
+            poll_timeouts = 0
+            while True:
+                try:
+                    poll = httpx.get(
+                        f"{_base_url()}/index/progress/{job_id}",
+                        headers=_auth_headers(),
+                        timeout=10,
+                    )
+                except httpx.TimeoutException:
+                    poll_timeouts += 1
+                    progress.update(task_id, description="waiting for daemon")
+                    if poll_timeouts >= 12:
+                        raise
+                    continue
+                poll_timeouts = 0
+                poll.raise_for_status()
+                data = poll.json()
+                total = int(data.get("total_files") or 0)
+                processed = int(data.get("files_processed") or 0)
+                chunks_indexed = int(data.get("chunks_indexed") or 0)
+                chunks_seen = int(data.get("chunks_seen") or 0)
+                chunks_estimate = int(data.get("chunks_total_estimate") or 0)
+                current_file = data.get("current_file") or ""
+                status = data.get("status", "running")
+                desc = f"{status}"
+                if current_file:
+                    desc += f" · {current_file[-70:]}"
+                visible_total = max(total, 1)
+                visible_completed = (
+                    visible_total
+                    if status == "completed" and total == 0
+                    else min(processed, visible_total)
+                )
+                progress.update(
+                    task_id,
+                    total=visible_total,
+                    completed=visible_completed,
+                    description=desc,
+                    files_label=(
+                        f"{processed}/{total} files · {chunks_indexed}/{chunks_estimate} chunks"
+                        if chunks_estimate
+                        else f"{processed}/{total} files · {chunks_seen} chunks seen"
+                    ),
+                )
+                if status in {"completed", "failed"}:
+                    break
+                import time as _time
+
+                _time.sleep(1)
+        return data
+
     try:
         resp = httpx.post(
-            f"{_base_url()}/index",
+            f"{_base_url()}/index/start",
             json={
                 "repo_path": abs_path,
                 "full": full,
@@ -416,14 +657,29 @@ def index(
                 "collection": collection,
             },
             headers=_auth_headers(),
-            timeout=600,
+            timeout=10,
         )
         resp.raise_for_status()
-        data = resp.json()
+        job_id = resp.json()["job_id"]
+        console.print(f"[dim]Job:[/dim] {job_id}")
+        data = _poll_job(job_id)
+        if data.get("status") == "failed":
+            console.print(f"[red]Index failed: {data.get('error', 'unknown error')}[/red]")
+            raise typer.Exit(1)
     except httpx.HTTPStatusError as e:
         error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
         console.print(f"[red]Index failed: {error.get('detail', e)}[/red]")
         raise typer.Exit(1)
+    except httpx.TimeoutException:
+        job_id = _matching_job_id()
+        if not job_id:
+            console.print("[red]Index request timed out before a job was created.[/red]")
+            raise typer.Exit(1)
+        console.print(f"[yellow]Index start response timed out; attached to running job {job_id}.[/yellow]")
+        data = _poll_job(job_id)
+        if data.get("status") == "failed":
+            console.print(f"[red]Index failed: {data.get('error', 'unknown error')}[/red]")
+            raise typer.Exit(1)
 
     # Update repo stats if named
     if name:
@@ -438,6 +694,30 @@ def index(
     table.add_row("Chunks indexed", str(data["chunks_indexed"]))
     table.add_row("Files skipped", str(data["files_skipped"]))
     table.add_row("Files deleted", str(data["files_deleted"]))
+    timings = data.get("timings_ms") or {}
+    if timings:
+        started_at = float(data.get("started_at") or 0)
+        finished_at = float(data.get("finished_at") or 0)
+        if started_at and finished_at:
+            table.add_row("Job duration", f"{finished_at - started_at:.1f}s")
+        for key in (
+            "scan_ms",
+            "collection_reset_ms",
+            "chunk_ms",
+            "cache_lookup_ms",
+            "embed_ms",
+            "cache_write_ms",
+            "point_build_ms",
+            "qdrant_upsert_ms",
+            "ensure_collection_ms",
+            "delete_old_chunks_ms",
+            "lsp_ms",
+            "graph_summary_ms",
+            "state_save_ms",
+        ):
+            if key in timings:
+                label = key.removesuffix("_ms").replace("_", " ")
+                table.add_row(f"  {label}", f"{float(timings[key]) / 1000:.1f}s")
     if data["errors"]:
         table.add_row("Errors", str(len(data["errors"])))
     console.print(table)
@@ -967,7 +1247,11 @@ def diagnose():
 
     # 4. Config
     console.print(f"\n  Config:    {CONFIG_PATH}")
-    console.print(f"  Data:      {settings.qdrant.resolved_path}")
+    if settings.qdrant.mode == "server":
+        console.print(f"  Qdrant:    server ({settings.qdrant.url})")
+        console.print("  Data:      ~/.rag/qdrant_server (Docker volume mount)")
+    else:
+        console.print(f"  Qdrant:    embedded ({settings.qdrant.resolved_path})")
 
     # 5. Cache
     try:
