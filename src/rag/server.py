@@ -1387,6 +1387,45 @@ def create_app() -> FastAPI:
             ),
         )
 
+    # --- Web dashboard (v2) ---
+    #
+    # A self-contained single-page dashboard served from the daemon itself so
+    # it is *same-origin*: the browser inherits the daemon's auth token (which
+    # we inject into the page at serve time) and sails past the CSRF guard
+    # without any CORS configuration. The TUI remains the primary client; this
+    # is a browser-based alternative that polls the same read endpoints.
+    _WEB_DIR = Path(__file__).parent / "web"
+
+    @app.get("/", include_in_schema=False)
+    async def web_dashboard():
+        from fastapi.responses import HTMLResponse
+
+        index = _WEB_DIR / "index.html"
+        if not index.exists():
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Web dashboard not installed",
+                    "code": "WEB_NOT_FOUND",
+                    "detail": "src/rag/web/index.html is missing",
+                },
+            )
+        # Inject the daemon token so same-origin fetch() calls can authenticate
+        # without the user pasting it. The token never leaves localhost — the
+        # page is only reachable from a browser pointed at 127.0.0.1:7890.
+        html = index.read_text(encoding="utf-8")
+        token = get_or_create_token()
+        html = html.replace("__RAG_TOKEN__", token)
+        return HTMLResponse(content=html)
+
+    # NB: we intentionally do *not* mount the web/ directory as static files.
+    # The only document is index.html, which must be served through the route
+    # above so the token placeholder gets substituted — serving it verbatim via
+    # a static mount would hand the browser a non-functional page (literal
+    # ``__RAG_TOKEN__`` → every API call 401s). If real assets (favicon, fonts)
+    # are added later, mount them under a dedicated prefix that excludes
+    # index.html.
+
     return app
 
 

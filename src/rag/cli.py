@@ -207,6 +207,29 @@ def tui():
 
 
 @app.command()
+def web(
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open", help="Open the dashboard in your default browser"
+    ),
+):
+    """Open the web dashboard (v2) served by the daemon. Requires a running daemon."""
+    ensure_rag_home()
+    if not _check_daemon():
+        console.print("[red]RAG daemon is not running.[/red]")
+        console.print("[dim]Start it with: rag start[/dim]")
+        raise typer.Exit(1)
+
+    url = _base_url() + "/"
+    console.print(f"[green]Web dashboard:[/green] {url}")
+    if open_browser:
+        import webbrowser
+
+        webbrowser.open(url)
+    else:
+        console.print("[dim]Open the URL above in your browser.[/dim]")
+
+
+@app.command()
 def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of results"),
