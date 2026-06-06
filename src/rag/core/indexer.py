@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import subprocess
 from collections.abc import Callable
@@ -290,8 +291,9 @@ async def _index_repository_locked(
         try:
             from rag.storage import db as _db
             _db.reset_overview()
+            _db.delete_code_chunks_by_collection(collection)
         except Exception as e:  # pragma: no cover - non-critical
-            logger.warning("overview_reset_failed", error=str(e))
+            logger.warning("sqlite_index_reset_failed", error=str(e))
         try:
             t_collection_reset = perf_counter()
             await vectorstore.drop_collection(collection)
@@ -391,15 +393,29 @@ async def _index_repository_locked(
             t_delete = perf_counter()
             for file_path in file_paths:
                 await vectorstore.delete_by_filter(collection, "file_path", file_path)
+                try:
+                    from rag.storage import db as _db
+                    _db.delete_code_chunks_by_file(collection, file_path)
+                except Exception as e:  # pragma: no cover - non-critical
+                    logger.warning("code_index_file_delete_failed", file=file_path, error=str(e))
             _add_timing("delete_old_chunks_ms", t_delete)
         t_upsert = perf_counter()
-        count = await vectorstore.upsert(
-            collection,
-            docs,
-            cache=embed_cache,
-            timings_ms=result.timings_ms,
-        )
+        upsert_kwargs: dict[str, object] = {"cache": embed_cache}
+        try:
+            upsert_params = inspect.signature(vectorstore.upsert).parameters
+            if "timings_ms" in upsert_params:
+                upsert_kwargs["timings_ms"] = result.timings_ms
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            upsert_kwargs["timings_ms"] = result.timings_ms
+        count = await vectorstore.upsert(collection, docs, **upsert_kwargs)
         _add_timing("flush_total_ms", t_upsert)
+        t_code_index = perf_counter()
+        try:
+            from rag.storage import db as _db
+            _db.upsert_code_chunks(collection, docs)
+        except Exception as e:  # pragma: no cover - non-critical
+            logger.warning("code_index_upsert_failed", collection=collection, error=str(e))
+        _add_timing("code_index_ms", t_code_index)
         t_overview_update = perf_counter()
         _update_overview_stats(docs)
         _add_timing("overview_update_ms", t_overview_update)
@@ -412,9 +428,8 @@ async def _index_repository_locked(
         if language:
             detected_langs.add(language)
         chunks = chunk_code(content, rel, language)
-        if language == "python":
-            for chunk in chunks:
-                chunk.enrich_metadata(test_files=test_files)
+        for chunk in chunks:
+            chunk.enrich_metadata(test_files=test_files if language == "python" else None)
         return [
             ChunkDocument(content=c.content, metadata=c.to_index_metadata(), chunk_id=c.chunk_id)
             for c in chunks
@@ -480,6 +495,11 @@ async def _index_repository_locked(
     t_removed = perf_counter()
     for removed_file in removed:
         await vectorstore.delete_by_filter(collection, "file_path", removed_file)
+        try:
+            from rag.storage import db as _db
+            _db.delete_code_chunks_by_file(collection, removed_file)
+        except Exception as e:  # pragma: no cover - non-critical
+            logger.warning("code_index_removed_delete_failed", file=removed_file, error=str(e))
         new_hashes.pop(removed_file, None)
         result.files_deleted += 1
     _add_timing("delete_removed_ms", t_removed)

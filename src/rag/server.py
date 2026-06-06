@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -23,6 +24,7 @@ logger = structlog.get_logger()
 
 MAX_QUERY_LENGTH = 2000
 MAX_TOP_K = 200
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 
 
 # --- Request/Response Models with Validation ---
@@ -62,6 +64,108 @@ class SearchResponse(BaseModel):
     query: str
     plan: SearchPlanInfo | None = None
     total: int
+    latency_ms: float
+
+
+class ContextPackRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    repo: str | None = None
+    filters: dict[str, Any] | None = None
+    max_slices: int = Field(8, ge=1, le=50)
+    max_source_tokens: int = Field(6000, ge=100, le=100000)
+    use_ast_index: bool = True
+    include_semantic: bool = True
+
+
+class ContextSlice(BaseModel):
+    file_path: str
+    name: str
+    parent_name: str
+    chunk_type: str
+    language: str
+    lines: str
+    code: str
+    score: float
+    token_estimate: int
+    citation: str
+    why_included: str
+
+
+class ContextPackResponse(BaseModel):
+    query: str
+    repo: str | None = None
+    slices: list[ContextSlice]
+    total: int
+    total_source_tokens: int
+    latency_ms: float
+
+
+class ResolveRequest(BaseModel):
+    repo: str = Field(..., min_length=1)
+    query: str | None = Field(None, max_length=MAX_QUERY_LENGTH)
+    symbols: list[str] = Field(default_factory=list)
+    definitions_limit: int = Field(20, ge=1, le=100)
+    usages_limit: int = Field(20, ge=0, le=200)
+
+
+class ResolveResponse(BaseModel):
+    repo: str
+    symbols: list[str]
+    definitions: list[ContextSlice]
+    usages: list[ContextSlice]
+    total_definitions: int
+    total_usages: int
+    latency_ms: float
+
+
+class CallTreeRequest(BaseModel):
+    repo: str = Field(..., min_length=1)
+    symbol: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    limit: int = Field(50, ge=1, le=200)
+
+
+class CallTreeNode(ContextSlice):
+    depth: int = 0
+
+
+class CallTreeResponse(BaseModel):
+    repo: str
+    symbol: str
+    nodes: list[CallTreeNode]
+    total: int
+    latency_ms: float
+
+
+class ProjectModule(BaseModel):
+    path: str
+    file_count: int = 0
+    kinds: dict[str, int] = {}
+    score: float = 0.0
+
+
+class ProjectSymbol(BaseModel):
+    name: str
+    kind: str = ""
+    path: str = ""
+    line: int = 0
+    signature: str = ""
+
+
+class ProjectUnderstandRequest(BaseModel):
+    repo: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    max_modules: int = Field(8, ge=1, le=50)
+    max_slices: int = Field(8, ge=1, le=50)
+    max_source_tokens: int = Field(6000, ge=100, le=100000)
+
+
+class ProjectUnderstandResponse(BaseModel):
+    repo: str
+    query: str
+    modules: list[ProjectModule]
+    symbols: list[ProjectSymbol]
+    slices: list[ContextSlice]
+    total_source_tokens: int
     latency_ms: float
 
 
@@ -142,6 +246,20 @@ class IndexResponse(BaseModel):
     errors: list[str]
 
 
+class BackfillCodeIndexRequest(BaseModel):
+    repo: str | None = None
+    collection: str | None = None
+    clear: bool = True
+    page_size: int = Field(256, ge=1, le=1000)
+
+
+class BackfillCodeIndexResponse(BaseModel):
+    collection: str
+    chunks_indexed: int
+    chunks_skipped: int
+    latency_ms: float
+
+
 class ReloadRequest(BaseModel):
     force: bool = False
 
@@ -194,6 +312,138 @@ def get_reranker():
 
 def get_vectorstore() -> QdrantVectorStore:
     return _state["vectorstore"]
+
+
+def _repo_info_for_name(repo: str):
+    from rag.core.repos import RepoManager
+
+    repo_info = RepoManager().get(repo)
+    if repo_info is None:
+        raise HTTPException(status_code=404, detail=f"Unknown repo: {repo}")
+    return repo_info
+
+
+def _collection_for_repo(repo: str | None) -> str:
+    settings = get_settings()
+    if not repo:
+        return settings.qdrant.code_collection
+    repo_info = _repo_info_for_name(repo)
+    return repo_info.collection
+
+
+def _result_key(payload: dict[str, Any]) -> tuple[str, int, int, str, str]:
+    return (
+        str(payload.get("file_path", "")),
+        int(payload.get("start_line", 0) or 0),
+        int(payload.get("end_line", 0) or 0),
+        str(payload.get("chunk_type", "")),
+        str(payload.get("name", "")),
+    )
+
+
+def _lexical_hit_to_search_result(hit: dict[str, Any]):
+    from rag.core.vectorstore import SearchResult
+
+    payload = {
+        "file_path": hit.get("file_path", ""),
+        "name": hit.get("name", ""),
+        "parent_name": hit.get("parent_name", ""),
+        "chunk_type": hit.get("chunk_type", ""),
+        "language": hit.get("language", ""),
+        "start_line": hit.get("start_line", 0),
+        "end_line": hit.get("end_line", 0),
+        "retrieval_source": "lexical",
+    }
+    return SearchResult(
+        content=hit.get("code", ""),
+        score=float(hit.get("score", 0.0)),
+        payload=payload,
+        point_id=f"lex:{hit.get('chunk_id', '')}",
+    )
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text or "") + 3) // 4)
+
+
+def _trim_to_token_budget(code: str, token_budget: int) -> tuple[str, int]:
+    if token_budget <= 0:
+        return "", 0
+    max_chars = token_budget * 4
+    if len(code) <= max_chars:
+        return code, _estimate_tokens(code)
+    out_lines: list[str] = []
+    used = 0
+    for line in code.splitlines():
+        line_len = len(line) + 1
+        if out_lines and used + line_len > max_chars:
+            break
+        if not out_lines and line_len > max_chars:
+            out_lines.append(line[:max_chars])
+            used = max_chars
+            break
+        out_lines.append(line)
+        used += line_len
+    trimmed = "\n".join(out_lines).rstrip()
+    return trimmed, _estimate_tokens(trimmed)
+
+
+def _candidate_overlaps_slice(candidate: dict[str, Any], existing: ContextSlice, threshold: float = 0.5) -> bool:
+    if str(candidate.get("file_path", "")) != existing.file_path:
+        return False
+    try:
+        c_start = int(candidate.get("start_line", 0) or 0)
+        c_end = int(candidate.get("end_line", 0) or c_start)
+        e_start_s, e_end_s = existing.lines.split("-", 1)
+        e_start = int(e_start_s)
+        e_end = int(e_end_s)
+    except (TypeError, ValueError):
+        return False
+    if c_start <= 0 or c_end <= 0:
+        return False
+    overlap = max(0, min(c_end, e_end) - max(c_start, e_start) + 1)
+    shorter = max(1, min(c_end - c_start + 1, e_end - e_start + 1))
+    return overlap / shorter >= threshold
+
+
+def _context_slice_from_candidate(candidate: dict[str, Any], token_budget: int | None = None) -> ContextSlice | None:
+    code = str(candidate.get("code", ""))
+    if token_budget is not None:
+        code, token_estimate = _trim_to_token_budget(code, token_budget)
+    else:
+        token_estimate = int(candidate.get("token_estimate") or _estimate_tokens(code))
+    if not code.strip() or token_estimate <= 0:
+        return None
+    return ContextSlice(
+        file_path=str(candidate.get("file_path", "")),
+        name=str(candidate.get("name", "")),
+        parent_name=str(candidate.get("parent_name", "")),
+        chunk_type=str(candidate.get("chunk_type", "")),
+        language=str(candidate.get("language", "")),
+        lines=str(candidate.get("lines") or f"{candidate.get('start_line', '?')}-{candidate.get('end_line', '?')}"),
+        code=code,
+        score=round(float(candidate.get("score", 0.0)), 4),
+        token_estimate=token_estimate,
+        citation=str(candidate.get("citation", "")),
+        why_included=str(candidate.get("why_included", "")),
+    )
+
+
+def _resolve_symbols_from_request(req: ResolveRequest) -> list[str]:
+    raw = [s for s in req.symbols if s and s.strip()]
+    if req.query:
+        raw.extend(_IDENTIFIER_RE.findall(req.query))
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for symbol in raw:
+        symbol = symbol.strip()
+        key = symbol.lower()
+        if len(symbol) < 3 or key in seen:
+            continue
+        seen.add(key)
+        symbols.append(symbol)
+    symbols.sort(key=lambda s: (any(c.isupper() for c in s[1:]), len(s)), reverse=True)
+    return symbols[:20]
 
 
 _EVENT_RING_MAX = 500
@@ -930,22 +1180,87 @@ def create_app() -> FastAPI:
     async def index_jobs():
         return {"jobs": _state.get("jobs", {})}
 
+    @app.post(
+        "/index/backfill-code-index",
+        response_model=BackfillCodeIndexResponse,
+        dependencies=[Depends(require_auth)],
+    )
+    async def backfill_code_index(req: BackfillCodeIndexRequest):
+        """Populate SQLite code_index from existing Qdrant payloads.
+
+        Useful after upgrading to the lexical/context-pack index: it avoids a
+        full embedding pass by reusing stored ``content`` and metadata payloads.
+        """
+        start = time.time()
+        try:
+            collection = req.collection or _collection_for_repo(req.repo)
+            vectorstore = get_vectorstore()
+            client = await vectorstore._get_client()
+
+            from rag.core.vectorstore import ChunkDocument
+            from rag.storage import db as _db
+
+            if req.clear:
+                _db.delete_code_chunks_by_collection(collection)
+
+            chunks_indexed = 0
+            chunks_skipped = 0
+            offset = None
+            while True:
+                points, offset = await client.scroll(
+                    collection_name=collection,
+                    limit=req.page_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                if not points:
+                    break
+                docs: list[ChunkDocument] = []
+                for point in points:
+                    payload = dict(point.payload or {})
+                    content = payload.pop("content", "")
+                    if not content:
+                        chunks_skipped += 1
+                        continue
+                    docs.append(ChunkDocument(
+                        content=content,
+                        metadata=payload,
+                        chunk_id=str(getattr(point, "id", "")),
+                    ))
+                if docs:
+                    chunks_indexed += _db.upsert_code_chunks(collection, docs)
+                if offset is None:
+                    break
+
+            latency = (time.time() - start) * 1000
+            logger.info(
+                "code_index_backfilled",
+                collection=collection,
+                chunks_indexed=chunks_indexed,
+                chunks_skipped=chunks_skipped,
+                latency_ms=round(latency, 1),
+            )
+            return BackfillCodeIndexResponse(
+                collection=collection,
+                chunks_indexed=chunks_indexed,
+                chunks_skipped=chunks_skipped,
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("code_index_backfill_error", error=str(e))
+            raise HTTPException(status_code=500, detail=f"Code index backfill failed ({type(e).__name__})")
+
     # --- Search ---
 
     @app.post("/search", response_model=SearchResponse, dependencies=[Depends(require_auth)])
     async def search(req: SearchRequest):
         start = time.time()
         try:
-            settings = get_settings()
             vectorstore = get_vectorstore()
-            code_collection = settings.qdrant.code_collection
-            if req.repo:
-                from rag.core.repos import RepoManager
-
-                repo_info = RepoManager().get(req.repo)
-                if repo_info is None:
-                    raise HTTPException(status_code=404, detail=f"Unknown repo: {req.repo}")
-                code_collection = repo_info.collection
+            code_collection = _collection_for_repo(req.repo)
 
             from rag.agents.retrieval import plan_search
 
@@ -1113,8 +1428,34 @@ def create_app() -> FastAPI:
             # back-compat, but scoring below is always dense + metadata boosts.
             did_rerank = False
 
+            # Promote exact/code-index matches before semantic scoring. Dense
+            # retrieval remains the fallback, but symbol/file/API queries should
+            # not lose to embedding noise when SQLite has direct evidence.
+            if plan.strategy != "global":
+                try:
+                    from rag.storage import db as _db
+
+                    lexical_filters = {**(plan.filters or {}), **(req.filters or {})}
+                    lexical_hits = _db.search_code_chunks(
+                        req.query,
+                        collection=code_collection,
+                        limit=req.top_k or plan.top_k,
+                        filters=lexical_filters if lexical_filters else None,
+                    )
+                    seen_keys = {_result_key(r.payload) for r in results}
+                    for hit in lexical_hits:
+                        lex_result = _lexical_hit_to_search_result(hit)
+                        key = _result_key(lex_result.payload)
+                        if key in seen_keys:
+                            continue
+                        results.append(lex_result)
+                        seen_keys.add(key)
+                except Exception as e:
+                    logger.debug("lexical_search_failed", query=req.query, error=str(e))
+
             from rag.core.scoring import score_results
             results = score_results(results, req.query, reranked=did_rerank)
+            results = results[: req.top_k or plan.top_k]
 
             latency = (time.time() - start) * 1000
 
@@ -1155,6 +1496,309 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error("search_error", query=req.query, error=str(e))
             raise HTTPException(status_code=500, detail=f"Search failed ({type(e).__name__})")
+
+    # --- Resolve (exact AST definitions/usages for named repos) ---
+
+    @app.post("/resolve", response_model=ResolveResponse, dependencies=[Depends(require_auth)])
+    async def resolve(req: ResolveRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+            symbols = _resolve_symbols_from_request(req)
+            if not symbols:
+                raise HTTPException(status_code=422, detail="Provide at least one symbol or identifier-like query term")
+
+            from rag.core.ast_index import resolve_symbols
+
+            resolved = resolve_symbols(
+                repo_info.path,
+                symbols,
+                definitions_limit=req.definitions_limit,
+                usages_limit=req.usages_limit,
+            )
+            definitions = [
+                s for item in resolved.get("definitions", [])
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            usages = [
+                s for item in resolved.get("usages", [])
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            latency = (time.time() - start) * 1000
+            logger.info(
+                "resolve_executed",
+                repo=req.repo,
+                symbols=symbols,
+                definitions=len(definitions),
+                usages=len(usages),
+                latency_ms=round(latency, 1),
+            )
+            return ResolveResponse(
+                repo=req.repo,
+                symbols=symbols,
+                definitions=definitions,
+                usages=usages,
+                total_definitions=len(definitions),
+                total_usages=len(usages),
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("resolve_error", repo=req.repo, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Resolve failed ({type(e).__name__})")
+
+    @app.post("/call-tree", response_model=CallTreeResponse, dependencies=[Depends(require_auth)])
+    async def call_tree(req: CallTreeRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+
+            from rag.core.ast_index import call_tree as ast_call_tree
+
+            nodes_raw = ast_call_tree(repo_info.path, req.symbol, limit=req.limit)
+            nodes: list[CallTreeNode] = []
+            for item in nodes_raw:
+                slice_item = _context_slice_from_candidate(item)
+                if slice_item is None:
+                    continue
+                nodes.append(CallTreeNode(
+                    **slice_item.model_dump(),
+                    depth=int(item.get("depth", 0) or 0),
+                ))
+
+            latency = (time.time() - start) * 1000
+            logger.info(
+                "call_tree_executed",
+                repo=req.repo,
+                symbol=req.symbol,
+                nodes=len(nodes),
+                latency_ms=round(latency, 1),
+            )
+            return CallTreeResponse(
+                repo=req.repo,
+                symbol=req.symbol,
+                nodes=nodes,
+                total=len(nodes),
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("call_tree_error", repo=req.repo, symbol=req.symbol, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Call tree failed ({type(e).__name__})")
+
+    @app.post("/project-understand", response_model=ProjectUnderstandResponse, dependencies=[Depends(require_auth)])
+    async def project_understand(req: ProjectUnderstandRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+
+            from rag.core.ast_index import understand_project
+
+            result = understand_project(
+                repo_info.path,
+                req.query,
+                max_modules=req.max_modules,
+                max_slices=max(req.max_slices * 2, req.max_slices),
+            )
+
+            modules = [
+                ProjectModule(
+                    path=str(m.get("path", "")),
+                    file_count=int(m.get("file_count", 0) or 0),
+                    kinds={str(k): int(v) for k, v in (m.get("kinds", {}) or {}).items()},
+                    score=float(m.get("score", 0.0) or 0.0),
+                )
+                for m in result.get("modules", [])
+            ]
+            symbols = [
+                ProjectSymbol(
+                    name=str(s.get("name", "")),
+                    kind=str(s.get("kind", "")),
+                    path=str(s.get("path", "")),
+                    line=int(s.get("line", 0) or 0),
+                    signature=str(s.get("signature", "")),
+                )
+                for s in result.get("symbols", [])
+            ]
+
+            slices: list[ContextSlice] = []
+            total_tokens = 0
+            for item in result.get("slices", []):
+                if len(slices) >= req.max_slices or total_tokens >= req.max_source_tokens:
+                    break
+                if any(_candidate_overlaps_slice(item, existing) for existing in slices):
+                    continue
+                remaining = req.max_source_tokens - total_tokens
+                slice_item = _context_slice_from_candidate(item, token_budget=remaining)
+                if slice_item is None:
+                    continue
+                slices.append(slice_item)
+                total_tokens += slice_item.token_estimate
+
+            latency = (time.time() - start) * 1000
+            logger.info(
+                "project_understand_executed",
+                repo=req.repo,
+                query=req.query,
+                modules=len(modules),
+                symbols=len(symbols),
+                slices=len(slices),
+                source_tokens=total_tokens,
+                latency_ms=round(latency, 1),
+            )
+            return ProjectUnderstandResponse(
+                repo=req.repo,
+                query=req.query,
+                modules=modules,
+                symbols=symbols,
+                slices=slices,
+                total_source_tokens=total_tokens,
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("project_understand_error", repo=req.repo, query=req.query, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Project understand failed ({type(e).__name__})")
+
+    # --- Context pack (bounded source slices for developer workflows) ---
+
+    @app.post("/context-pack", response_model=ContextPackResponse, dependencies=[Depends(require_auth)])
+    async def context_pack(req: ContextPackRequest):
+        """Return a token-bounded set of source slices for a query.
+
+        This endpoint is intentionally stricter than /search: it favors exact
+        symbol/file/string matches from SQLite and packs only code spans that fit
+        the requested source budget. Semantic retrieval fills gaps when needed.
+        """
+        start = time.time()
+        try:
+            collection = _collection_for_repo(req.repo)
+            candidates: list[dict[str, Any]] = []
+            seen: set[tuple[str, int, int, str, str]] = set()
+
+            if req.use_ast_index and req.repo:
+                try:
+                    from rag.core.ast_index import retrieve_context
+
+                    repo_info = _repo_info_for_name(req.repo)
+                    ast_hits = retrieve_context(
+                        repo_info.path,
+                        req.query,
+                        limit=max(req.max_slices * 3, 12),
+                    )
+                    for hit in ast_hits:
+                        key = (
+                            hit.get("file_path", ""),
+                            int(hit.get("start_line", 0) or 0),
+                            int(hit.get("end_line", 0) or 0),
+                            hit.get("chunk_type", ""),
+                            hit.get("name", ""),
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        candidates.append(hit)
+                except Exception as e:
+                    logger.debug("context_pack_ast_index_failed", query=req.query, error=str(e))
+
+            from rag.storage import db as _db
+
+            lexical_hits = _db.search_code_chunks(
+                req.query,
+                collection=collection,
+                limit=max(req.max_slices * 4, 20),
+                filters=req.filters,
+            )
+            for hit in lexical_hits:
+                key = (
+                    hit.get("file_path", ""),
+                    int(hit.get("start_line", 0) or 0),
+                    int(hit.get("end_line", 0) or 0),
+                    hit.get("chunk_type", ""),
+                    hit.get("name", ""),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append({
+                    **hit,
+                    "why_included": "exact_or_lexical_match",
+                })
+
+            if req.include_semantic and len(candidates) < req.max_slices:
+                try:
+                    vector_hits = await get_vectorstore().search(
+                        collection=collection,
+                        query=req.query,
+                        top_k=max(req.max_slices * 2, 10),
+                        filters=req.filters,
+                    )
+                    for hit in vector_hits:
+                        payload = hit.payload or {}
+                        key = _result_key(payload)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        candidates.append({
+                            "chunk_id": hit.point_id,
+                            "file_path": payload.get("file_path", ""),
+                            "name": payload.get("name", ""),
+                            "parent_name": payload.get("parent_name", ""),
+                            "chunk_type": payload.get("chunk_type", ""),
+                            "language": payload.get("language", ""),
+                            "start_line": payload.get("start_line", 0),
+                            "end_line": payload.get("end_line", 0),
+                            "lines": f"{payload.get('start_line', '?')}-{payload.get('end_line', '?')}",
+                            "code": hit.content,
+                            "token_estimate": _estimate_tokens(hit.content),
+                            "score": hit.score,
+                            "citation": hit._make_citation(),
+                            "why_included": "semantic_match",
+                        })
+                except Exception as e:
+                    logger.debug("context_pack_semantic_failed", query=req.query, error=str(e))
+
+            candidates.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
+
+            slices: list[ContextSlice] = []
+            total_tokens = 0
+            for c in candidates:
+                if len(slices) >= req.max_slices or total_tokens >= req.max_source_tokens:
+                    break
+                if any(_candidate_overlaps_slice(c, existing) for existing in slices):
+                    continue
+                remaining = req.max_source_tokens - total_tokens
+                slice_item = _context_slice_from_candidate(c, token_budget=remaining)
+                if slice_item is None:
+                    continue
+                total_tokens += slice_item.token_estimate
+                slices.append(slice_item)
+
+            latency = (time.time() - start) * 1000
+            logger.info(
+                "context_pack_executed",
+                query=req.query,
+                repo=req.repo,
+                slices=len(slices),
+                source_tokens=total_tokens,
+                latency_ms=round(latency, 1),
+            )
+            return ContextPackResponse(
+                query=req.query,
+                repo=req.repo,
+                slices=slices,
+                total=len(slices),
+                total_source_tokens=total_tokens,
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("context_pack_error", query=req.query, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Context pack failed ({type(e).__name__})")
 
     # --- Enumerate (exhaustive metadata-only listing via Qdrant scroll) ---
 

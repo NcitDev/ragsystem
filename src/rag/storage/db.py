@@ -5,10 +5,13 @@ Uses a single connection with WAL mode for concurrent read/write.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import time
+from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
 from rag.config import RAG_HOME
 
@@ -75,6 +78,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_index_runs_ts ON index_runs(timestamp);
     """)
     conn.commit()
+    ensure_code_index()
 
 
 def _ensure_table(table_sql: str) -> None:
@@ -82,6 +86,337 @@ def _ensure_table(table_sql: str) -> None:
     conn = _get_conn()
     conn.execute(table_sql)
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Code chunk lexical index
+# ---------------------------------------------------------------------------
+
+
+_CODE_INDEX_SQL = """
+    CREATE TABLE IF NOT EXISTS code_index (
+        chunk_id TEXT PRIMARY KEY,
+        collection TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        parent_name TEXT NOT NULL DEFAULT '',
+        chunk_type TEXT NOT NULL DEFAULT '',
+        language TEXT NOT NULL DEFAULT '',
+        start_line INTEGER NOT NULL DEFAULT 0,
+        end_line INTEGER NOT NULL DEFAULT 0,
+        code TEXT NOT NULL,
+        token_estimate INTEGER NOT NULL DEFAULT 0,
+        updated_at REAL NOT NULL
+    );
+"""
+
+_CODE_FTS_SQL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS code_index_fts USING fts5(
+        chunk_id UNINDEXED,
+        collection UNINDEXED,
+        file_path,
+        name,
+        parent_name,
+        chunk_type,
+        language,
+        code,
+        tokenize = 'unicode61 tokenchars ''_$'''
+    );
+"""
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_QUOTED_RE = re.compile(r"['\"]([^'\"]{3,120})['\"]")
+_MIN_QUERY_TOKEN = 3
+
+
+def _token_estimate(text: str) -> int:
+    return max(1, (len(text or "") + 3) // 4)
+
+
+def ensure_code_index() -> None:
+    """Create the local exact/lexical code index used for high-precision recall."""
+    conn = _get_conn()
+    conn.execute(_CODE_INDEX_SQL)
+    conn.execute(_CODE_FTS_SQL)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_code_collection_file ON code_index(collection, file_path)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_code_symbol ON code_index(collection, name, parent_name)")
+    conn.commit()
+
+
+def _metadata_value(meta: dict[str, Any], key: str, default: Any = "") -> Any:
+    value = meta.get(key, default)
+    return default if value is None else value
+
+
+def upsert_code_chunks(collection: str, docs: Sequence[Any]) -> int:
+    """Mirror indexed chunks into SQLite for exact symbol and context-pack lookup.
+
+    ``docs`` are intentionally duck-typed so this storage layer does not import
+    the vectorstore dataclass and risk an import cycle.
+    """
+    if not docs:
+        return 0
+    ensure_code_index()
+    now = time.time()
+    rows = []
+    fts_rows = []
+    chunk_ids = []
+    for doc in docs:
+        meta = getattr(doc, "metadata", {}) or {}
+        content = getattr(doc, "content", "") or ""
+        chunk_id = getattr(doc, "chunk_id", None) or meta.get("content_hash") or ""
+        if not chunk_id:
+            continue
+        row = (
+            str(chunk_id),
+            collection,
+            str(_metadata_value(meta, "file_path")),
+            str(_metadata_value(meta, "name")),
+            str(_metadata_value(meta, "parent_name")),
+            str(_metadata_value(meta, "chunk_type")),
+            str(_metadata_value(meta, "language")),
+            int(_metadata_value(meta, "start_line", 0) or 0),
+            int(_metadata_value(meta, "end_line", 0) or 0),
+            content,
+            _token_estimate(content),
+            now,
+        )
+        rows.append(row)
+        fts_rows.append((
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            row[5],
+            row[6],
+            row[9],
+        ))
+        chunk_ids.append(row[0])
+
+    if not rows:
+        return 0
+    conn = _get_conn()
+    try:
+        conn.executemany("DELETE FROM code_index WHERE chunk_id = ?", [(cid,) for cid in chunk_ids])
+        conn.executemany("DELETE FROM code_index_fts WHERE chunk_id = ?", [(cid,) for cid in chunk_ids])
+        conn.executemany(
+            """
+            INSERT INTO code_index (
+                chunk_id, collection, file_path, name, parent_name, chunk_type,
+                language, start_line, end_line, code, token_estimate, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.executemany(
+            """
+            INSERT INTO code_index_fts (
+                chunk_id, collection, file_path, name, parent_name,
+                chunk_type, language, code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            fts_rows,
+        )
+        conn.commit()
+        return len(rows)
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+
+
+def delete_code_chunks_by_file(collection: str, file_path: str) -> None:
+    ensure_code_index()
+    conn = _get_conn()
+    ids = conn.execute(
+        "SELECT chunk_id FROM code_index WHERE collection = ? AND file_path = ?",
+        (collection, file_path),
+    ).fetchall()
+    if not ids:
+        return
+    conn.executemany("DELETE FROM code_index_fts WHERE chunk_id = ?", ids)
+    conn.execute(
+        "DELETE FROM code_index WHERE collection = ? AND file_path = ?",
+        (collection, file_path),
+    )
+    conn.commit()
+
+
+def delete_code_chunks_by_collection(collection: str) -> None:
+    ensure_code_index()
+    conn = _get_conn()
+    conn.execute("DELETE FROM code_index_fts WHERE collection = ?", (collection,))
+    conn.execute("DELETE FROM code_index WHERE collection = ?", (collection,))
+    conn.commit()
+
+
+def _query_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    for quoted in _QUOTED_RE.findall(query or ""):
+        terms.extend(_IDENT_RE.findall(quoted))
+    terms.extend(_IDENT_RE.findall(query or ""))
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in terms:
+        if len(term) < _MIN_QUERY_TOKEN:
+            continue
+        key = term.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(term)
+    return out[:12]
+
+
+def _fts_query(terms: list[str]) -> str:
+    quoted = []
+    for term in terms:
+        safe = term.replace('"', '""')
+        quoted.append(f'"{safe}"')
+    return " OR ".join(quoted)
+
+
+def _filter_clause(filters: dict[str, Any] | None, params: list[Any]) -> str:
+    if not filters:
+        return ""
+    clauses: list[str] = []
+    allowed = {"file_path", "name", "parent_name", "chunk_type", "language"}
+    for key, value in filters.items():
+        if key not in allowed:
+            continue
+        if isinstance(value, list):
+            vals = [v for v in value if v is not None]
+            if not vals:
+                continue
+            clauses.append(f"{key} IN ({','.join('?' for _ in vals)})")
+            params.extend(vals)
+        else:
+            clauses.append(f"{key} = ?")
+            params.append(value)
+    return (" AND " + " AND ".join(clauses)) if clauses else ""
+
+
+def _score_code_row(row: sqlite3.Row, terms: list[str]) -> float:
+    text = f"{row['file_path']} {row['name']} {row['parent_name']} {row['code']}".lower()
+    name = (row["name"] or "").lower()
+    parent = (row["parent_name"] or "").lower()
+    path = (row["file_path"] or "").lower()
+    score = 1.0
+    for term in terms:
+        t = term.lower()
+        if t == name:
+            score += 4.0
+        elif t == parent:
+            score += 2.5
+        elif t in path:
+            score += 1.5
+        occurrences = text.count(t)
+        score += min(occurrences, 8) * 0.25
+    if row["chunk_type"] in ("function", "method"):
+        score += 0.6
+    return score
+
+
+def search_code_chunks(
+    query: str,
+    collection: str | None = None,
+    limit: int = 20,
+    filters: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Search exact/lexical code chunks with symbol-aware scoring.
+
+    This complements semantic vector search. It is deliberately optimized for
+    developer navigation queries where symbols, file names, and API strings are
+    the highest-signal evidence.
+    """
+    terms = _query_terms(query)
+    if not terms:
+        return []
+    ensure_code_index()
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+
+    candidates: dict[str, sqlite3.Row] = {}
+    params: list[Any] = []
+    collection_clause = ""
+    if collection:
+        collection_clause = " AND collection = ?"
+        params.append(collection)
+    filter_clause = _filter_clause(filters, params)
+
+    try:
+        match = _fts_query(terms)
+        fts_rows = conn.execute(
+            f"""
+            SELECT chunk_id
+            FROM code_index_fts
+            WHERE code_index_fts MATCH ?{collection_clause}{filter_clause}
+            LIMIT ?
+            """,
+            [match, *params, max(limit * 8, 50)],
+        ).fetchall()
+        ids = [r["chunk_id"] for r in fts_rows]
+        if ids:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM code_index
+                WHERE chunk_id IN ({','.join('?' for _ in ids)})
+                """,
+                ids,
+            ).fetchall()
+            candidates.update({r["chunk_id"]: r for r in rows})
+    except sqlite3.Error:
+        pass
+
+    like_clauses: list[str] = []
+    like_params: list[Any] = []
+    for term in terms[:8]:
+        pattern = f"%{term}%"
+        like_clauses.append("(name LIKE ? OR parent_name LIKE ? OR file_path LIKE ? OR code LIKE ?)")
+        like_params.extend([term, term, pattern, pattern])
+    if like_clauses:
+        params2: list[Any] = []
+        collection_where = ""
+        if collection:
+            collection_where = "collection = ? AND "
+            params2.append(collection)
+        filter_clause2 = _filter_clause(filters, params2)
+        rows = conn.execute(
+            f"""
+            SELECT * FROM code_index
+            WHERE {collection_where}({" OR ".join(like_clauses)}){filter_clause2}
+            LIMIT ?
+            """,
+            [*params2, *like_params, max(limit * 8, 50)],
+        ).fetchall()
+        candidates.update({r["chunk_id"]: r for r in rows})
+
+    ranked = sorted(
+        candidates.values(),
+        key=lambda row: _score_code_row(row, terms),
+        reverse=True,
+    )[:limit]
+    return [
+        {
+            "chunk_id": row["chunk_id"],
+            "collection": row["collection"],
+            "file_path": row["file_path"],
+            "name": row["name"],
+            "parent_name": row["parent_name"],
+            "chunk_type": row["chunk_type"],
+            "language": row["language"],
+            "start_line": row["start_line"],
+            "end_line": row["end_line"],
+            "lines": f"{row['start_line']}-{row['end_line']}",
+            "code": row["code"],
+            "token_estimate": row["token_estimate"],
+            "score": round(_score_code_row(row, terms), 4),
+            "citation": (
+                f"{row['file_path']}:{row['start_line']}-{row['end_line']} "
+                f"({row['parent_name'] + '.' if row['parent_name'] else ''}{row['name']})"
+            ),
+        }
+        for row in ranked
+    ]
 
 
 def log_query(query: str, results_count: int, latency_ms: float) -> None:

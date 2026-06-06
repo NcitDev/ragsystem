@@ -2,6 +2,15 @@
 
 Purpose: compare plain Codex navigation against Codex assisted by this RAG index on realistic developer work. Run each task in a fresh context when possible, with the Dodo Android repository indexed as `repo_dodo`.
 
+Machine-readable cases:
+
+- `tests/eval/codex_rag_developer_tasks.jsonl`
+
+Related follow-up docs:
+
+- `docs/codex_rag_developer_test_results.md`
+- `docs/codex_rag_precision_improvement_plan.md`
+
 ## Comparison Method
 
 For every task, record two runs:

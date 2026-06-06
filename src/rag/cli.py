@@ -428,6 +428,233 @@ def search(
 
 
 @app.command()
+def context_pack(
+    query: str = typer.Argument(..., help="Context query"),
+    repo: str = typer.Option(None, "--repo", "-r", help="Search specific repo by name"),
+    max_slices: int = typer.Option(8, "--max-slices", "-n", help="Maximum source slices"),
+    max_source_tokens: int = typer.Option(6000, "--max-source-tokens", "-t", help="Source token budget"),
+    no_ast_index: bool = typer.Option(False, "--no-ast-index", help="Skip ast-index precision lookup"),
+    no_semantic: bool = typer.Option(False, "--no-semantic", help="Only use exact/lexical matches"),
+):
+    """Return a token-bounded source context pack."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/context-pack",
+            json={
+                "query": query,
+                "repo": repo,
+                "max_slices": max_slices,
+                "max_source_tokens": max_source_tokens,
+                "use_ast_index": not no_ast_index,
+                "include_semantic": not no_semantic,
+            },
+            headers=_auth_headers(),
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Context pack failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[bold]Context pack:[/bold] {data['query']} "
+        f"({data['total']} slices, ~{data['total_source_tokens']} source tokens, {data['latency_ms']}ms)\n"
+    )
+    for i, item in enumerate(data["slices"], 1):
+        console.print(f"[bold cyan]{i}. {item['file_path']}:{item['lines']}[/bold cyan]")
+        console.print(
+            f"   [dim]{item['why_included']} · {item['chunk_type']}[/dim] "
+            f"[green]{item['name']}[/green] score={item['score']} tokens~{item['token_estimate']}"
+        )
+        for line in item["code"].split("\n")[:12]:
+            console.print(f"   [dim]{line}[/dim]")
+        console.print()
+
+
+@app.command()
+def resolve(
+    symbol: list[str] = typer.Argument(..., help="Symbol(s) to resolve"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo to resolve against"),
+    usages: int = typer.Option(20, "--usages", "-u", help="Maximum usage slices"),
+    definitions: int = typer.Option(20, "--definitions", "-d", help="Maximum definition slices"),
+):
+    """Resolve exact symbol definitions and usages via ast-index."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/resolve",
+            json={
+                "repo": repo,
+                "symbols": symbol,
+                "definitions_limit": definitions,
+                "usages_limit": usages,
+            },
+            headers=_auth_headers(),
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Resolve failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[bold]Resolved:[/bold] {', '.join(data['symbols'])} "
+        f"({data['total_definitions']} definitions, {data['total_usages']} usages, {data['latency_ms']}ms)\n"
+    )
+    if data["definitions"]:
+        console.print("[bold]Definitions[/bold]")
+        for i, item in enumerate(data["definitions"], 1):
+            console.print(f"[bold cyan]{i}. {item['file_path']}:{item['lines']}[/bold cyan]")
+            console.print(f"   [green]{item['name']}[/green] [dim]{item['chunk_type']} tokens~{item['token_estimate']}[/dim]")
+    if data["usages"]:
+        console.print("\n[bold]Usages[/bold]")
+        for i, item in enumerate(data["usages"], 1):
+            console.print(f"[bold cyan]{i}. {item['file_path']}:{item['lines']}[/bold cyan]")
+            first = item["code"].strip().split("\n")[0] if item["code"].strip() else ""
+            console.print(f"   [dim]{first}[/dim]")
+
+
+@app.command()
+def call_tree(
+    symbol: str = typer.Argument(..., help="Function/symbol to trace"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo to trace against"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum call-tree nodes"),
+):
+    """Show AST call tree nodes with compact source slices."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/call-tree",
+            json={"repo": repo, "symbol": symbol, "limit": limit},
+            headers=_auth_headers(),
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Call tree failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Call tree:[/bold] {data['symbol']} ({data['total']} nodes, {data['latency_ms']}ms)\n")
+    for item in data["nodes"]:
+        indent = "  " * int(item.get("depth", 0))
+        console.print(f"{indent}[bold cyan]{item['file_path']}:{item['lines']}[/bold cyan] [green]{item['name']}[/green]")
+        first = item["code"].strip().split("\n")[0] if item["code"].strip() else ""
+        if first:
+            console.print(f"{indent}  [dim]{first}[/dim]")
+
+
+@app.command()
+def understand(
+    query: str = typer.Argument(..., help="Project topic to understand"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo"),
+    max_modules: int = typer.Option(8, "--max-modules", help="Maximum module summaries"),
+    max_slices: int = typer.Option(8, "--max-slices", help="Maximum recommended context slices"),
+    max_source_tokens: int = typer.Option(6000, "--max-source-tokens", help="Source token budget"),
+):
+    """Return project map plus recommended source slices for a topic."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/project-understand",
+            json={
+                "repo": repo,
+                "query": query,
+                "max_modules": max_modules,
+                "max_slices": max_slices,
+                "max_source_tokens": max_source_tokens,
+            },
+            headers=_auth_headers(),
+            timeout=180,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Understand failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[bold]Project understanding:[/bold] {data['query']} "
+        f"({len(data['slices'])} slices, ~{data['total_source_tokens']} source tokens, {data['latency_ms']}ms)\n"
+    )
+    if data["modules"]:
+        console.print("[bold]Modules[/bold]")
+        for module in data["modules"]:
+            console.print(f"  [cyan]{module['path']}[/cyan] [dim]{module['file_count']} files score={module['score']}[/dim]")
+    if data["symbols"]:
+        console.print("\n[bold]Likely Symbols[/bold]")
+        for symbol in data["symbols"][:10]:
+            console.print(f"  [green]{symbol['name']}[/green] [dim]{symbol['kind']} {symbol['path']}:{symbol['line']}[/dim]")
+    if data["slices"]:
+        console.print("\n[bold]Recommended Context[/bold]")
+        for i, item in enumerate(data["slices"], 1):
+            console.print(f"[bold cyan]{i}. {item['file_path']}:{item['lines']}[/bold cyan]")
+            console.print(f"   [dim]{item['why_included']} tokens~{item['token_estimate']}[/dim]")
+
+
+@app.command()
+def backfill_code_index(
+    repo: str = typer.Option(None, "--repo", "-r", help="Named repo to backfill"),
+    collection: str = typer.Option(None, "--collection", "-c", help="Qdrant collection to backfill"),
+    keep_existing: bool = typer.Option(False, "--keep-existing", help="Do not clear existing SQLite code-index rows first"),
+):
+    """Backfill exact/context-pack SQLite index from existing Qdrant payloads."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/index/backfill-code-index",
+            json={"repo": repo, "collection": collection, "clear": not keep_existing},
+            headers=_auth_headers(),
+            timeout=600,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Backfill failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]Backfilled[/green] {data['chunks_indexed']} chunks "
+        f"from {data['collection']} in {data['latency_ms']}ms"
+    )
+    if data.get("chunks_skipped"):
+        console.print(f"[yellow]Skipped {data['chunks_skipped']} payloads without content.[/yellow]")
+
+
+@app.command()
 def ask(
     question: str = typer.Argument(..., help="Question about the indexed codebase"),
     top_k: int = typer.Option(8, "--top-k", "-k", help="Chunks to retrieve as grounding context"),
