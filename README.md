@@ -16,6 +16,12 @@ pip install -e .
 
 Ollama is **required** for embeddings (Qwen3-Embedding) and recommended for the planner agent (`qwen3:8b`). The previous FastEmbed ONNX fallback and the cross-encoder reranker were removed; if Ollama is unavailable the daemon will fail to start. The planner agent degrades to keyword heuristics if its model isn't pulled.
 
+Install project-owned Codex skills:
+
+```bash
+scripts/install-codex-skills.sh
+```
+
 ## 30-second quickstart
 
 ```bash
