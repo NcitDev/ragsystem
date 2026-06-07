@@ -419,6 +419,112 @@ def search_code_chunks(
     ]
 
 
+def list_code_files(
+    collection: str | None = None,
+    query: str = "",
+    limit: int = 200,
+    tests_only: bool = False,
+) -> list[dict[str, Any]]:
+    """List indexed source files from the exact SQLite mirror."""
+    ensure_code_index()
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+
+    params: list[Any] = []
+    clauses: list[str] = []
+    if collection:
+        clauses.append("collection = ?")
+        params.append(collection)
+    if tests_only:
+        clauses.append("(file_path LIKE ? OR file_path LIKE ? OR file_path LIKE ?)")
+        params.extend(["%/test/%", "%/tests/%", "%Test.%"])
+
+    terms = _query_terms(query)
+    for term in terms[:6]:
+        clauses.append("(file_path LIKE ? OR name LIKE ? OR parent_name LIKE ?)")
+        pattern = f"%{term}%"
+        params.extend([pattern, pattern, pattern])
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"""
+        SELECT
+            file_path,
+            MAX(language) AS language,
+            COUNT(*) AS chunk_count,
+            COUNT(NULLIF(name, '')) AS symbol_count,
+            MAX(updated_at) AS updated_at,
+            GROUP_CONCAT(NULLIF(name, ''), ', ') AS symbols
+        FROM code_index
+        {where}
+        GROUP BY file_path
+        ORDER BY chunk_count DESC, file_path ASC
+        LIMIT ?
+        """,
+        [*params, limit],
+    ).fetchall()
+    lowered_terms = [term.lower() for term in terms]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        path = str(row["file_path"])
+        symbols = [s for s in str(row["symbols"] or "").split(", ") if s][:20]
+        score = 1.0
+        for term in lowered_terms:
+            if term in path.lower():
+                score += 3.0
+            if any(term in symbol.lower() for symbol in symbols):
+                score += 2.0
+        out.append(
+            {
+                "file_path": path,
+                "language": row["language"] or "",
+                "chunk_count": int(row["chunk_count"] or 0),
+                "symbol_count": int(row["symbol_count"] or 0),
+                "symbols": symbols,
+                "updated_at": float(row["updated_at"] or 0.0),
+                "score": round(score, 3),
+            }
+        )
+    return out
+
+
+def related_test_files(
+    collection: str | None,
+    file_paths: Sequence[str],
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Heuristically rank tests related to changed or impacted files."""
+    test_files = list_code_files(collection=collection, limit=max(limit * 4, 100), tests_only=True)
+    if not file_paths:
+        return test_files[:limit]
+
+    anchors: set[str] = set()
+    modules: set[str] = set()
+    for path in file_paths:
+        parts = [p for p in path.split("/") if p]
+        if parts:
+            anchors.add(re.sub(r"(?i)(test|spec)$", "", parts[-1].split(".")[0]).lower())
+        if len(parts) > 1:
+            modules.add("/".join(parts[: max(1, min(len(parts) - 1, 3))]).lower())
+
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for item in test_files:
+        path = item["file_path"].lower()
+        base = item["file_path"].split("/")[-1].split(".")[0].lower()
+        score = 0.0
+        for anchor in anchors:
+            if anchor and anchor in base:
+                score += 5.0
+            elif anchor and anchor in path:
+                score += 2.0
+        if any(path.startswith(module) for module in modules):
+            score += 1.0
+        if score > 0:
+            ranked.append((score, {**item, "score": round(score, 3)}))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in ranked[:limit]]
+
+
 def log_query(query: str, results_count: int, latency_ms: float) -> None:
     try:
         conn = _get_conn()

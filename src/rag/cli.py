@@ -47,6 +47,35 @@ def _require_daemon() -> None:
         raise typer.Exit(1)
 
 
+def _post_json(path: str, payload: dict, timeout: int = 120) -> dict:
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}{path}",
+            json=payload,
+            headers=_auth_headers(),
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Request failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+
+def _emit_json(data: dict) -> None:
+    import json
+    import sys
+
+    sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False))
+    sys.stdout.write("\n")
+
+
 # --- Core Commands ---
 
 
@@ -109,6 +138,25 @@ def init(
     console.print("  rag search \"your query\"")
     console.print("  rag overview")
     console.print("  rag diagnose")
+
+
+@app.command("install-agent")
+def install_agent(
+    target: str = typer.Argument("codex", help="Agent to configure. Currently supports: codex"),
+):
+    """Install project-owned agent guidance such as Codex skills."""
+    import subprocess
+
+    if target != "codex":
+        console.print("[red]Only 'codex' is currently supported.[/red]")
+        raise typer.Exit(1)
+    installer = PROJECT_ROOT / "scripts" / "install-codex-skills.sh"
+    if not installer.exists():
+        console.print(f"[red]Installer not found: {installer}[/red]")
+        raise typer.Exit(1)
+    proc = subprocess.run([str(installer)], cwd=PROJECT_ROOT)
+    if proc.returncode != 0:
+        raise typer.Exit(proc.returncode)
 
 
 @app.command()
@@ -972,6 +1020,165 @@ def call_tree(
         first = item["code"].strip().split("\n")[0] if item["code"].strip() else ""
         if first:
             console.print(f"{indent}  [dim]{first}[/dim]")
+
+
+@app.command()
+def files(
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo"),
+    query: str = typer.Argument("", help="Optional file/symbol query"),
+    limit: int = typer.Option(100, "--limit", "-l", help="Maximum files"),
+    tests_only: bool = typer.Option(False, "--tests-only", help="Only return likely test files"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """List indexed files without scanning the filesystem."""
+    _require_daemon()
+    data = _post_json(
+        "/graph/files",
+        {"repo": repo, "query": query, "limit": limit, "tests_only": tests_only},
+    )
+    if json_output:
+        _emit_json(data)
+        return
+    console.print(f"\n[bold]Files:[/bold] {repo} ({data['total']} files, {data['latency_ms']}ms)\n")
+    for item in data["files"]:
+        console.print(
+            f"[bold cyan]{item['file_path']}[/bold cyan] "
+            f"[dim]{item['language']} chunks={item['chunk_count']} symbols={item['symbol_count']}[/dim]"
+        )
+        if item.get("symbols"):
+            console.print(f"  [dim]{', '.join(item['symbols'][:8])}[/dim]")
+
+
+@app.command()
+def node(
+    symbol: str = typer.Argument(..., help="Symbol to inspect"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum definitions/usages"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Get a symbol's definitions and usages."""
+    _require_daemon()
+    data = _post_json("/graph/node", {"repo": repo, "symbol": symbol, "limit": limit})
+    if json_output:
+        _emit_json(data)
+        return
+    console.print(
+        f"\n[bold]Node:[/bold] {data['symbol']} "
+        f"({data['total_definitions']} definitions, {data['total_usages']} usages, {data['latency_ms']}ms)\n"
+    )
+    for section in ("definitions", "usages"):
+        if not data[section]:
+            continue
+        console.print(f"[bold]{section.title()}[/bold]")
+        for item in data[section][:10]:
+            console.print(f"  [cyan]{item['file_path']}:{item['lines']}[/cyan] [green]{item['name']}[/green]")
+
+
+@app.command()
+def callers(
+    symbol: str = typer.Argument(..., help="Symbol to inspect"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum callers"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Find one-hop callers of a symbol."""
+    _require_daemon()
+    data = _post_json("/graph/callers", {"repo": repo, "symbol": symbol, "limit": limit})
+    if json_output:
+        _emit_json(data)
+        return
+    console.print(f"\n[bold]Callers:[/bold] {data['symbol']} ({data['total']} nodes, {data['latency_ms']}ms)\n")
+    for item in data["nodes"]:
+        console.print(f"[cyan]{item['file_path']}:{item['lines']}[/cyan] [green]{item['name']}[/green]")
+
+
+@app.command()
+def callees(
+    symbol: str = typer.Argument(..., help="Symbol to inspect"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum callees"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Find likely callees from a symbol body."""
+    _require_daemon()
+    data = _post_json("/graph/callees", {"repo": repo, "symbol": symbol, "limit": limit})
+    if json_output:
+        _emit_json(data)
+        return
+    console.print(
+        f"\n[bold]Callees:[/bold] {data['symbol']} "
+        f"({data['total']} nodes, source={data['relation_source']}, {data['latency_ms']}ms)\n"
+    )
+    for item in data["nodes"]:
+        console.print(f"[cyan]{item['file_path']}:{item['lines']}[/cyan] [green]{item['name']}[/green]")
+
+
+@app.command()
+def impact(
+    symbol: str = typer.Argument(..., help="Symbol to inspect"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum graph nodes/tests"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Analyze likely impact radius for a symbol change."""
+    _require_daemon()
+    data = _post_json("/graph/impact", {"repo": repo, "symbol": symbol, "limit": limit})
+    if json_output:
+        _emit_json(data)
+        return
+    metrics = data["metrics"]
+    console.print(
+        f"\n[bold]Impact:[/bold] {data['symbol']} "
+        f"defs={metrics.get('definition_count', 0)} usages={metrics.get('usage_count', 0)} "
+        f"callers={metrics.get('caller_count', 0)} tests={metrics.get('test_count', 0)}\n"
+    )
+    if data["affected_files"]:
+        console.print("[bold]Affected Files[/bold]")
+        for path in data["affected_files"][:20]:
+            console.print(f"  [cyan]{path}[/cyan]")
+    if data["tests"]:
+        console.print("\n[bold]Likely Tests[/bold]")
+        for item in data["tests"][:20]:
+            console.print(f"  [cyan]{item['file_path']}[/cyan] [dim]score={item['score']}[/dim]")
+    if data["risks"]:
+        console.print("\n[bold]Risks[/bold]")
+        for risk in data["risks"]:
+            console.print(f"  [yellow]-[/yellow] {risk}")
+
+
+@app.command()
+def affected(
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo"),
+    file: list[str] = typer.Option(None, "--file", "-f", help="Changed file path; repeatable"),
+    since: str = typer.Option("HEAD", "--since", help="Git ref for changed files when --file is omitted"),
+    limit: int = typer.Option(100, "--limit", "-l", help="Maximum tests/files"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Find likely affected indexed files and tests for changed files."""
+    _require_daemon()
+    data = _post_json(
+        "/graph/affected",
+        {"repo": repo, "files": file or [], "since": since, "limit": limit},
+    )
+    if json_output:
+        _emit_json(data)
+        return
+    console.print(
+        f"\n[bold]Affected:[/bold] changed={len(data['changed_files'])} "
+        f"indexed={len(data['affected_files'])} tests={len(data['tests'])} ({data['latency_ms']}ms)\n"
+    )
+    if data["changed_files"]:
+        console.print("[bold]Changed Files[/bold]")
+        for path in data["changed_files"][:20]:
+            console.print(f"  [cyan]{path}[/cyan]")
+    if data["tests"]:
+        console.print("\n[bold]Likely Tests[/bold]")
+        for item in data["tests"][:20]:
+            console.print(f"  [cyan]{item['file_path']}[/cyan] [dim]score={item['score']}[/dim]")
+    if data["risks"]:
+        console.print("\n[bold]Risks[/bold]")
+        for risk in data["risks"]:
+            console.print(f"  [yellow]-[/yellow] {risk}")
 
 
 @app.command()

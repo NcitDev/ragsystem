@@ -27,6 +27,8 @@ _SYMBOL_LINE_RE = re.compile(
 _CALL_TREE_LINE_RE = re.compile(
     r"^(?P<indent>\s*)←\s+(?P<name>.+?)\s+\((?P<path>.+):(?P<line>\d+)\)"
 )
+_CALLERS_FILE_RE = re.compile(r"^\s*(?P<path>[^:\n].+):\s*$")
+_CALLERS_LINE_RE = re.compile(r"^\s*:(?P<line>\d+)\s+(?P<context>.*)$")
 _BROAD_PROJECT_TERMS = {
     "processing", "process", "order", "checkout", "service", "manager",
     "presenter", "interactor", "state", "result", "feature", "screen",
@@ -187,6 +189,45 @@ def call_tree(repo_path: str, symbol: str, limit: int = 50) -> list[dict[str, An
         if len(ranked) >= limit:
             break
     return ranked
+
+
+def callers(repo_path: str, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Return one-hop callers for ``symbol`` with compact source slices."""
+    root = Path(repo_path)
+    if not root.exists() or not is_available() or not symbol.strip():
+        return []
+    text = _run_text(
+        root,
+        ["callers", "--limit", str(limit), symbol.strip()],
+        timeout=12.0,
+    )
+    if not text:
+        return []
+
+    hits: list[AstIndexHit] = []
+    current_path = ""
+    for line in text.splitlines():
+        file_match = _CALLERS_FILE_RE.match(line)
+        if file_match:
+            current_path = file_match.group("path").strip()
+            continue
+        line_match = _CALLERS_LINE_RE.match(line)
+        if not line_match or not current_path:
+            continue
+        hit = AstIndexHit(
+            file_path=current_path,
+            line=int(line_match.group("line")),
+            name=symbol.strip(),
+            kind="caller",
+            context=line_match.group("context").strip(),
+            source="callers",
+            score=8.0,
+        )
+        _attach_code(root, hit)
+        if hit.code.strip():
+            hits.append(hit)
+
+    return [hit.to_context_candidate() for hit in _rank_unique_hits(hits, limit)]
 
 
 def understand_project(repo_path: str, query: str, max_modules: int = 8, max_slices: int = 8) -> dict[str, Any]:

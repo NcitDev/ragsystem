@@ -19,7 +19,7 @@ Ollama is **required** for embeddings (Qwen3-Embedding) and recommended for the 
 Install project-owned Codex skills:
 
 ```bash
-scripts/install-codex-skills.sh
+rag install-agent codex
 ```
 
 ## 30-second quickstart
@@ -39,10 +39,16 @@ rag service install
 | Command | Description |
 | --- | --- |
 | `rag init [path]` | Initialize: create config, start daemon, index current directory. |
+| `rag install-agent codex` | Install project-owned Codex skills for repo-agent workflows. |
 | `rag start [--tui] [--watch]` | Start the headless daemon (HTTP server on `:7890`). `--tui` also spawns the TUI in the foreground. `--headless`/`--no-tui` are accepted aliases. |
 | `rag tui` | Launch the read-only TUI dashboard against a running daemon. |
 | `rag service install` / `rag service uninstall` / `rag service status` | Register the daemon as a launchd agent (macOS) so it auto-starts on login and restarts on crash. |
 | `rag search QUERY [--top-k N] [--repo NAME]` | Search the indexed codebase. (`--no-rerank` is accepted but ignored — the reranker was removed.) |
+| `rag files --repo NAME [QUERY]` | List indexed files from the exact local code index. |
+| `rag node SYMBOL --repo NAME` | Show exact definitions and usages for a symbol. |
+| `rag callers SYMBOL --repo NAME` / `rag callees SYMBOL --repo NAME` | Show caller edges and heuristic callee candidates. |
+| `rag impact SYMBOL --repo NAME` | Estimate affected files, callers, usages, tests, and risks for a symbol change. |
+| `rag affected --repo NAME [--since REF]` | Estimate affected indexed files/tests from a git diff or explicit files. |
 | `rag index [path] [--full] [--lang L] [--name NAME]` | Index a repository (incremental by default). |
 | `rag status` | Show daemon, embedder, and collection status. |
 | `rag overview` | Codebase overview: language distribution, patterns, complexity. |

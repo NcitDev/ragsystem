@@ -175,6 +175,89 @@ class ProjectUnderstandResponse(BaseModel):
     latency_ms: float
 
 
+class GraphFilesRequest(BaseModel):
+    repo: str = Field(..., min_length=1)
+    query: str = Field("", max_length=MAX_QUERY_LENGTH)
+    limit: int = Field(100, ge=1, le=1000)
+    tests_only: bool = False
+
+
+class GraphFileItem(BaseModel):
+    file_path: str
+    language: str = ""
+    chunk_count: int = 0
+    symbol_count: int = 0
+    symbols: list[str] = []
+    updated_at: float = 0.0
+    score: float = 0.0
+
+
+class GraphFilesResponse(BaseModel):
+    repo: str
+    query: str = ""
+    files: list[GraphFileItem]
+    total: int
+    latency_ms: float
+
+
+class GraphSymbolRequest(BaseModel):
+    repo: str = Field(..., min_length=1)
+    symbol: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    limit: int = Field(50, ge=1, le=200)
+
+
+class GraphNodeResponse(BaseModel):
+    repo: str
+    symbol: str
+    definitions: list[ContextSlice]
+    usages: list[ContextSlice]
+    total_definitions: int
+    total_usages: int
+    provenance: str = "ast_index"
+    latency_ms: float
+
+
+class GraphRelationResponse(BaseModel):
+    repo: str
+    symbol: str
+    relation: str
+    nodes: list[ContextSlice]
+    total: int
+    relation_source: str = "ast_index"
+    latency_ms: float
+
+
+class GraphImpactResponse(BaseModel):
+    repo: str
+    symbol: str
+    definitions: list[ContextSlice]
+    usages: list[ContextSlice]
+    callers: list[ContextSlice]
+    affected_files: list[str]
+    tests: list[GraphFileItem]
+    risks: list[str]
+    metrics: dict[str, Any]
+    latency_ms: float
+
+
+class GraphAffectedRequest(BaseModel):
+    repo: str = Field(..., min_length=1)
+    files: list[str] = Field(default_factory=list)
+    since: str = Field("HEAD", min_length=1, max_length=200)
+    limit: int = Field(100, ge=1, le=1000)
+
+
+class GraphAffectedResponse(BaseModel):
+    repo: str
+    changed_files: list[str]
+    affected_files: list[str]
+    tests: list[GraphFileItem]
+    modules: list[dict[str, Any]]
+    risks: list[str]
+    metrics: dict[str, Any]
+    latency_ms: float
+
+
 class EnumerateRequest(BaseModel):
     """Exhaustive metadata enumeration via Qdrant scroll. No vector search.
     Matches payload filters directly and pages through ALL results up to limit."""
@@ -1641,6 +1724,209 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error("call_tree_error", repo=req.repo, symbol=req.symbol, error=str(e))
             raise HTTPException(status_code=500, detail=f"Call tree failed ({type(e).__name__})")
+
+    @app.post("/graph/files", response_model=GraphFilesResponse, dependencies=[Depends(require_auth)])
+    async def graph_files(req: GraphFilesRequest):
+        start = time.time()
+        try:
+            collection = _collection_for_repo(req.repo)
+
+            from rag.core.graph_tools import files as graph_files_for_repo
+
+            raw = graph_files_for_repo(
+                collection,
+                query=req.query,
+                limit=req.limit,
+                tests_only=req.tests_only,
+            )
+            latency = (time.time() - start) * 1000
+            return GraphFilesResponse(
+                repo=req.repo,
+                query=req.query,
+                files=[GraphFileItem(**item) for item in raw],
+                total=len(raw),
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("graph_files_error", repo=req.repo, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Graph files failed ({type(e).__name__})")
+
+    @app.post("/graph/node", response_model=GraphNodeResponse, dependencies=[Depends(require_auth)])
+    async def graph_node(req: GraphSymbolRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+            collection = _collection_for_repo(req.repo)
+
+            from rag.core.graph_tools import node as graph_node_for_symbol
+
+            raw = graph_node_for_symbol(
+                repo_info.path,
+                collection,
+                req.symbol,
+                definitions_limit=min(req.limit, 100),
+                usages_limit=req.limit,
+            )
+            definitions = [
+                s for item in raw.get("definitions", [])
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            usages = [
+                s for item in raw.get("usages", [])
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            latency = (time.time() - start) * 1000
+            return GraphNodeResponse(
+                repo=req.repo,
+                symbol=req.symbol,
+                definitions=definitions,
+                usages=usages,
+                total_definitions=len(definitions),
+                total_usages=len(usages),
+                provenance=str(raw.get("provenance", "ast_index")),
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("graph_node_error", repo=req.repo, symbol=req.symbol, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Graph node failed ({type(e).__name__})")
+
+    @app.post("/graph/callers", response_model=GraphRelationResponse, dependencies=[Depends(require_auth)])
+    async def graph_callers(req: GraphSymbolRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+
+            from rag.core.graph_tools import callers as graph_callers_for_symbol
+
+            raw = graph_callers_for_symbol(repo_info.path, req.symbol, limit=req.limit)
+            nodes = [
+                s for item in raw
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            latency = (time.time() - start) * 1000
+            return GraphRelationResponse(
+                repo=req.repo,
+                symbol=req.symbol,
+                relation="callers",
+                nodes=nodes,
+                total=len(nodes),
+                relation_source="ast_index",
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("graph_callers_error", repo=req.repo, symbol=req.symbol, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Graph callers failed ({type(e).__name__})")
+
+    @app.post("/graph/callees", response_model=GraphRelationResponse, dependencies=[Depends(require_auth)])
+    async def graph_callees(req: GraphSymbolRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+            collection = _collection_for_repo(req.repo)
+
+            from rag.core.graph_tools import callees as graph_callees_for_symbol
+
+            raw = graph_callees_for_symbol(repo_info.path, collection, req.symbol, limit=req.limit)
+            nodes = [
+                s for item in raw
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            latency = (time.time() - start) * 1000
+            return GraphRelationResponse(
+                repo=req.repo,
+                symbol=req.symbol,
+                relation="callees",
+                nodes=nodes,
+                total=len(nodes),
+                relation_source="heuristic_source_scan",
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("graph_callees_error", repo=req.repo, symbol=req.symbol, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Graph callees failed ({type(e).__name__})")
+
+    @app.post("/graph/impact", response_model=GraphImpactResponse, dependencies=[Depends(require_auth)])
+    async def graph_impact(req: GraphSymbolRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+            collection = _collection_for_repo(req.repo)
+
+            from rag.core.graph_tools import impact as graph_impact_for_symbol
+
+            raw = graph_impact_for_symbol(repo_info.path, collection, req.symbol, limit=req.limit)
+            definitions = [
+                s for item in raw.get("definitions", [])
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            usages = [
+                s for item in raw.get("usages", [])
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            callers = [
+                s for item in raw.get("callers", [])
+                if (s := _context_slice_from_candidate(item)) is not None
+            ]
+            tests = [GraphFileItem(**item) for item in raw.get("tests", [])]
+            latency = (time.time() - start) * 1000
+            return GraphImpactResponse(
+                repo=req.repo,
+                symbol=req.symbol,
+                definitions=definitions,
+                usages=usages,
+                callers=callers,
+                affected_files=[str(path) for path in raw.get("affected_files", [])],
+                tests=tests,
+                risks=[str(risk) for risk in raw.get("risks", [])],
+                metrics=dict(raw.get("metrics", {}) or {}),
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("graph_impact_error", repo=req.repo, symbol=req.symbol, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Graph impact failed ({type(e).__name__})")
+
+    @app.post("/graph/affected", response_model=GraphAffectedResponse, dependencies=[Depends(require_auth)])
+    async def graph_affected(req: GraphAffectedRequest):
+        start = time.time()
+        try:
+            repo_info = _repo_info_for_name(req.repo)
+            collection = _collection_for_repo(req.repo)
+
+            from rag.core.graph_tools import affected as graph_affected_for_repo
+
+            raw = graph_affected_for_repo(
+                repo_info.path,
+                collection,
+                files=req.files,
+                since=req.since,
+                limit=req.limit,
+            )
+            latency = (time.time() - start) * 1000
+            return GraphAffectedResponse(
+                repo=req.repo,
+                changed_files=[str(path) for path in raw.get("changed_files", [])],
+                affected_files=[str(path) for path in raw.get("affected_files", [])],
+                tests=[GraphFileItem(**item) for item in raw.get("tests", [])],
+                modules=list(raw.get("modules", []) or []),
+                risks=[str(risk) for risk in raw.get("risks", [])],
+                metrics=dict(raw.get("metrics", {}) or {}),
+                latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("graph_affected_error", repo=req.repo, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Graph affected failed ({type(e).__name__})")
 
     @app.post("/project-understand", response_model=ProjectUnderstandResponse, dependencies=[Depends(require_auth)])
     async def project_understand(req: ProjectUnderstandRequest):

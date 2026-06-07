@@ -33,7 +33,20 @@ curl -s http://127.0.0.1:7890/health
 uv run rag repo-agent --repo dodo --json "<developer task>"
 ```
 
-3. Read the evidence bundle before opening files:
+3. When the task needs a narrower primitive, let the main LLM choose one of the exact graph tools instead of forcing a single explore flow:
+
+```bash
+uv run rag files --repo <repo-name> "<file or symbol query>" --json
+uv run rag node <SymbolName> --repo <repo-name> --json
+uv run rag callers <SymbolName> --repo <repo-name> --json
+uv run rag callees <SymbolName> --repo <repo-name> --json
+uv run rag impact <SymbolName> --repo <repo-name> --json
+uv run rag affected --repo <repo-name> --since HEAD --json
+```
+
+Use exact graph tools for code facts. Use docs/RAG only for generated project memory such as events, DI maps, workflow maps, public API maps, domain glossaries, and test coverage maps.
+
+4. Read the evidence bundle before opening files:
 
 - `evidence_bundle.top_files`
 - `evidence_bundle.symbols`
@@ -45,23 +58,23 @@ uv run rag repo-agent --repo dodo --json "<developer task>"
 - `evidence_bundle.risks`
 - `metrics`
 
-4. For feature additions, check `reuse_context` before proposing new APIs/events/classes.
+5. For feature additions, check `reuse_context` before proposing new APIs/events/classes.
 
-5. For architecture/module work, check `architecture.modules`, `call_trees`, and dependency/DI slices before moving code.
+6. For architecture/module work, check `architecture.modules`, `call_trees`, `impact`, `affected`, and dependency/DI slices before moving code.
 
-6. If the repo-agent finds code but misses durable project knowledge, use the `rag-project-enrichment` skill before editing. Typical gaps: analytics events, metrics, feature flags, module ownership, DI maps, state machines, public API maps, or product vocabulary that differs from code names.
+7. If the repo-agent finds code but misses durable project knowledge, use the `rag-project-enrichment` skill before editing. Typical gaps: analytics events, metrics, feature flags, module ownership, DI maps, state machines, public API maps, or product vocabulary that differs from code names.
 
-7. Disambiguate same-name symbols by file path and caller, especially common methods like `setupAppStateForNewOrder`.
+8. Disambiguate same-name symbols by file path and caller, especially common methods like `setupAppStateForNewOrder`.
 
-8. Only after the repo-agent pass, use `rg`, AST index, and targeted file reads to verify. Avoid whole large-file reads unless the evidence bundle is insufficient.
+9. Only after the repo-agent pass, use `rg`, AST index, and targeted file reads to verify. Avoid whole large-file reads unless the evidence bundle is insufficient.
 
-9. Edit with the smallest safe change. Keep behavior order, side effects, and existing module boundaries intact unless the task explicitly asks otherwise.
+10. Edit with the smallest safe change. Keep behavior order, side effects, and existing module boundaries intact unless the task explicitly asks otherwise.
 
-10. Run targeted tests first, then broader tests when risk justifies it.
+11. Run targeted tests first, then broader tests when risk justifies it.
 
 ## When Events Or Docs Matter
 
-If the task mentions analytics/events/product terminology, ensure event docs are indexed:
+If the task mentions analytics/events/product terminology, ensure event docs are indexed when the repo has an event generator:
 
 ```bash
 uv run rag generate-event-catalog /path/to/repo --repo-name dodo --index

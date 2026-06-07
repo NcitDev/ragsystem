@@ -14,7 +14,7 @@ Use this skill when a repo-agent result is correct but incomplete because import
 RAG should contain two kinds of knowledge:
 
 - exact code context from AST/lexical indexes
-- durable project knowledge generated from code and indexed as docs/specs
+- durable project knowledge generated from code and indexed as docs/specs, currently in the docs Qdrant collection
 
 Codex may create enrichment docs, but every fact must be grounded in source files and line numbers. Do not invent product rules.
 
@@ -33,15 +33,15 @@ Consider enrichment when the task mentions or depends on:
 
 Also enrich when repo-agent finds the code path but misses an existing reusable concept.
 
-## Dodo Calibration Insights
+## Calibration Insights
 
-Use these as examples of what “missing durable project knowledge” looks like in a real large Android repo:
+Use these as examples of what “missing durable project knowledge” looks like across repos:
 
-- **Analytics/events are first-class knowledge.** Dodo has many analytics files, event constants, event producer functions, helper wrappers, and tests. It also has debug tooling for analytics event preview/details. For analytics tasks, generate/index an event catalog before concluding that a new event is needed.
-- **Feature DI is repetitive and indexable.** Many features follow a `FeatureDependencies` + `Component` + `Module` pattern. For module-boundary or ownership tasks, a dependency/DI map is often more useful than more source slices.
-- **Checkout/order has implicit workflows.** Paid order states such as `OK`, `ALMOST_OK`, `OrderCreated`, and `OrderIsBeingCreated` are scattered across domain models, services, and tests. A state-machine/workflow doc can bridge product wording to code names.
-- **Deprecated APIs encode migration knowledge.** Comments like “Use CheckoutService::setupAppStateForNewOrder” should become public API/replacement-map entries.
-- **Debug and tooling modules reveal domain surfaces.** Files under debug analytics, toggles, segments, or event preview features can show what the team considers inspectable/product-important.
+- **Analytics/events are first-class knowledge.** Event constants, producer functions, helper wrappers, tests, and debug/event-preview tooling should become an event catalog before concluding that a new event is needed.
+- **DI and module ownership are repetitive and indexable.** Android/Dagger, Spring, NestJS, Django apps, and other frameworks encode ownership in providers/modules/configuration. A dependency/module map is often more useful than more source slices.
+- **Workflows and state machines are scattered.** States, transitions, reducers, async jobs, controllers, serializers, and tests often live in different files. A workflow map bridges product wording to code names.
+- **Deprecated APIs encode migration knowledge.** Deprecation comments and replacement text should become public API/replacement-map entries.
+- **Debug and tooling modules reveal domain surfaces.** Debug screens, toggles, metrics, event previews, route registries, and diagnostics show what the team considers inspectable/product-important.
 
 ## Workflow
 
@@ -71,13 +71,22 @@ uv run rag repo-agent --repo <repo-name> --json "<task>"
 - `test-coverage-map.md`
 - `public-api-map.md`
 
-In Dodo-like Android repos, prioritize:
+For Android/Kotlin repos, prioritize:
 
 - `analytics-event-catalog.md` for event constants, event producers, tracking helpers, analytics tests, and debug event tooling
 - `feature-di-map.md` for `FeatureDependencies`, Dagger `Component`, `Module`, providers, and app/root dependency registries
 - `workflow-state-map.md` for state enums/sealed classes, transition functions, polling/recovery paths, and tests
 - `deprecated-api-replacements.md` for deprecated symbols and their replacement comments
 - `debug-tooling-map.md` for debug screens/tools that reveal events, toggles, segments, remote config, or diagnostics
+
+For other repos, choose equivalent artifacts:
+
+- route/controller map for web frameworks
+- ORM/model/query lifecycle map for backend frameworks
+- scheduler/task/runtime map for async runtimes
+- request/middleware/interceptor map for HTTP frameworks
+- render/update lifecycle map for UI frameworks
+- serialization/protocol map for generated or wire-format code
 
 4. Generate docs from code, not memory. Each entry should include:
 
@@ -114,6 +123,15 @@ For analytics enrichment, use concrete event/helper/factory symbols after the fi
 
 ```bash
 uv run rag repo-agent --repo dodo --json "PaymentAnalytics AnalyticsHelper orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT trackPaymentFinished tests"
+```
+
+For non-Dodo repos, first use exact graph tools to derive concrete terms:
+
+```bash
+uv run rag files --repo <repo-name> "router controller middleware" --json
+uv run rag node <SymbolName> --repo <repo-name> --json
+uv run rag callers <SymbolName> --repo <repo-name> --json
+uv run rag impact <SymbolName> --repo <repo-name> --json
 ```
 
 5. Prefer existing generators before hand-written docs. For analytics/events:

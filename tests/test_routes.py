@@ -495,6 +495,218 @@ def test_call_tree_returns_ast_nodes(app_ctx, monkeypatch):
     assert body["nodes"][0]["file_path"] == "checkout/Presenter.kt"
 
 
+def test_graph_files_lists_indexed_files(app_ctx, monkeypatch):
+    client, token = app_ctx
+    from rag.core.vectorstore import ChunkDocument
+    from rag.storage import db as _db
+    import rag.server as _server
+
+    monkeypatch.setattr(
+        _server,
+        "_repo_info_for_name",
+        lambda repo: SimpleNamespace(path="/tmp/demo", collection="repo_demo"),
+        raising=True,
+    )
+    _db.upsert_code_chunks(
+        "repo_demo",
+        [
+            ChunkDocument(
+                content="class PaymentPresenter",
+                metadata={
+                    "file_path": "checkout/PaymentPresenter.kt",
+                    "language": "kotlin",
+                    "chunk_type": "class",
+                    "name": "PaymentPresenter",
+                    "parent_name": "",
+                    "start_line": 1,
+                    "end_line": 3,
+                },
+                chunk_id="payment-presenter",
+            ),
+            ChunkDocument(
+                content="class PaymentPresenterTest",
+                metadata={
+                    "file_path": "checkout/PaymentPresenterTest.kt",
+                    "language": "kotlin",
+                    "chunk_type": "class",
+                    "name": "PaymentPresenterTest",
+                    "parent_name": "",
+                    "start_line": 1,
+                    "end_line": 3,
+                },
+                chunk_id="payment-presenter-test",
+            ),
+        ],
+    )
+
+    r = client.post(
+        "/graph/files",
+        json={"repo": "demo", "query": "PaymentPresenter", "limit": 10},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 2
+    assert body["files"][0]["file_path"] in {
+        "checkout/PaymentPresenter.kt",
+        "checkout/PaymentPresenterTest.kt",
+    }
+
+
+def test_graph_node_and_relations_return_context_slices(app_ctx, monkeypatch):
+    client, token = app_ctx
+    import rag.core.graph_tools as _graph_tools
+    import rag.server as _server
+
+    candidate = {
+        "file_path": "checkout/PaymentPresenter.kt",
+        "name": "completePayment",
+        "parent_name": "PaymentPresenter",
+        "chunk_type": "function",
+        "language": "kotlin",
+        "start_line": 10,
+        "end_line": 14,
+        "lines": "10-14",
+        "code": "fun completePayment() = analytics.track()",
+        "token_estimate": 11,
+        "score": 9.0,
+        "citation": "checkout/PaymentPresenter.kt:10-14 (completePayment)",
+        "why_included": "ast_index_symbol",
+    }
+
+    monkeypatch.setattr(
+        _server,
+        "_repo_info_for_name",
+        lambda repo: SimpleNamespace(path="/tmp/demo", collection="repo_demo"),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        _graph_tools,
+        "node",
+        lambda repo_path, collection, symbol, definitions_limit=20, usages_limit=20: {
+            "symbol": symbol,
+            "definitions": [candidate],
+            "usages": [],
+            "provenance": "ast_index",
+        },
+        raising=True,
+    )
+    monkeypatch.setattr(
+        _graph_tools,
+        "callers",
+        lambda repo_path, symbol, limit=50: [candidate],
+        raising=True,
+    )
+    monkeypatch.setattr(
+        _graph_tools,
+        "callees",
+        lambda repo_path, collection, symbol, limit=50: [{**candidate, "relation_source": "heuristic_source_scan"}],
+        raising=True,
+    )
+
+    node_resp = client.post(
+        "/graph/node",
+        json={"repo": "demo", "symbol": "completePayment", "limit": 10},
+        headers=_auth(token),
+    )
+    assert node_resp.status_code == 200, node_resp.text
+    assert node_resp.json()["definitions"][0]["file_path"] == "checkout/PaymentPresenter.kt"
+
+    callers_resp = client.post(
+        "/graph/callers",
+        json={"repo": "demo", "symbol": "completePayment", "limit": 10},
+        headers=_auth(token),
+    )
+    assert callers_resp.status_code == 200, callers_resp.text
+    assert callers_resp.json()["relation"] == "callers"
+
+    callees_resp = client.post(
+        "/graph/callees",
+        json={"repo": "demo", "symbol": "completePayment", "limit": 10},
+        headers=_auth(token),
+    )
+    assert callees_resp.status_code == 200, callees_resp.text
+    assert callees_resp.json()["relation_source"] == "heuristic_source_scan"
+
+
+def test_graph_impact_and_affected_return_metrics(app_ctx, monkeypatch):
+    client, token = app_ctx
+    import rag.core.graph_tools as _graph_tools
+    import rag.server as _server
+
+    monkeypatch.setattr(
+        _server,
+        "_repo_info_for_name",
+        lambda repo: SimpleNamespace(path="/tmp/demo", collection="repo_demo"),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        _graph_tools,
+        "impact",
+        lambda repo_path, collection, symbol, limit=50: {
+            "symbol": symbol,
+            "definitions": [],
+            "usages": [],
+            "callers": [],
+            "affected_files": ["checkout/PaymentPresenter.kt"],
+            "tests": [
+                {
+                    "file_path": "checkout/PaymentPresenterTest.kt",
+                    "language": "kotlin",
+                    "chunk_count": 1,
+                    "symbol_count": 1,
+                    "symbols": ["PaymentPresenterTest"],
+                    "updated_at": 0.0,
+                    "score": 5.0,
+                }
+            ],
+            "risks": [],
+            "metrics": {"affected_file_count": 1, "test_count": 1, "whole_file_reads_avoided": True},
+        },
+        raising=True,
+    )
+    monkeypatch.setattr(
+        _graph_tools,
+        "affected",
+        lambda repo_path, collection, files=None, since="HEAD", limit=100: {
+            "changed_files": files or ["checkout/PaymentPresenter.kt"],
+            "affected_files": ["checkout/PaymentPresenter.kt"],
+            "tests": [
+                {
+                    "file_path": "checkout/PaymentPresenterTest.kt",
+                    "language": "kotlin",
+                    "chunk_count": 1,
+                    "symbol_count": 1,
+                    "symbols": ["PaymentPresenterTest"],
+                    "updated_at": 0.0,
+                    "score": 5.0,
+                }
+            ],
+            "modules": [{"path": "checkout", "file_count": 1}],
+            "risks": [],
+            "metrics": {"changed_file_count": 1, "test_count": 1, "whole_file_reads_avoided": True},
+        },
+        raising=True,
+    )
+
+    impact_resp = client.post(
+        "/graph/impact",
+        json={"repo": "demo", "symbol": "completePayment", "limit": 10},
+        headers=_auth(token),
+    )
+    assert impact_resp.status_code == 200, impact_resp.text
+    assert impact_resp.json()["metrics"]["whole_file_reads_avoided"] is True
+    assert impact_resp.json()["tests"][0]["file_path"] == "checkout/PaymentPresenterTest.kt"
+
+    affected_resp = client.post(
+        "/graph/affected",
+        json={"repo": "demo", "files": ["checkout/PaymentPresenter.kt"], "limit": 10},
+        headers=_auth(token),
+    )
+    assert affected_resp.status_code == 200, affected_resp.text
+    assert affected_resp.json()["affected_files"] == ["checkout/PaymentPresenter.kt"]
+
+
 def test_project_understand_returns_modules_symbols_and_slices(app_ctx, monkeypatch):
     client, token = app_ctx
 
