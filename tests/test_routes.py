@@ -275,6 +275,34 @@ def test_context_pack_returns_bounded_exact_slice(app_ctx):
     assert body["slices"][0]["why_included"] == "exact_or_lexical_match"
 
 
+def test_index_docs_and_docs_search(app_ctx, tmp_path: Path):
+    client, token = app_ctx
+    doc = tmp_path / "event-catalog.md"
+    doc.write_text(
+        "# Event Catalog\n\n"
+        "START_ORDER_POLLING_AFTER_PAYMENT means order polling after successful payment.",
+        encoding="utf-8",
+    )
+
+    index_resp = client.post(
+        "/index/docs",
+        json={"docs_path": str(doc), "doc_types": ["markdown"], "full": True},
+        headers=_auth(token),
+    )
+    assert index_resp.status_code == 200, index_resp.text
+    assert index_resp.json()["chunks_indexed"] >= 1
+
+    search_resp = client.post(
+        "/docs-search",
+        json={"query": "still being created payment polling event", "top_k": 3},
+        headers=_auth(token),
+    )
+    assert search_resp.status_code == 200, search_resp.text
+    body = search_resp.json()
+    assert body["total"] >= 1
+    assert "START_ORDER_POLLING_AFTER_PAYMENT" in body["results"][0]["code"]
+
+
 def test_context_pack_uses_ast_index_for_named_repo(app_ctx, monkeypatch):
     client, token = app_ctx
 

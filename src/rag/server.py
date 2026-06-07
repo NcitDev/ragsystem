@@ -67,6 +67,12 @@ class SearchResponse(BaseModel):
     latency_ms: float
 
 
+class DocsSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    top_k: int = Field(5, ge=1, le=50)
+    filters: dict[str, Any] | None = None
+
+
 class ContextPackRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
     repo: str | None = None
@@ -233,6 +239,23 @@ class IndexRequest(BaseModel):
         if not p.is_dir():
             raise ValueError(f"Path is not a directory: {v}")
         # Block path traversal — must be absolute and real
+        if ".." in p.parts:
+            raise ValueError("Path traversal not allowed")
+        return str(p)
+
+
+class IndexDocsRequest(BaseModel):
+    docs_path: str = Field(..., min_length=1)
+    collection: str | None = None
+    doc_types: list[str] | None = None
+    full: bool = False
+
+    @field_validator("docs_path")
+    @classmethod
+    def validate_docs_path(cls, v: str) -> str:
+        p = Path(v).resolve()
+        if not p.exists():
+            raise ValueError(f"Docs path does not exist: {v}")
         if ".." in p.parts:
             raise ValueError("Path traversal not allowed")
         return str(p)
@@ -1497,6 +1520,37 @@ def create_app() -> FastAPI:
             logger.error("search_error", query=req.query, error=str(e))
             raise HTTPException(status_code=500, detail=f"Search failed ({type(e).__name__})")
 
+    @app.post("/docs-search", response_model=SearchResponse, dependencies=[Depends(require_auth)])
+    async def docs_search(req: DocsSearchRequest):
+        """Search indexed docs/specs, including generated event catalogs."""
+        start = time.time()
+        try:
+            settings = get_settings()
+            hits = await get_vectorstore().search(
+                collection=settings.qdrant.docs_collection,
+                query=req.query,
+                top_k=req.top_k,
+                filters=req.filters,
+            )
+            items = [SearchResultItem(**hit.slim(), matched_queries=[0]) for hit in hits]
+            latency = (time.time() - start) * 1000
+            logger.info(
+                "docs_search_executed",
+                query=req.query,
+                results=len(items),
+                latency_ms=round(latency, 1),
+            )
+            return SearchResponse(
+                results=items,
+                query=req.query,
+                plan=SearchPlanInfo(strategy="docs", queries=[req.query], filters=req.filters or {}),
+                total=len(items),
+                latency_ms=round(latency, 1),
+            )
+        except Exception as e:
+            logger.error("docs_search_error", query=req.query, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Docs search failed ({type(e).__name__})")
+
     # --- Resolve (exact AST definitions/usages for named repos) ---
 
     @app.post("/resolve", response_model=ResolveResponse, dependencies=[Depends(require_auth)])
@@ -2031,6 +2085,32 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error("index_error", repo_path=req.repo_path, error=str(e))
             raise HTTPException(status_code=500, detail=f"Index failed ({type(e).__name__})")
+
+    @app.post("/index/docs", response_model=IndexResponse, dependencies=[Depends(require_auth)])
+    async def index_docs(req: IndexDocsRequest):
+        try:
+            from rag.core.indexer import index_documents
+
+            vectorstore = get_vectorstore()
+            collection = req.collection or get_settings().qdrant.docs_collection
+            if req.full:
+                await vectorstore.drop_collection(collection)
+            result = await index_documents(
+                docs_path=req.docs_path,
+                vectorstore=vectorstore,
+                collection=collection,
+                doc_types=req.doc_types,
+            )
+            return IndexResponse(
+                files_processed=result.files_processed,
+                chunks_indexed=result.chunks_indexed,
+                files_skipped=result.files_skipped,
+                files_deleted=result.files_deleted,
+                errors=result.errors,
+            )
+        except Exception as e:
+            logger.error("index_docs_error", docs_path=req.docs_path, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Docs index failed ({type(e).__name__})")
 
     # --- Overview (P3-18: Codebase aggregation) ---
 

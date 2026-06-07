@@ -479,6 +479,415 @@ def context_pack(
         console.print()
 
 
+@app.command("repo-agent")
+def repo_agent(
+    query: str = typer.Argument(..., help="Developer task or code-navigation question"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Named repo to retrieve against"),
+    max_slices: int = typer.Option(8, "--max-slices", "-n", help="Maximum exact context slices"),
+    max_source_tokens: int = typer.Option(6000, "--max-source-tokens", "-t", help="Source token budget"),
+    definitions: int = typer.Option(8, "--definitions", "-d", help="Maximum definition slices"),
+    usages: int = typer.Option(12, "--usages", "-u", help="Maximum usage slices"),
+    min_exact_slices: int = typer.Option(3, "--min-exact-slices", help="Semantic fallback threshold"),
+    no_semantic_fallback: bool = typer.Option(
+        False,
+        "--no-semantic-fallback",
+        help="Never use embeddings; return only AST/exact/lexical context",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Central repo-agent retrieval: planner -> AST/exact context -> semantic fallback.
+
+    The local model is only a retrieval planner.  Source context is fetched via
+    deterministic AST/exact/lexical routes first; semantic search is used only
+    when exact retrieval is too thin and fallback is allowed.
+    """
+    _require_daemon()
+    import asyncio
+    import json
+    import time
+
+    import httpx
+
+    from rag.agents.repo_agent import (
+        build_eval_metrics,
+        build_repo_agent_plan,
+        collect_modules,
+        collect_tests,
+        collect_top_files,
+        compact_slice,
+        disambiguate_symbols,
+        infer_risks,
+        should_use_semantic_fallback,
+        total_source_tokens,
+    )
+    from rag.agents.retrieval import plan_search
+
+    start = time.time()
+
+    async def _plan():
+        return await plan_search(query)
+
+    planner = asyncio.run(_plan())
+    plan = build_repo_agent_plan(
+        query,
+        planner,
+        allow_semantic_fallback=not no_semantic_fallback,
+    )
+
+    def _post(path: str, payload: dict, timeout: int = 120) -> dict:
+        resp = httpx.post(
+            f"{_base_url()}{path}",
+            json=payload,
+            headers=_auth_headers(),
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    try:
+        resolve_data: dict | None = None
+        if plan.symbols:
+            resolve_data = _post(
+                "/resolve",
+                {
+                    "repo": repo,
+                    "symbols": plan.symbols,
+                    "definitions_limit": definitions,
+                    "usages_limit": usages,
+                },
+            )
+
+        exact_pack = _post(
+            "/context-pack",
+            {
+                "repo": repo,
+                "query": plan.context_query,
+                "max_slices": max_slices,
+                "max_source_tokens": max_source_tokens,
+                "use_ast_index": True,
+                "include_semantic": False,
+            },
+        )
+
+        reuse_packs: list[dict] = []
+        for reuse_query in plan.reuse_queries:
+            reuse_packs.append(
+                _post(
+                    "/context-pack",
+                    {
+                        "repo": repo,
+                        "query": reuse_query,
+                        "max_slices": min(max_slices, 6),
+                        "max_source_tokens": min(max_source_tokens, 3000),
+                        "use_ast_index": True,
+                        "include_semantic": False,
+                    },
+                )
+            )
+
+        architecture_data: dict | None = None
+        if plan.architecture_query:
+            architecture_data = _post(
+                "/project-understand",
+                {
+                    "repo": repo,
+                    "query": plan.architecture_query,
+                    "max_modules": 10,
+                    "max_slices": min(max_slices, 8),
+                    "max_source_tokens": min(max_source_tokens, 5000),
+                },
+                timeout=180,
+            )
+
+        call_trees: list[dict] = []
+        for symbol in plan.call_tree_symbols:
+            call_trees.append(
+                _post(
+                    "/call-tree",
+                    {
+                        "repo": repo,
+                        "symbol": symbol,
+                        "limit": 20,
+                    },
+                )
+            )
+
+        doc_searches: list[dict] = []
+        for doc_query in plan.documentation_queries:
+            try:
+                doc_searches.append(
+                    _post(
+                        "/docs-search",
+                        {
+                            "query": doc_query,
+                            "top_k": 5,
+                        },
+                    )
+                )
+            except httpx.HTTPStatusError:
+                # Docs/spec indexing is optional. Keep repo-agent useful even
+                # when no docs collection exists yet.
+                doc_searches.append({"query": doc_query, "results": [], "total": 0, "latency_ms": 0})
+
+        semantic_pack: dict | None = None
+        semantic_used = False
+        if (
+            plan.semantic_fallback_allowed
+            and should_use_semantic_fallback(exact_pack, min_exact_slices=min_exact_slices)
+        ):
+            semantic_pack = _post(
+                "/context-pack",
+                {
+                    "repo": repo,
+                    "query": plan.context_query,
+                    "max_slices": max_slices,
+                    "max_source_tokens": max_source_tokens,
+                    "use_ast_index": True,
+                    "include_semantic": True,
+                },
+            )
+            semantic_used = any(
+                item.get("why_included") == "semantic_match"
+                for item in semantic_pack.get("slices", [])
+            )
+    except httpx.HTTPStatusError as e:
+        error = (
+            e.response.json()
+            if e.response.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
+        console.print(f"[red]Repo-agent failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    chosen_pack = semantic_pack or exact_pack
+    first = (chosen_pack.get("slices") or [None])[0]
+    elapsed = round((time.time() - start) * 1000, 1)
+    all_context_packs = [exact_pack, *reuse_packs]
+    if architecture_data:
+        all_context_packs.append(
+            {
+                "slices": architecture_data.get("slices", []),
+                "total_source_tokens": architecture_data.get("total_source_tokens", 0),
+            }
+        )
+    if semantic_pack:
+        all_context_packs.append(semantic_pack)
+    token_total = total_source_tokens(*all_context_packs)
+    docs_source_tokens = sum(
+        max(1, len(result.get("code", "")) // 4)
+        for search in doc_searches
+        for result in search.get("results", [])
+    )
+    ambiguities = disambiguate_symbols(resolve_data)
+    tests = collect_tests(*all_context_packs)
+    evidence_bundle = {
+        "top_files": collect_top_files(*all_context_packs),
+        "symbols": plan.symbols,
+        "callers": [
+            {
+                "symbol": tree.get("symbol", ""),
+                "total": tree.get("total", 0),
+                "nodes": [compact_slice(item) | {"depth": item.get("depth", 0)} for item in tree.get("nodes", [])[:8]],
+            }
+            for tree in call_trees
+        ],
+        "tests": tests,
+        "modules": collect_modules(architecture_data),
+        "docs": [
+            {
+                "query": search.get("query", ""),
+                "total": search.get("total", 0),
+                "results": [compact_slice(item) for item in search.get("results", [])],
+            }
+            for search in doc_searches
+        ],
+        "symbol_ambiguities": ambiguities,
+        "risks": infer_risks(query, semantic_used=semantic_used, ambiguities=ambiguities, tests=tests),
+    }
+    metrics = build_eval_metrics(
+        first_slice=first,
+        exact_pack=exact_pack,
+        semantic_pack=semantic_pack,
+        total_tokens=token_total,
+    )
+    report = {
+        "repo": repo,
+        "query": query,
+        "planner": {
+            "strategy": planner.strategy,
+            "queries": planner.queries,
+            "filters": planner.filters,
+            "top_k": planner.top_k,
+        },
+        "symbols": plan.symbols,
+        "context_query": plan.context_query,
+        "reuse_queries": plan.reuse_queries,
+        "documentation_queries": plan.documentation_queries,
+        "architecture_query": plan.architecture_query,
+        "call_tree_symbols": plan.call_tree_symbols,
+        "first_relevant": compact_slice(first) if first else None,
+        "exact": {
+            "total": exact_pack.get("total", 0),
+            "total_source_tokens": exact_pack.get("total_source_tokens", 0),
+            "latency_ms": exact_pack.get("latency_ms", 0),
+            "slices": [compact_slice(item) for item in exact_pack.get("slices", [])],
+        },
+        "reuse_context": [
+            {
+                "query": reuse_pack.get("query", ""),
+                "total": reuse_pack.get("total", 0),
+                "total_source_tokens": reuse_pack.get("total_source_tokens", 0),
+                "latency_ms": reuse_pack.get("latency_ms", 0),
+                "slices": [compact_slice(item) for item in reuse_pack.get("slices", [])],
+            }
+            for reuse_pack in reuse_packs
+        ],
+        "architecture": {
+            "query": architecture_data.get("query", "") if architecture_data else "",
+            "total_source_tokens": architecture_data.get("total_source_tokens", 0) if architecture_data else 0,
+            "latency_ms": architecture_data.get("latency_ms", 0) if architecture_data else 0,
+            "modules": collect_modules(architecture_data),
+            "symbols": (architecture_data or {}).get("symbols", [])[:12],
+            "slices": [compact_slice(item) for item in (architecture_data or {}).get("slices", [])],
+        },
+        "call_trees": [
+            {
+                "symbol": tree.get("symbol", ""),
+                "total": tree.get("total", 0),
+                "latency_ms": tree.get("latency_ms", 0),
+                "nodes": [compact_slice(item) | {"depth": item.get("depth", 0)} for item in tree.get("nodes", [])],
+            }
+            for tree in call_trees
+        ],
+        "docs_context": [
+            {
+                "query": search.get("query", ""),
+                "total": search.get("total", 0),
+                "latency_ms": search.get("latency_ms", 0),
+                "results": [compact_slice(item) for item in search.get("results", [])],
+            }
+            for search in doc_searches
+        ],
+        "resolve": {
+            "definitions": resolve_data.get("total_definitions", 0) if resolve_data else 0,
+            "usages": resolve_data.get("total_usages", 0) if resolve_data else 0,
+            "definition_slices": [
+                compact_slice(item) for item in (resolve_data or {}).get("definitions", [])
+            ],
+            "usage_slices": [
+                compact_slice(item) for item in (resolve_data or {}).get("usages", [])
+            ],
+        },
+        "semantic": {
+            "allowed": plan.semantic_fallback_allowed,
+            "used": semantic_used,
+            "fallback_ran": semantic_pack is not None,
+            "total": semantic_pack.get("total", 0) if semantic_pack else 0,
+            "total_source_tokens": semantic_pack.get("total_source_tokens", 0) if semantic_pack else 0,
+        },
+        "evidence_bundle": evidence_bundle,
+        "metrics": metrics,
+        "docs_source_tokens": docs_source_tokens,
+        "docs_embeddings_used": bool(doc_searches),
+        "total_source_tokens": token_total,
+        "latency_ms": elapsed,
+        "enough_without_whole_files": bool(chosen_pack.get("slices")),
+    }
+
+    if json_output:
+        import sys
+
+        sys.stdout.write(json.dumps(report, indent=2, ensure_ascii=False))
+        sys.stdout.write("\n")
+        return
+
+    console.print(f"\n[bold]Repo agent:[/bold] {query}")
+    console.print(
+        f"[dim]planner={planner.strategy} semantic_used={semantic_used} "
+        f"source_tokens~{report['total_source_tokens']} latency={elapsed}ms[/dim]\n"
+    )
+    if plan.symbols:
+        console.print(f"[bold]Symbols[/bold] [dim]{', '.join(plan.symbols)}[/dim]")
+    if plan.reuse_queries:
+        console.print(f"[bold]Reuse checks[/bold] [dim]{len(plan.reuse_queries)} exact query(s), semantic disabled[/dim]")
+    if plan.documentation_queries:
+        console.print(
+            "[bold]Doc/spec queries[/bold] "
+            f"[dim]{len(plan.documentation_queries)} suggested query(s) for indexed docs[/dim]"
+        )
+    if plan.architecture_query:
+        console.print("[bold]Architecture check[/bold] [dim]project-understand enabled[/dim]")
+    if plan.call_tree_symbols:
+        console.print(f"[bold]Call trees[/bold] [dim]{', '.join(plan.call_tree_symbols)}[/dim]")
+    if first:
+        console.print("\n[bold]First Relevant Slice[/bold]")
+        console.print(f"[bold cyan]{first['file_path']}:{first['lines']}[/bold cyan]")
+        console.print(
+            f"   [dim]{first['why_included']} · {first['chunk_type']}[/dim] "
+            f"[green]{first['name']}[/green] tokens~{first['token_estimate']}"
+        )
+
+    if resolve_data:
+        console.print(
+            f"\n[bold]Resolve[/bold] "
+            f"{resolve_data.get('total_definitions', 0)} definitions, "
+            f"{resolve_data.get('total_usages', 0)} usages"
+        )
+        for i, item in enumerate(resolve_data.get("definitions", [])[:5], 1):
+            console.print(f"  [cyan]D{i}[/cyan] {item['file_path']}:{item['lines']} [dim]{item['name']}[/dim]")
+        for i, item in enumerate(resolve_data.get("usages", [])[:5], 1):
+            console.print(f"  [cyan]U{i}[/cyan] {item['file_path']}:{item['lines']} [dim]{item['name']}[/dim]")
+
+    console.print("\n[bold]Context[/bold]")
+    for i, item in enumerate(chosen_pack.get("slices", []), 1):
+        console.print(f"[bold cyan]{i}. {item['file_path']}:{item['lines']}[/bold cyan]")
+        console.print(
+            f"   [dim]{item['why_included']} · {item['chunk_type']}[/dim] "
+            f"[green]{item['name']}[/green] score={item['score']} tokens~{item['token_estimate']}"
+        )
+        for line in item["code"].split("\n")[:8]:
+            console.print(f"   [dim]{line}[/dim]")
+        console.print()
+
+    for reuse_pack in reuse_packs:
+        if not reuse_pack.get("slices"):
+            continue
+        console.print(f"\n[bold]Reuse Context[/bold] [dim]{reuse_pack.get('query', '')}[/dim]")
+        for i, item in enumerate(reuse_pack.get("slices", [])[:5], 1):
+            console.print(f"[bold cyan]{i}. {item['file_path']}:{item['lines']}[/bold cyan]")
+            console.print(
+                f"   [dim]{item['why_included']} · {item['chunk_type']}[/dim] "
+                f"[green]{item['name']}[/green] score={item['score']} tokens~{item['token_estimate']}"
+            )
+
+    if evidence_bundle["modules"]:
+        console.print("\n[bold]Modules[/bold]")
+        for module in evidence_bundle["modules"][:6]:
+            console.print(f"  [cyan]{module['path']}[/cyan] [dim]{module['file_count']} files score={module['score']}[/dim]")
+    if evidence_bundle["docs"]:
+        console.print("\n[bold]Docs[/bold]")
+        for doc in evidence_bundle["docs"]:
+            console.print(f"  [cyan]{doc['query']}[/cyan] [dim]{doc['total']} result(s)[/dim]")
+    if evidence_bundle["symbol_ambiguities"]:
+        console.print("\n[bold]Ambiguous Symbols[/bold]")
+        for ambiguity in evidence_bundle["symbol_ambiguities"][:3]:
+            console.print(f"  [yellow]{ambiguity['symbol']}[/yellow] has {len(ambiguity['definitions'])} definitions")
+    if evidence_bundle["risks"]:
+        console.print("\n[bold]Risks[/bold]")
+        for risk in evidence_bundle["risks"]:
+            console.print(f"  [yellow]-[/yellow] {risk}")
+    console.print(
+        "\n[bold]Metrics[/bold] "
+        f"rank={metrics['first_relevant_rank']} "
+        f"tokens~{metrics['source_tokens']} "
+        f"embeddings_used={metrics['embeddings_used']} "
+        f"whole_file_reads_avoided={metrics['whole_file_reads_avoided']}"
+    )
+
+
 @app.command()
 def resolve(
     symbol: list[str] = typer.Argument(..., help="Symbol(s) to resolve"),
@@ -948,6 +1357,105 @@ def index(
     if data["errors"]:
         table.add_row("Errors", str(len(data["errors"])))
     console.print(table)
+
+
+@app.command("index-docs")
+def index_docs(
+    path: str = typer.Argument(..., help="Documentation file or directory to index"),
+    collection: str = typer.Option(None, "--collection", "-c", help="Docs collection override"),
+    doc_type: list[str] = typer.Option(None, "--doc-type", help="Document type: markdown or text"),
+    full: bool = typer.Option(False, "--full", help="Recreate the docs collection before indexing"),
+):
+    """Index Markdown/text docs into the docs collection."""
+    _require_daemon()
+    import httpx
+
+    abs_path = str(Path(path).resolve())
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/index/docs",
+            json={
+                "docs_path": abs_path,
+                "collection": collection,
+                "doc_types": doc_type,
+                "full": full,
+            },
+            headers=_auth_headers(),
+            timeout=600,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Docs index failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]Indexed docs[/green] {data['files_processed']} files, "
+        f"{data['chunks_indexed']} chunks"
+    )
+    if data.get("errors"):
+        for error in data["errors"][:5]:
+            console.print(f"[yellow]{error}[/yellow]")
+
+
+@app.command("generate-event-catalog")
+def generate_event_catalog(
+    repo_path: str = typer.Argument(..., help="Repository path to scan"),
+    output: str = typer.Option(None, "--output", "-o", help="Markdown output path"),
+    repo_name: str = typer.Option("repo", "--repo-name", help="Display name in generated catalog"),
+    index_result: bool = typer.Option(False, "--index", help="Index the generated catalog into RAG docs"),
+    full: bool = typer.Option(False, "--full", help="Recreate docs collection before indexing"),
+):
+    """Generate a Markdown analytics/event catalog from repo code."""
+    from rag.core.events import discover_event_entries, render_event_catalog
+
+    repo_root = Path(repo_path).resolve()
+    if not repo_root.exists():
+        console.print(f"[red]Repo path does not exist: {repo_root}[/red]")
+        raise typer.Exit(1)
+    output_path = (
+        Path(output).resolve()
+        if output
+        else PROJECT_ROOT / "generated" / f"{repo_name}-event-catalog.md"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    entries = discover_event_entries(repo_root)
+    output_path.write_text(render_event_catalog(repo_name, entries), encoding="utf-8")
+    console.print(f"[green]Wrote[/green] {output_path} [dim]({len(entries)} entries)[/dim]")
+
+    if index_result:
+        _require_daemon()
+        import httpx
+
+        try:
+            resp = httpx.post(
+                f"{_base_url()}/index/docs",
+                json={
+                    "docs_path": str(output_path),
+                    "doc_types": ["markdown"],
+                    "full": full,
+                },
+                headers=_auth_headers(),
+                timeout=600,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPStatusError as e:
+            error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+            console.print(f"[red]Event catalog index failed: {error.get('detail', e)}[/red]")
+            raise typer.Exit(1)
+        except httpx.ConnectError:
+            console.print("[red]Connection lost to daemon.[/red]")
+            raise typer.Exit(1)
+
+        console.print(
+            f"[green]Indexed event catalog[/green] "
+            f"{data['files_processed']} files, {data['chunks_indexed']} chunks"
+        )
 
 
 @app.command()

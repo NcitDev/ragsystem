@@ -699,15 +699,20 @@ async def index_documents(
     if "text" in doc_types:
         extensions.extend([".txt", ".rst"])
 
-    files = []
-    for ext in extensions:
-        files.extend(path.rglob(f"*{ext}"))
+    if path.is_file():
+        files = [path] if path.suffix in extensions else []
+        docs_root = path.parent
+    else:
+        files = []
+        for ext in extensions:
+            files.extend(path.rglob(f"*{ext}"))
+        docs_root = path
 
     documents: list[ChunkDocument] = []
     for file_path in files:
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
-            rel_path = str(file_path.relative_to(path))
+            rel_path = str(file_path.relative_to(docs_root))
             doc_type = "markdown" if file_path.suffix in (".md", ".mdx") else "text"
 
             chunks = chunk_document(content, rel_path, doc_type)
