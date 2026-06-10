@@ -1,0 +1,20 @@
+schema_version: 1
+module_path: ""
+title: Code Search & Retrieval-Augmented Generation (RAG) Engine
+scope:
+    - .gitignore
+    - CLAUDE.md
+    - README.md
+    - compose.qdrant.yml
+    - pyproject.toml
+    - ragsystem.pen
+    - uv.lock
+    - config/
+    - docs/
+    - scripts/
+    - skills/
+    - src/
+    - tests/
+source_files: []
+depends_on: []
+related_to: []

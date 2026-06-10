@@ -1,0 +1,27 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: codex/rag-codegraph-patterns
+exported_at: "2026-06-09T15:43:36Z"
+modules:
+    "":
+        dir_name: Code Search & Retrieval-Augmented Generation (RAG) Engine
+        title: Code Search & Retrieval-Augmented Generation (RAG) Engine
+        scope:
+            - .gitignore
+            - CLAUDE.md
+            - README.md
+            - compose.qdrant.yml
+            - pyproject.toml
+            - ragsystem.pen
+            - uv.lock
+            - config/
+            - docs/
+            - scripts/
+            - skills/
+            - src/
+            - tests/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

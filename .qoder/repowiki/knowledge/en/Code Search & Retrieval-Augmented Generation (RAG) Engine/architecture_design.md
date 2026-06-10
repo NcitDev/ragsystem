@@ -1,0 +1,4 @@
+- **Supervised Daemon-Client Split**: The core is a headless FastAPI daemon (`src/rag/server.py`) that manages state (Qdrant, SQLite, CodeGraph). The CLI (`src/rag/cli.py`) and TUI (`src/rag/app.py`) are thin HTTP clients, ensuring the daemon remains resilient to UI crashes.
+- **Layered Core**: `src/rag/core/` contains the ingestion pipeline (`indexer.py`), code-aware chunking via tree-sitter (`chunker.py`), and a dual-store architecture: Qdrant for dense vector search (`vectorstore.py`) and SQLite for metadata/query logs (`storage/db.py`).
+- **Knowledge Graph**: A `networkx`-based graph (`core/graph.py`) is built at index time to support multi-hop traversal, community detection, and impact analysis, persisted as a pickle cache.
+- **Agent Integration**: `src/rag/agents/` implements a retrieval planner that orchestrates AST-index lookups, lexical search, and semantic fallbacks to construct token-bounded context packs for LLMs.
