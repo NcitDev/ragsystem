@@ -1,0 +1,4 @@
+- HTTP clients (CLI/TUI) enforce authentication via a `Bearer` token retrieved from `get_or_create_token()`, while the daemon validates it using `secrets.compare_digest` in a `require_auth` dependency.
+- Indexing operations use per-repo advisory file locks (`fcntl.flock`) and atomic state file writes (`.tmp` -> `state.json`) to prevent race conditions and corruption during concurrent runs.
+- Structured logging is implemented via `structlog` with rotating file handlers configured in `integration/logging_setup.py` to cap disk usage (~50 MB) for long-running daemons.
+- Pydantic models are used extensively for API request/response validation, including custom validators for path traversal prevention and field constraints (e.g., `max_length`, `ge`).
