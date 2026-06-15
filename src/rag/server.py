@@ -81,6 +81,7 @@ class ContextPackRequest(BaseModel):
     max_source_tokens: int = Field(6000, ge=100, le=100000)
     use_ast_index: bool = True
     include_semantic: bool = True
+    strategy: str = "lod_drill"
 
 
 class ContextSlice(BaseModel):
@@ -2015,6 +2016,10 @@ def create_app() -> FastAPI:
         """
         start = time.time()
         try:
+            def _is_test(path: str) -> bool:
+                p = path.lower()
+                return "/test/" in p or "/androidtest/" in p or p.endswith("test.kt") or p.endswith("test.java")
+
             collection = _collection_for_repo(req.repo)
             candidates: list[dict[str, Any]] = []
             seen: set[tuple[str, int, int, str, str]] = set()
@@ -2028,10 +2033,14 @@ def create_app() -> FastAPI:
                         repo_info.path,
                         req.query,
                         limit=max(req.max_slices * 3, 12),
+                        include_usages=(req.strategy != "graph_walk")
                     )
                     for hit in ast_hits:
+                        path = hit.get("file_path", "")
+                        if req.strategy == "graph_walk" and _is_test(path):
+                            continue
                         key = (
-                            hit.get("file_path", ""),
+                            path,
                             int(hit.get("start_line", 0) or 0),
                             int(hit.get("end_line", 0) or 0),
                             hit.get("chunk_type", ""),
@@ -2053,8 +2062,11 @@ def create_app() -> FastAPI:
                 filters=req.filters,
             )
             for hit in lexical_hits:
+                path = hit.get("file_path", "")
+                if req.strategy == "graph_walk" and _is_test(path):
+                    continue
                 key = (
-                    hit.get("file_path", ""),
+                    path,
                     int(hit.get("start_line", 0) or 0),
                     int(hit.get("end_line", 0) or 0),
                     hit.get("chunk_type", ""),
@@ -2078,6 +2090,9 @@ def create_app() -> FastAPI:
                     )
                     for hit in vector_hits:
                         payload = hit.payload or {}
+                        path = payload.get("file_path", "")
+                        if req.strategy == "graph_walk" and _is_test(path):
+                            continue
                         key = _result_key(payload)
                         if key in seen:
                             continue

@@ -614,6 +614,7 @@ def repo_agent(
                 "max_source_tokens": max_source_tokens,
                 "use_ast_index": True,
                 "include_semantic": False,
+                "strategy": plan.planner.strategy,
             },
         )
 
@@ -629,6 +630,7 @@ def repo_agent(
                         "max_source_tokens": min(max_source_tokens, 3000),
                         "use_ast_index": True,
                         "include_semantic": False,
+                        "strategy": plan.planner.strategy,
                     },
                 )
             )

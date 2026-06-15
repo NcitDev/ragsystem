@@ -74,7 +74,7 @@ def is_available() -> bool:
     return shutil.which("ast-index") is not None
 
 
-def retrieve_context(repo_path: str, query: str, limit: int = 12) -> list[dict[str, Any]]:
+def retrieve_context(repo_path: str, query: str, limit: int = 12, include_usages: bool = True) -> list[dict[str, Any]]:
     """Return AST-derived source candidates for a developer query."""
     root = Path(repo_path)
     if not root.exists() or not is_available():
@@ -90,7 +90,7 @@ def retrieve_context(repo_path: str, query: str, limit: int = 12) -> list[dict[s
         term_bonus = max(0.0, 6.0 - term_index)
         hits.extend(_with_score_bonus(_symbol_hits(root, term, per_term_limit), term_bonus))
         hits.extend(_with_score_bonus(_search_hits(root, term, per_term_limit), term_bonus))
-        if len(hits) < limit * 2:
+        if include_usages and len(hits) < limit * 2:
             hits.extend(_with_score_bonus(_usage_hits(root, term, max(3, per_term_limit // 2)), term_bonus))
 
     deduped: dict[tuple[str, int, str, str], AstIndexHit] = {}

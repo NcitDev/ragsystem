@@ -124,12 +124,37 @@ def _strip_line_comments(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def _detect_kotlin_java_coroutines(content: str, language: str) -> dict[str, str]:
+def _detect_kotlin_java_coroutines(content: str, language: str) -> dict[str, Any]:
     """Cheap text-level detection of suspend/coroutine/singleton/etc. usage.
     Returns string-typed flags suitable for Qdrant KEYWORD payload index."""
-    meta: dict[str, str] = {}
+    import re
+    meta: dict[str, Any] = {}
     cleaned = _strip_line_comments(content)
     head = cleaned[:300]  # signature/declaration window
+
+    # DI Dependency Extraction
+    if "@Provides" in cleaned:
+        meta["is_di_provider"] = "true"
+        # Kotlin: fun someName(...) : ReturnType
+        provides_kt = re.findall(r"@Provides[\s\S]*?fun\s+\w+\s*\([^)]*\)\s*:\s*([A-Z]\w+)", cleaned)
+        # Java: public ReturnType someName(...)
+        provides_java = re.findall(r"@Provides[\s\S]*?(?:public|protected|private)?\s+([A-Z]\w+)\s+\w+\s*\(", cleaned)
+        provides = list(set(provides_kt + provides_java))
+        if provides:
+            meta["provides"] = provides
+            
+    if "@Inject" in cleaned:
+        meta["is_di_consumer"] = "true"
+        # Kotlin property: @Inject lateinit var someService: ServiceType
+        injects_kt = re.findall(r"@Inject\s+(?:lateinit\s+)?var\s+\w+\s*:\s*([A-Z]\w+)", cleaned)
+        # Constructor inject: @Inject constructor(val service: ServiceType)
+        injects_ctor = re.findall(r"@Inject\s+constructor\s*\((.*?)\)", cleaned, re.DOTALL)
+        deps = list(injects_kt)
+        for ctor_args in injects_ctor:
+            types = re.findall(r":\s*([A-Z]\w+)", ctor_args)
+            deps.extend(types)
+        if deps:
+            meta["injects"] = list(set(deps))
 
     if language == "kotlin":
         if "suspend fun " in head or head.lstrip().startswith("suspend "):
