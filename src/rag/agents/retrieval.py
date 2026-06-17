@@ -1,12 +1,13 @@
 """Agno retrieval agent for intelligent search strategy decisions.
 
-Uses local Ollama LLM to decide search strategy from natural language queries.
-Degrades gracefully to simple vector search if Ollama unavailable.
+Uses Gemini LLM to decide search strategy from natural language queries.
+Degrades gracefully to simple vector search if Gemini is unavailable.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -94,28 +95,17 @@ class SearchPlan:
 
 
 _agent = None
-_ollama_available: bool | None = None
+_llm_available: bool | None = None
 
 
-async def _check_ollama() -> bool:
-    """Check if Ollama is running with the agent model."""
-    global _ollama_available
-    if _ollama_available is not None:
-        return _ollama_available
+async def _check_llm_ready() -> bool:
+    """Check if Gemini API Key is available."""
+    global _llm_available
+    if _llm_available is not None:
+        return _llm_available
 
-    settings = get_settings()
-    try:
-        async with httpx.AsyncClient(timeout=3) as client:
-            resp = await client.get(f"{settings.llm.ollama_url}/api/tags")
-            if resp.status_code == 200:
-                models = [m["name"] for m in resp.json().get("models", [])]
-                _ollama_available = any(settings.llm.agent_model in m for m in models)
-            else:
-                _ollama_available = False
-    except Exception:
-        _ollama_available = False
-
-    return _ollama_available
+    _llm_available = bool(os.environ.get("GEMINI_API_KEY"))
+    return _llm_available
 
 
 def _get_agent():
@@ -125,15 +115,13 @@ def _get_agent():
         return _agent
 
     from agno.agent import Agent
-    from agno.models.ollama import Ollama
-
-    settings = get_settings()
+    from agno.models.google import Gemini
 
     _agent = Agent(
         name="RAG Retrieval Agent",
-        model=Ollama(
-            id=settings.llm.agent_model,
-            host=settings.llm.ollama_url,
+        model=Gemini(
+            id="gemini-3-flash-preview",
+            api_key=os.environ.get("GEMINI_API_KEY"),
         ),
         instructions=[
             "You are a code search strategy planner.",
@@ -162,7 +150,7 @@ def _get_agent():
         ],
         markdown=False,
     )
-    logger.info("agno_agent_initialized", model=settings.llm.agent_model)
+    logger.info("agno_agent_initialized", model="gemini-2.5-flash")
     return _agent
 
 
@@ -203,9 +191,9 @@ def _extract_json_object(text: str) -> dict | None:
 async def plan_search(query: str) -> SearchPlan:
     """Use Agno agent to decide search strategy.
 
-    Falls back to simple query expansion if Ollama unavailable.
+    Falls back to simple query expansion if LLM unavailable.
     """
-    if not await _check_ollama():
+    if not await _check_llm_ready():
         return _fallback_plan(query)
 
     try:

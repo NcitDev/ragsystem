@@ -23,7 +23,7 @@ logger = structlog.get_logger()
 
 # Per-request HTTP timeout to Ollama. Generous enough for a 64-text batch on
 # CPU, but far below the old 300s so a stuck request fails fast and retries.
-REQUEST_TIMEOUT = 60.0
+REQUEST_TIMEOUT = 180.0
 # Hard ceiling on total time spent retrying a single sub-batch (across all
 # attempts + backoff). Without this, three sequential request timeouts could
 # block an index/search for ~15 minutes.
