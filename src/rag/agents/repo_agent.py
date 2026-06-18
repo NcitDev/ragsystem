@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from rag.agents.retrieval import SearchPlan
@@ -189,6 +190,66 @@ class RepoAgentPlan:
     architecture_query: str | None = None
     call_tree_symbols: list[str] = field(default_factory=list)
     semantic_fallback_allowed: bool = True
+
+
+def filter_resolve_usages(
+    resolve_data: dict[str, Any],
+    symbols: list[str],
+    *,
+    max_usages: int = 15,
+) -> dict[str, Any]:
+    """Filter /resolve usages to keep only the most relevant ones.
+
+    Two-phase blast-radius strategy: read definitions to learn the target
+    directory, then keep usages that are (1) in the same directory as a
+    definition, (2) have a symbol name in the filename, or (3) are among
+    the first N usages by server rank.  Caps total at *max_usages*.
+
+    Returns a shallow copy of *resolve_data* with the ``usages`` list
+    trimmed and a ``total_usages_raw`` field added for reporting.
+    """
+    if not resolve_data:
+        return resolve_data
+
+    raw_usages = resolve_data.get("usages") or []
+    if len(raw_usages) <= max_usages:
+        # Already within budget — nothing to filter.
+        return {**resolve_data, "total_usages_raw": len(raw_usages)}
+
+    # Phase 1: collect definition directories.
+    def_dirs: set[str] = set()
+    for item in resolve_data.get("definitions") or []:
+        fp = item.get("file_path", "")
+        if fp:
+            def_dirs.add(str(Path(fp).parent))
+
+    syms_lower = {s.lower() for s in symbols}
+
+    # Phase 2: score each usage and keep the best max_usages.
+    scored: list[tuple[int, dict[str, Any]]] = []  # (priority, item)
+    for idx, item in enumerate(raw_usages):
+        fp = item.get("file_path", "")
+        if not fp:
+            continue
+        stem = Path(fp).stem.lower()
+        fp_dir = str(Path(fp).parent)
+        priority = 999  # default: low
+        if fp_dir in def_dirs:
+            priority = 0  # same directory as definition — highest
+        elif any(s in stem for s in syms_lower):
+            priority = 1  # symbol name in filename
+        elif idx < 10:
+            priority = 2  # first 10 by server rank
+        scored.append((priority, item))
+
+    scored.sort(key=lambda t: (t[0],))
+    kept = [item for _, item in scored[:max_usages]]
+
+    return {
+        **resolve_data,
+        "usages": kept,
+        "total_usages_raw": len(raw_usages),
+    }
 
 
 def extract_symbol_candidates(query: str, *, limit: int = 12) -> list[str]:

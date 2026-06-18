@@ -564,6 +564,7 @@ def repo_agent(
         collect_top_files,
         compact_slice,
         disambiguate_symbols,
+        filter_resolve_usages,
         infer_risks,
         should_use_semantic_fallback,
         total_source_tokens,
@@ -603,6 +604,10 @@ def repo_agent(
                     "definitions_limit": definitions,
                     "usages_limit": usages,
                 },
+            )
+            # Two-phase blast radius: filter usages to most relevant
+            resolve_data = filter_resolve_usages(
+                resolve_data, plan.symbols, max_usages=usages,
             )
 
         exact_pack = _post(
@@ -823,7 +828,8 @@ def repo_agent(
         ],
         "resolve": {
             "definitions": resolve_data.get("total_definitions", 0) if resolve_data else 0,
-            "usages": resolve_data.get("total_usages", 0) if resolve_data else 0,
+            "usages": len((resolve_data or {}).get("usages", [])),
+            "usages_raw": resolve_data.get("total_usages_raw", resolve_data.get("total_usages", 0)) if resolve_data else 0,
             "definition_slices": [
                 compact_slice(item) for item in (resolve_data or {}).get("definitions", [])
             ],
