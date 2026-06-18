@@ -1,0 +1,806 @@
+{
+  "scenarios": [
+    {
+      "id": 1,
+      "category": "feature",
+      "question": "Add a sticker pack install event. What's the existing pattern?",
+      "tool_path": "resolve_defs",
+      "agents": {
+        "Smart Agent": {
+          "turns": 4,
+          "tokens": 1933,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 3
+          },
+          "files_read": 3,
+          "precision_pct": 100.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 53.7,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 13,
+          "tokens": 15537,
+          "tool_calls": {
+            "ast-index:symbol": 2,
+            "ast-index:usages": 2,
+            "ast-index:search": 1,
+            "read_file": 8
+          },
+          "files_read": 8,
+          "precision_pct": 37.5,
+          "signal_pct": 62.5,
+          "coverage_pct": 100.0,
+          "latency_ms": 180.7,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 14067,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 30.0,
+          "signal_pct": 60.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 4437.2,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 42,
+          "tokens": 15195,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 41
+          },
+          "files_read": 41,
+          "precision_pct": 7.3,
+          "signal_pct": 7.3,
+          "coverage_pct": 100.0,
+          "latency_ms": 656.0,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 12,
+          "tokens": 32985,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 30.0,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 132.4,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 2,
+      "category": "migration",
+      "question": "Find the database migration interface and show a concrete migration",
+      "tool_path": "resolve_defs",
+      "agents": {
+        "Smart Agent": {
+          "turns": 3,
+          "tokens": 1142,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 2
+          },
+          "files_read": 2,
+          "precision_pct": 100.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 28.7,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 15,
+          "tokens": 7647,
+          "tool_calls": {
+            "ast-index:symbol": 2,
+            "ast-index:usages": 2,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 73.5,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 9668,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 3613.4,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 30,
+          "tokens": 16193,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 29
+          },
+          "files_read": 29,
+          "precision_pct": 6.9,
+          "signal_pct": 6.9,
+          "coverage_pct": 100.0,
+          "latency_ms": 600.1,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 12,
+          "tokens": 21486,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 0.0,
+          "signal_pct": 50.0,
+          "coverage_pct": 0.0,
+          "latency_ms": 143.5,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 3,
+      "category": "arch",
+      "question": "Show me the main classes in the sticker pack management system",
+      "tool_path": "resolve_defs",
+      "agents": {
+        "Smart Agent": {
+          "turns": 4,
+          "tokens": 2319,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 3
+          },
+          "files_read": 3,
+          "precision_pct": 100.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 38.9,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 17,
+          "tokens": 14523,
+          "tool_calls": {
+            "ast-index:symbol": 3,
+            "ast-index:usages": 3,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 30.0,
+          "signal_pct": 60.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 122.5,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 18150,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 30.0,
+          "signal_pct": 50.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 3561.1,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 43,
+          "tokens": 14919,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 42
+          },
+          "files_read": 42,
+          "precision_pct": 7.1,
+          "signal_pct": 7.1,
+          "coverage_pct": 100.0,
+          "latency_ms": 757.2,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 12,
+          "tokens": 23052,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 90.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 139.7,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 4,
+      "category": "feature",
+      "question": "I need to add a new backup feature. Show me how FullBackupExporter works",
+      "tool_path": "resolve_defs",
+      "agents": {
+        "Smart Agent": {
+          "turns": 3,
+          "tokens": 1224,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 2
+          },
+          "files_read": 2,
+          "precision_pct": 100.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 40.4,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 15,
+          "tokens": 18001,
+          "tool_calls": {
+            "ast-index:symbol": 2,
+            "ast-index:usages": 2,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 70.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 112.0,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 15903,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 10.0,
+          "coverage_pct": 50.0,
+          "latency_ms": 3745.0,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 41,
+          "tokens": 10565,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 40
+          },
+          "files_read": 40,
+          "precision_pct": 5.0,
+          "signal_pct": 10.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 579.5,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 12,
+          "tokens": 19025,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 50.0,
+          "coverage_pct": 50.0,
+          "latency_ms": 114.8,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 5,
+      "category": "migration",
+      "question": "Find deprecated job migration code that should be cleaned up",
+      "tool_path": "resolve_defs",
+      "agents": {
+        "Smart Agent": {
+          "turns": 4,
+          "tokens": 1200,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 3
+          },
+          "files_read": 3,
+          "precision_pct": 66.7,
+          "signal_pct": 100.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 30.5,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 8,
+          "tokens": 5305,
+          "tool_calls": {
+            "ast-index:symbol": 2,
+            "ast-index:usages": 2,
+            "ast-index:search": 1,
+            "read_file": 3
+          },
+          "files_read": 3,
+          "precision_pct": 33.3,
+          "signal_pct": 66.7,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 94.8,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 6804,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 20.0,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 3758.1,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 40,
+          "tokens": 10617,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 39
+          },
+          "files_read": 39,
+          "precision_pct": 5.1,
+          "signal_pct": 5.1,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 527.9,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 4,
+          "tokens": 5106,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 2
+          },
+          "files_read": 2,
+          "precision_pct": 50.0,
+          "signal_pct": 50.0,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 137.2,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 6,
+      "category": "impact",
+      "question": "If I change the Job base class, what code breaks? Show all subclasses",
+      "tool_path": "resolve_usages",
+      "agents": {
+        "Smart Agent": {
+          "turns": 17,
+          "tokens": 13355,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 16
+          },
+          "files_read": 16,
+          "precision_pct": 18.8,
+          "signal_pct": 68.8,
+          "coverage_pct": 75.0,
+          "latency_ms": 27.4,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 13,
+          "tokens": 24559,
+          "tool_calls": {
+            "ast-index:symbol": 1,
+            "ast-index:usages": 1,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 70.0,
+          "coverage_pct": 25.0,
+          "latency_ms": 41.5,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 18913,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 0.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 0.0,
+          "latency_ms": 3787.3,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 40,
+          "tokens": 17484,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 39
+          },
+          "files_read": 39,
+          "precision_pct": 7.7,
+          "signal_pct": 7.7,
+          "coverage_pct": 75.0,
+          "latency_ms": 8734.1,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 12,
+          "tokens": 18563,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 50.0,
+          "latency_ms": 66.7,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 7,
+      "category": "refactor",
+      "question": "Rename SignalDatabaseMigration interface. Find all implementors and callers",
+      "tool_path": "resolve_usages",
+      "agents": {
+        "Smart Agent": {
+          "turns": 53,
+          "tokens": 16862,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 52
+          },
+          "files_read": 52,
+          "precision_pct": 5.8,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 28.1,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 13,
+          "tokens": 7647,
+          "tool_calls": {
+            "ast-index:symbol": 1,
+            "ast-index:usages": 1,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 61.0,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 9668,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 4456.0,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 42,
+          "tokens": 14003,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 41
+          },
+          "files_read": 41,
+          "precision_pct": 7.3,
+          "signal_pct": 39.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 809.9,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 12,
+          "tokens": 21062,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 0.0,
+          "signal_pct": 40.0,
+          "coverage_pct": 0.0,
+          "latency_ms": 131.3,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 8,
+      "category": "impact",
+      "question": "Who calls Recipient? Show me the blast radius of changing the Recipient model",
+      "tool_path": "resolve_usages",
+      "agents": {
+        "Smart Agent": {
+          "turns": 19,
+          "tokens": 15866,
+          "tool_calls": {
+            "resolve": 1,
+            "read_file": 18
+          },
+          "files_read": 18,
+          "precision_pct": 16.7,
+          "signal_pct": 27.8,
+          "coverage_pct": 100.0,
+          "latency_ms": 44.5,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 13,
+          "tokens": 35828,
+          "tool_calls": {
+            "ast-index:symbol": 1,
+            "ast-index:usages": 1,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 30.0,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 50.7,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 29278,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 20.0,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 4728.0,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 43,
+          "tokens": 17962,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 42
+          },
+          "files_read": 42,
+          "precision_pct": 7.1,
+          "signal_pct": 19.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 706.1,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 12,
+          "tokens": 28144,
+          "tool_calls": {
+            "rg": 2,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 0.0,
+          "signal_pct": 0.0,
+          "coverage_pct": 0.0,
+          "latency_ms": 138.4,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 9,
+      "category": "info",
+      "question": "How does the chat backup encryption and passphrase system work?",
+      "tool_path": "context_pack_then_resolve",
+      "agents": {
+        "Smart Agent": {
+          "turns": 5,
+          "tokens": 1674,
+          "tool_calls": {
+            "context_pack": 1,
+            "resolve": 1,
+            "read_file": 3
+          },
+          "files_read": 3,
+          "precision_pct": 100.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 610.7,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 15,
+          "tokens": 22340,
+          "tool_calls": {
+            "ast-index:symbol": 2,
+            "ast-index:usages": 2,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 20.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 112.5,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 17453,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 10.0,
+          "signal_pct": 20.0,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 4845.3,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 34,
+          "tokens": 11480,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 33
+          },
+          "files_read": 33,
+          "precision_pct": 9.1,
+          "signal_pct": 9.1,
+          "coverage_pct": 100.0,
+          "latency_ms": 955.1,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 13,
+          "tokens": 25622,
+          "tool_calls": {
+            "rg": 3,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 20.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 178.1,
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 10,
+      "category": "debug",
+      "question": "Trace how push notifications are received and processed by the app",
+      "tool_path": "context_pack_then_resolve",
+      "agents": {
+        "Smart Agent": {
+          "turns": 6,
+          "tokens": 1921,
+          "tool_calls": {
+            "context_pack": 1,
+            "resolve": 1,
+            "read_file": 4
+          },
+          "files_read": 4,
+          "precision_pct": 75.0,
+          "signal_pct": 100.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 518.7,
+          "error": ""
+        },
+        "AST-Index": {
+          "turns": 17,
+          "tokens": 16539,
+          "tool_calls": {
+            "ast-index:symbol": 3,
+            "ast-index:usages": 3,
+            "ast-index:search": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 30.0,
+          "signal_pct": 70.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 189.3,
+          "error": ""
+        },
+        "Graphify": {
+          "turns": 11,
+          "tokens": 19684,
+          "tool_calls": {
+            "graphify:parse": 1,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 30.0,
+          "signal_pct": 60.0,
+          "coverage_pct": 100.0,
+          "latency_ms": 4522.5,
+          "error": ""
+        },
+        "Naive Agent": {
+          "turns": 35,
+          "tokens": 12685,
+          "tool_calls": {
+            "context_pack": 1,
+            "read_file": 34
+          },
+          "files_read": 34,
+          "precision_pct": 8.8,
+          "signal_pct": 8.8,
+          "coverage_pct": 100.0,
+          "latency_ms": 710.3,
+          "error": ""
+        },
+        "Vanilla (rg)": {
+          "turns": 13,
+          "tokens": 20299,
+          "tool_calls": {
+            "rg": 3,
+            "read_file": 10
+          },
+          "files_read": 10,
+          "precision_pct": 20.0,
+          "signal_pct": 40.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 162.4,
+          "error": ""
+        }
+      }
+    }
+  ]
+}
