@@ -379,18 +379,43 @@ def run_smart_agent(sc: Scenario, metrics: AgentMetrics) -> None:
                     metrics.record_file_read(fp, code)
 
     elif sc.tool_path == "resolve_usages":
-        # /resolve definitions + usages (blast radius)
+        # /resolve TWO-PHASE: definitions first, then selective usages
         body = _post("/resolve", {
             "repo": REPO_NAME, "symbols": sc.symbols,
-            "definitions_limit": 10, "usages_limit": 50,
+            "definitions_limit": 10, "usages_limit": 100,
         })
         metrics.record_tool("resolve")
+
+        # Phase 1: Read definitions, note their directories
+        def_dirs: set[str] = set()
         if body:
-            for section in ("definitions", "usages"):
-                for item in (body.get(section) or []):
-                    fp, code = item.get("file_path", ""), item.get("code", "")
-                    if fp and code:
-                        metrics.record_file_read(fp, code)
+            for item in (body.get("definitions") or []):
+                fp, code = item.get("file_path", ""), item.get("code", "")
+                if fp and code:
+                    metrics.record_file_read(fp, code)
+                    def_dirs.add(str(Path(fp).parent))
+
+        # Phase 2: Filter usages by relevance, read max 15
+        if body:
+            syms_lower = {s.lower() for s in sc.symbols}
+            usages = body.get("usages") or []
+            filtered: list[tuple[str, str]] = []
+            for item in usages:
+                fp, code = item.get("file_path", ""), item.get("code", "")
+                if not fp or not code:
+                    continue
+                stem = Path(fp).stem.lower()
+                fp_dir = str(Path(fp).parent)
+                # Relevance: same dir as def, symbol in filename, or first 10
+                if (fp_dir in def_dirs
+                        or any(s in stem for s in syms_lower)
+                        or len(filtered) < 10):
+                    filtered.append((fp, code))
+                    if len(filtered) >= 15:
+                        break
+
+            for fp, code in filtered:
+                metrics.record_file_read(fp, code)
 
     elif sc.tool_path == "context_pack_then_resolve":
         # /context-pack (no semantic) to discover, then /resolve for exact defs

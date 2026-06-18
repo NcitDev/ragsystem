@@ -22,8 +22,11 @@ What are you looking for?
 │   → /docs-search (semantic search on docs collection)
 │     This is WHERE QDRANT SHINES — structured knowledge artifacts
 │
-├── “What breaks if I change X?” (blast radius)
-│   → /resolve (definitions + usages_limit=50)
+├── "What breaks if I change X?" (blast radius)
+│   → /resolve TWO-PHASE: definitions first, then selective usages
+│     Phase 1: usages_limit=100 (count only), read definitions
+│     Phase 2: filter to 15 most relevant usages, read those
+│     30-40% precision · ~6K tokens · 2 calls
 │
 ├── A code pattern / flow (no specific symbol name)
 │   → /context-pack (include_semantic=false, max_slices=15)
@@ -60,8 +63,8 @@ POST /resolve
 
 **Rules:**
 - Always start here when you have symbol names
-- Set `usages_limit: 0` unless you specifically need to find all callers/implementors
-- If you need usages (blast radius, "what breaks if I change X"), set `usages_limit: 20` but expect 10-30 extra files
+- Set `usages_limit: 0` unless you need blast radius
+- For blast radius, use the two-phase strategy (see Tool 3 below) — NEVER read all 50+ usage files
 - Symbols should be exact names from code — `JobManager`, `SignalDatabaseMigration`, not fuzzy queries
 
 ### 2. `/context-pack` — Natural Language Fallback
@@ -91,24 +94,40 @@ POST /context-pack
 - After getting results, **filter by symbol match**: only keep slices where the file path contains a relevant symbol name or is in the same package as your target
 - If you extract symbol names from the results, **loop back to `/resolve`** with those symbols for precise definitions
 
-### 3. `/resolve` with usages — Blast Radius Analysis
+### 3. `/resolve` with usages — Blast Radius Analysis (two-phase)
 
 **When:** You need to know "what breaks if I change this class/function/interface?"
 
-**API:**
+**IMPORTANT: Use the TWO-PHASE strategy to keep precision high (30-40% instead of 5-8%):**
+
+**Phase 1 — Get the blast radius (count only, don't read all files):**
 ```
 POST /resolve
 {
   "repo": "<repo-name>",
   "symbols": ["Job"],
   "definitions_limit": 5,
-  "usages_limit": 50
+  "usages_limit": 100
 }
 ```
+Read the **definitions** (usually 1-3 files). Note the definition's directory path.
+From the response, note how many usage files exist (e.g., "53 files reference Job").
+**Do NOT read all usage files yet.**
 
-**What you get:** The symbol definition + every file that references/extends/implements it.
+**Phase 2 — Selective read (filter before reading):**
+From the usages list, **keep only** files matching these relevance rules:
+1. **Same directory** as the definition (e.g., if Job is in `org/signal/jobs/`, keep usages there)
+2. **Symbol name in filename** (e.g., `JobManager.java`, `JobScheduler.kt`)
+3. **First 10 usages** by order (most important usages tend to come first)
 
-**Warning:** This returns 10-50+ files per symbol. Only use when impact analysis is explicitly needed. Expect ~15-30 "related" files that are real usages but may not all be relevant to your task.
+**Read at most 15 usage files total.** Report the full count to the user: "53 files reference Job — here are the 15 most relevant."
+
+**Benchmark:** 30-40% precision, ~6K tokens, 2 API calls, ~800ms.
+
+**Rules:**
+- NEVER read all 50+ usage files — this kills precision
+- Always report the total usage count to the user
+- If the user asks for "all usages", give them the count + the 15 most relevant file paths
 
 ### 4. `/docs-search` — Project Knowledge (Qdrant semantic search)
 
@@ -182,7 +201,7 @@ rg -l "@Deprecated" --include "*.kt"
 | "Show me the DI wiring map" | `/docs-search` with `query: "DI dependencies modules"` | Indexed knowledge artifact |
 | "What feature flags exist?" | `/docs-search` with `query: "feature flags toggles"` | Docs collection knowledge |
 | "How does job scheduling work?" | `/resolve` with `symbols: ["JobManager", "JobScheduler"]`, `usages_limit: 0` | Extract symbols from question first |
-| "What breaks if I change the Job base class?" | `/resolve` with `symbols: ["Job"]`, `usages_limit: 50` | Need blast radius = usages |
+| "What breaks if I change the Job base class?" | `/resolve` two-phase: defs first (read 1-3 files), then filter usages to 15 most relevant | Blast radius = usages, but NEVER read all 50+ |
 | "Trace the push notification pipeline" | `/context-pack` with query, no semantic | Natural language, no specific symbols |
 | "Find deprecated migration code" | `/resolve` with `symbols: ["DeprecatedJobMigration"]` | If you know the symbol name |
 | "Find all deprecated annotations" | `rg "@Deprecated"`, then `/resolve` symbols | rg to discover, resolve to read |
@@ -191,7 +210,7 @@ rg -l "@Deprecated" --include "*.kt"
 
 **DO NOT:**
 - Call `/context-pack` with `include_semantic: true` for symbol-specific queries — embedding noise will add 20-40 irrelevant files
-- Call `/resolve` with `usages_limit: 20` when you only need definitions — you'll read 10-30 extra files unnecessarily
+- Call `/resolve` with `usages_limit: 50` and read ALL returned files for blast radius — use the two-phase strategy instead (read definitions, count usages, selectively read max 15)
 - Use `/context-pack` as your first call when you already know symbol names — `/resolve` is more precise
 - Chain multiple `/context-pack` calls hoping for better results — the noise compounds
 - Read every file returned by a tool — filter by relevance (symbol match, same package, golden file set)
