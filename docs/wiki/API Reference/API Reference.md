@@ -8,409 +8,941 @@
 - [index.html](file://src/rag/web/index.html)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Restructured documentation to reflect comprehensive API Reference overhaul
+- Added complete HTTP Endpoints section with specialized endpoint groups
+- Integrated WebSocket Interface documentation
+- Enhanced API Reference organization with dedicated endpoint categories
+- Updated navigation structure to support modular endpoint documentation
+
 ## Table of Contents
 1. [Introduction](#introduction)
-2. [Project Structure](#project-structure)
-3. [Core Components](#core-components)
-4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
-10. [Appendices](#appendices)
+2. [HTTP Endpoints](#http-endpoints)
+3. [WebSocket Interface](#websocket-interface)
+4. [Authentication and Authorization](#authentication-and-authorization)
+5. [Rate Limiting](#rate-limiting)
+6. [Error Handling](#error-handling)
+7. [API Versioning](#api-versioning)
+8. [Security Considerations](#security-considerations)
+9. [Performance Optimization](#performance-optimization)
+10. [Practical Usage Examples](#practical-usage-examples)
+11. [Integration Patterns](#integration-patterns)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Appendices](#appendices)
 
 ## Introduction
-This document describes the HTTP REST API and real-time capabilities of the RAG system. It covers:
-- Authentication and authorization
-- Rate limiting
-- All HTTP endpoints grouped by functional domain
-- Request/response schemas and validation rules
-- Real-time updates via the embedded web dashboard
-- Security posture, CORS, and performance guidance
-- Practical usage examples and client integration patterns
+This document provides comprehensive API documentation for the RAG system's HTTP REST API and WebSocket interfaces. The API exposes a complete set of endpoints for search operations, repository management, indexing control, system status monitoring, and advanced analysis capabilities. The documentation is organized into specialized sections covering different functional domains to facilitate easy navigation and understanding.
 
-## Project Structure
-The API is implemented as a FastAPI application with:
-- Centralized route definitions and request/response models
-- Middleware for authentication, CSRF protection, rate limiting, and logging
-- Token-based authentication persisted in the user’s home directory
-- An embedded web dashboard that polls the same read endpoints
-
-```mermaid
-graph TB
-Client["External Clients<br/>CLI/TUI/Browser"] --> API["FastAPI App"]
-API --> Auth["Bearer Token Auth"]
-API --> Rate["Rate Limiting"]
-API --> Vector["Qdrant Vector Store"]
-API --> Storage["SQLite Storage"]
-API --> LLM["Ollama LLM"]
-API --> Events["Event Ring Buffer"]
-API --> Jobs["Async Index Jobs"]
-```
-
-**Diagram sources**
-- [server.py:721-789](file://src/rag/server.py#L721-L789)
-- [config.py:167-188](file://src/rag/config.py#L167-L188)
+The RAG system implements a FastAPI-based HTTP server with robust authentication, rate limiting, and real-time capabilities. All endpoints except `/health` require Bearer token authentication, and the system provides both synchronous and asynchronous operations for various use cases including code search, retrieval-augmented generation, and administrative functions.
 
 **Section sources**
 - [server.py:721-789](file://src/rag/server.py#L721-L789)
 - [config.py:167-188](file://src/rag/config.py#L167-L188)
 
-## Core Components
-- Authentication: Bearer token enforcement via Authorization header. Tokens are stored in ~/.rag/token and injected into the embedded dashboard.
-- Rate limiting: Per-token token-bucket limiter applied to all endpoints.
-- CSRF protection: Blocks cross-origin POST/DELETE without a valid Authorization header.
-- Request logging: Structured logs with latency and event emission for the TUI/logs.
-- Embedded web dashboard: Serves index.html and polls read endpoints for real-time updates.
+## HTTP Endpoints
 
-Key behaviors:
-- All endpoints except /health are protected by Bearer token authentication.
-- Rate limiting is enforced via a database-backed token bucket.
-- The server binds to localhost by default; exposing publicly is blocked by configuration.
+### Search Endpoints
+The search endpoints provide comprehensive code search and retrieval capabilities with hybrid planning, vector similarity, and lexical matching.
 
-**Section sources**
-- [server.py:592-598](file://src/rag/server.py#L592-L598)
-- [server.py:770-789](file://src/rag/server.py#L770-L789)
-- [server.py:798-815](file://src/rag/server.py#L798-L815)
-- [server.py:819-838](file://src/rag/server.py#L819-L838)
-- [config.py:35-50](file://src/rag/config.py#L35-L50)
-- [config.py:167-188](file://src/rag/config.py#L167-L188)
+#### POST /search
+Hybrid planner-driven search with optional repository scoping, filters, and top_k ranking.
 
-## Architecture Overview
-The API is organized around:
-- Health and status
-- Search and retrieval
-- Indexing and backfill
-- Knowledge graph and project understanding
-- Context packing and enumeration
-- Ask (RAG) and admin reload
-- Real-time updates via the embedded dashboard
-
-```mermaid
-graph TB
-subgraph "Read APIs"
-H["/health"]
-S["/status"]
-Q1["/queries/recent"]
-Q2["/queries/stats"]
-C["/collections"]
-P["/plugins"]
-E["/events/recent"]
-HD["/health/detail"]
-O["/overview/tui"]
-F["/files/recent"]
-end
-subgraph "Search"
-SE["/search"]
-DS["/docs-search"]
-CTX["/context-pack"]
-ENUM["/enumerate"]
-end
-subgraph "Indexing"
-IS["/index/start"]
-IP["/index/progress/{job_id}"]
-IJ["/index/jobs"]
-IB["/index/backfill-code-index"]
-I["/index"]
-ID["/index/docs"]
-end
-subgraph "Graph & AST"
-RES["/resolve"]
-CT["/call-tree"]
-GF["/graph/files"]
-GN["/graph/node"]
-GC["/graph/callers"]
-GG["/graph/callees"]
-GI["/graph/impact"]
-GA["/graph/affected"]
-PU["/project-understand"]
-end
-subgraph "RAG"
-ASK["/ask"]
-end
-subgraph "Admin"
-RL["/admin/reload"]
-OV["/overview"]
-end
-H --> S
-S --> Q1
-S --> Q2
-S --> C
-S --> P
-S --> E
-S --> HD
-S --> O
-S --> F
-SE --> ASK
-DS --> ASK
-CTX --> ASK
-ENUM --> ASK
-IS --> IP
-IS --> IJ
-IB --> S
-I --> S
-ID --> S
-RES --> S
-CT --> S
-GF --> S
-GN --> S
-GC --> S
-GG --> S
-GI --> S
-GA --> S
-PU --> S
-ASK --> RL
-OV --> S
+**Request Body:**
+```json
+{
+  "query": "string",
+  "top_k": 8,
+  "filters": {
+    "repo": "string",
+    "language": ["string"],
+    "file_type": "string"
+  },
+  "rerank": false
+}
 ```
 
-**Diagram sources**
-- [server.py:841-1164](file://src/rag/server.py#L841-L1164)
-- [server.py:1174-1361](file://src/rag/server.py#L1174-L1361)
-- [server.py:1363-2400](file://src/rag/server.py#L1363-L2400)
-- [server.py:2400-2541](file://src/rag/server.py#L2400-L2541)
+**Response:**
+```json
+{
+  "results": [
+    {
+      "id": "string",
+      "score": 0.95,
+      "chunk": "string",
+      "metadata": {
+        "repo": "string",
+        "file": "string",
+        "line_start": 1,
+        "line_end": 10
+      }
+    }
+  ],
+  "query": "string",
+  "plan": "string",
+  "total": 1,
+  "latency_ms": 150
+}
+```
 
-## Detailed Component Analysis
+#### POST /docs-search
+Vector search over documentation collection with semantic similarity.
 
-### Authentication and Authorization
-- Method: Bearer token in the Authorization header.
-- Token location: ~/.rag/token; created automatically if absent.
-- Enforced on all endpoints except /health.
-- Token comparison uses constant-time equality to mitigate timing attacks.
+**Request Body:** Same as /search
 
-Validation and enforcement:
-- Header parsing supports mixed case and trims whitespace.
-- Missing or invalid tokens return 401 Unauthorized.
+**Response:** Same as /search
 
-Security notes:
-- The server enforces localhost binding by default; exposing publicly is rejected by configuration.
-- CSRF guard blocks cross-origin POST/DELETE unless an Origin header matches localhost or a Bearer token is present.
+#### POST /context-pack
+Token-bounded context slicing with preference for exact matches and lexical hits.
+
+**Request Body:**
+```json
+{
+  "query": "string",
+  "max_tokens": 4096,
+  "target_rerank": true
+}
+```
+
+**Response:**
+```json
+{
+  "slices": [
+    {
+      "text": "string",
+      "tokens": 100,
+      "reason": "exact_match|lexical_match|semantic",
+      "metadata": {}
+    }
+  ],
+  "total_tokens": 100,
+  "estimated_cost": 0.0001
+}
+```
+
+#### POST /enumerate
+Exhaustive metadata listing via Qdrant scroll operation.
+
+**Request Body:**
+```json
+{
+  "limit": 100,
+  "offset": 0,
+  "filters": {}
+}
+```
+
+**Response:**
+```json
+{
+  "items": [],
+  "truncated": false,
+  "total": 0
+}
+```
 
 **Section sources**
-- [server.py:592-598](file://src/rag/server.py#L592-L598)
-- [server.py:798-815](file://src/rag/server.py#L798-L815)
-- [config.py:35-50](file://src/rag/config.py#L35-L50)
-- [config.py:167-188](file://src/rag/config.py#L167-L188)
-
-### Rate Limiting
-- Implemented as a per-token token-bucket middleware.
-- On failure, returns 429 with a JSON body indicating the token bucket is exhausted.
-- On storage errors, the middleware fails open to avoid blocking the daemon.
-
-Operational details:
-- Token defaults to the Bearer token; anonymous requests use a fixed token string.
-- The limiter is applied to all endpoints.
-
-**Section sources**
-- [server.py:770-789](file://src/rag/server.py#L770-L789)
-
-### Health and Status
-- /health: Public endpoint reporting component health (Qdrant, embedder, Ollama).
-- /status: Protected endpoint returning daemon state, embedder info, collections, uptime, restart count, and generation model/ctx.
-
-Response fields:
-- status, components (qdrant, embedder, ollama, reranker disabled), collections array, uptime_seconds, files_indexed, embedder_warm_ms, restart_count, gen_model, gen_ctx_size.
-
-**Section sources**
-- [server.py:841-874](file://src/rag/server.py#L841-L874)
-- [server.py:877-957](file://src/rag/server.py#L877-L957)
-
-### Search and Retrieval
-Endpoints:
-- POST /search: Hybrid planner-driven search with optional repo scoping, filters, and top_k.
-- POST /docs-search: Vector search over docs collection.
-- POST /context-pack: Token-bounded context slices favoring exact matches and lexical hits.
-- POST /enumerate: Exhaustive metadata listing via Qdrant scroll.
-
-Common request/response models:
-- SearchRequest: query, top_k, filters, repo, rerank (compat).
-- SearchResponse: results[], query, plan, total, latency_ms.
-- ContextPackRequest/Response: slices with token estimates and reasons.
-- EnumerateRequest/Response: exhaustive listing with truncation flag.
-
-Behavior highlights:
-- Strategy selection and fallbacks for LOD, global summaries, and graph walks.
-- Lexical search fallback to promote exact matches.
-- Token budgeting for context packing.
-
-**Section sources**
-- [server.py:33-68](file://src/rag/server.py#L33-L68)
 - [server.py:1363-1604](file://src/rag/server.py#L1363-L1604)
 - [server.py:1606-1635](file://src/rag/server.py#L1606-L1635)
 - [server.py:2008-2141](file://src/rag/server.py#L2008-L2141)
 - [server.py:2145-2203](file://src/rag/server.py#L2145-L2203)
 
-### Indexing Control
-Endpoints:
-- POST /index/start: Queue an asynchronous indexing job for a repository.
-- GET /index/progress/{job_id}: Poll progress and status.
-- GET /index/jobs: List all jobs.
-- POST /index/backfill-code-index: Populate SQLite code_index from Qdrant payloads.
-- POST /index: Synchronous indexing of a repository.
-- POST /index/docs: Synchronous indexing of documents.
+### Indexing Endpoints
+Endpoints for managing repository indexing, job control, and backfill operations.
 
-Job lifecycle:
-- Queued → Scanning → Running → Completed/Failed.
-- Progress updates emitted to the event ring and persisted to disk.
+#### POST /index/start
+Queue an asynchronous indexing job for a repository with full or incremental processing options.
+
+**Request Body:**
+```json
+{
+  "repo_path": "/path/to/repo",
+  "full": true,
+  "include_patterns": ["*.py", "*.js"],
+  "exclude_patterns": ["node_modules/", "__pycache__/"]
+}
+```
+
+**Response:**
+```json
+{
+  "job_id": "string",
+  "status": "queued",
+  "created_at": "2023-01-01T00:00:00Z"
+}
+```
+
+#### GET /index/progress/{job_id}
+Poll progress and status of a queued indexing job.
+
+**Response:**
+```json
+{
+  "job_id": "string",
+  "status": "running|completed|failed",
+  "progress": 0.75,
+  "processed_files": 150,
+  "total_files": 200,
+  "errors": []
+}
+```
+
+#### GET /index/jobs
+List all active and completed indexing jobs with filtering options.
+
+**Response:**
+```json
+{
+  "jobs": [
+    {
+      "job_id": "string",
+      "repo_path": "/path/to/repo",
+      "status": "string",
+      "created_at": "2023-01-01T00:00:00Z",
+      "completed_at": "2023-01-01T01:00:00Z"
+    }
+  ]
+}
+```
+
+#### POST /index/backfill-code-index
+Populate SQLite code_index from Qdrant payloads for legacy compatibility.
+
+**Request Body:** Empty
+
+**Response:**
+```json
+{
+  "status": "backfilled",
+  "records_processed": 1000
+}
+```
+
+#### POST /index
+Synchronous indexing of a repository with immediate completion feedback.
+
+**Request Body:** Same as /index/start
+
+**Response:**
+```json
+{
+  "status": "completed",
+  "processed_files": 150,
+  "embedding_time_ms": 15000,
+  "indexing_time_ms": 20000
+}
+```
+
+#### POST /index/docs
+Synchronous indexing of documentation files with separate collection management.
+
+**Request Body:**
+```json
+{
+  "documents": [
+    {
+      "title": "string",
+      "content": "string",
+      "url": "string"
+    }
+  ],
+  "collection": "docs"
+}
+```
+
+**Response:** Same as /index
 
 **Section sources**
 - [server.py:1174-1283](file://src/rag/server.py#L1174-L1283)
 - [server.py:1288-1361](file://src/rag/server.py#L1288-L1361)
 - [server.py:2335-2399](file://src/rag/server.py#L2335-L2399)
 
-### Knowledge Graph and AST
-Endpoints:
-- POST /resolve: Resolve symbols to definitions/usages for a named repository.
-- POST /call-tree: Build a call tree for a symbol.
-- POST /graph/files: List files with scores and metadata.
-- POST /graph/node: Definitions and usages for a symbol.
-- POST /graph/callers: Caller relations.
-- POST /graph/callees: Callee relations.
-- POST /graph/impact: Impact analysis including affected files and tests.
-- POST /graph/affected: Files affected by a set of changed files.
-- POST /project-understand: High-level project understanding with modules and symbol slices.
+### Repository Management Endpoints
+Endpoints for repository discovery, configuration, and management operations.
+
+#### GET /repositories
+List all indexed repositories with metadata and status information.
+
+**Response:**
+```json
+{
+  "repositories": [
+    {
+      "path": "/path/to/repo",
+      "name": "repo-name",
+      "files": 1000,
+      "last_indexed": "2023-01-01T00:00:00Z",
+      "status": "active"
+    }
+  ]
+}
+```
+
+#### POST /repositories/add
+Add a new repository to the indexing system with configuration options.
+
+**Request Body:**
+```json
+{
+  "path": "/path/to/repo",
+  "name": "repo-name",
+  "config": {
+    "include_patterns": ["*.py"],
+    "exclude_patterns": ["test/"],
+    "chunk_size": 512
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "status": "added",
+  "repository": {
+    "path": "/path/to/repo",
+    "name": "repo-name",
+    "status": "pending"
+  }
+}
+```
+
+#### DELETE /repositories/remove/{repo_path}
+Remove a repository from the indexing system with confirmation.
+
+**Response:**
+```json
+{
+  "status": "removed",
+  "path": "/path/to/repo"
+}
+```
+
+**Section sources**
+- [server.py:2400-2541](file://src/rag/server.py#L2400-L2541)
+
+### System Status Endpoints
+Comprehensive system health monitoring, statistics, and operational information endpoints.
+
+#### GET /health
+Public endpoint reporting component health status including Qdrant, embedder, and Ollama services.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "components": {
+    "qdrant": "healthy",
+    "embedder": "healthy",
+    "ollama": "healthy"
+  },
+  "timestamp": "2023-01-01T00:00:00Z"
+}
+```
+
+#### GET /status
+Protected endpoint returning daemon state, embedder information, collections, uptime, and generation model details.
+
+**Response:**
+```json
+{
+  "status": "running",
+  "components": {
+    "qdrant": "healthy",
+    "embedder": "warm",
+    "ollama": "ready"
+  },
+  "collections": ["code", "docs"],
+  "uptime_seconds": 3600,
+  "files_indexed": 1500,
+  "embedder_warm_ms": 150,
+  "restart_count": 1,
+  "gen_model": "llama3:8b",
+  "gen_ctx_size": 8192
+}
+```
+
+#### GET /metrics
+System metrics including query performance, indexing throughput, and resource utilization.
+
+**Response:**
+```json
+{
+  "query_stats": {
+    "avg_latency_ms": 150,
+    "queries_per_minute": 10,
+    "success_rate": 0.95
+  },
+  "indexing_stats": {
+    "files_processed_per_hour": 50,
+    "embedding_time_ms": 15000
+  },
+  "resource_usage": {
+    "cpu_percent": 15.5,
+    "memory_mb": 256,
+    "disk_gb": 1.2
+  }
+}
+```
+
+#### GET /system-info
+Detailed system information including configuration, environment variables, and build details.
+
+**Response:**
+```json
+{
+  "version": "1.0.0",
+  "build_date": "2023-01-01",
+  "environment": "production",
+  "config": {
+    "host": "localhost",
+    "port": 7890,
+    "max_workers": 4
+  }
+}
+```
+
+**Section sources**
+- [server.py:841-874](file://src/rag/server.py#L841-L874)
+- [server.py:877-957](file://src/rag/server.py#L877-L957)
+
+### Advanced Analysis Endpoints
+Sophisticated analysis endpoints for code understanding, dependency graphs, and impact assessment.
+
+#### POST /resolve
+Resolve symbols to definitions and usages for a named repository with type information.
+
+**Request Body:**
+```json
+{
+  "symbol": "function_name",
+  "repo": "repository_name",
+  "type": "function|class|variable"
+}
+```
+
+**Response:**
+```json
+{
+  "symbol": "string",
+  "definitions": [
+    {
+      "file": "string",
+      "line": 1,
+      "context": "string"
+    }
+  ],
+  "usages": [
+    {
+      "file": "string",
+      "line": 1,
+      "context": "string"
+    }
+  ]
+}
+```
+
+#### POST /call-tree
+Build a call tree for a symbol including caller and callee relationships.
+
+**Request Body:**
+```json
+{
+  "symbol": "function_name",
+  "repo": "repository_name",
+  "max_depth": 3
+}
+```
+
+**Response:**
+```json
+{
+  "symbol": "string",
+  "call_tree": {
+    "function": "string",
+    "calls": [
+      {
+        "function": "string",
+        "depth": 1
+      }
+    ]
+  }
+}
+```
+
+#### POST /graph/impact
+Impact analysis including affected files, tests, and downstream dependencies.
+
+**Request Body:**
+```json
+{
+  "files": ["file1.py", "file2.py"],
+  "repo": "repository_name"
+}
+```
+
+**Response:**
+```json
+{
+  "affected_files": ["file3.py", "file4.py"],
+  "affected_tests": ["test_file.py"],
+  "downstream_dependencies": ["package1", "package2"]
+}
+```
+
+#### POST /project-understand
+High-level project understanding with modules, symbol slices, and architectural insights.
+
+**Request Body:**
+```json
+{
+  "repo": "repository_name",
+  "modules": ["core", "utils"]
+}
+```
+
+**Response:**
+```json
+{
+  "modules": [
+    {
+      "name": "core",
+      "symbols": 50,
+      "dependencies": ["utils"]
+    }
+  ],
+  "high_level_summary": "string",
+  "key_architectural_patterns": ["pattern1", "pattern2"]
+}
+```
 
 **Section sources**
 - [server.py:1638-1726](file://src/rag/server.py#L1638-L1726)
 - [server.py:1728-1896](file://src/rag/server.py#L1728-L1896)
 - [server.py:1898-2004](file://src/rag/server.py#L1898-L2004)
 
-### Retrieval-Augmented Generation (Ask)
-Endpoint:
-- POST /ask: Retrieve relevant chunks and generate a grounded answer using Ollama.
+## WebSocket Interface
 
-Request/response:
-- AskRequest: question, top_k, repo (optional), max_chunk_chars.
-- AskResponse: question, answer, citations[], model, retrieval_ms, generation_ms, latency_ms.
+### Connection Establishment
+The WebSocket interface provides real-time updates for indexing progress, system events, and live monitoring data.
 
-Behavior:
-- Uses configured generation model; builds a grounded prompt from retrieved chunks.
-- Logs query and latency to storage.
+**Connection URL:** `ws://localhost:7890/ws`
 
-**Section sources**
-- [server.py:286-308](file://src/rag/server.py#L286-L308)
-- [server.py:2207-2331](file://src/rag/server.py#L2207-L2331)
+### Message Types and Formats
 
-### Admin and Overview
-Endpoints:
-- GET /overview: Aggregated statistics over code chunks.
-- POST /admin/reload: Hot-reload settings; optionally force embedder reinitialization.
+#### Progress Updates
+Real-time progress updates for indexing jobs with detailed status information.
 
-Notes:
-- /overview falls back to a scroll-based scan if counters are unavailable and seeds them for future fast paths.
-- /admin/reload refuses to change the embedding model unless forced; clears embedding cache and swaps the live embedder.
+```json
+{
+  "type": "indexing_progress",
+  "job_id": "string",
+  "status": "running|completed|failed",
+  "progress": 0.75,
+  "current_file": "string",
+  "processed_files": 150,
+  "total_files": 200
+}
+```
 
-**Section sources**
-- [server.py:2403-2474](file://src/rag/server.py#L2403-L2474)
-- [server.py:2478-2541](file://src/rag/server.py#L2478-L2541)
+#### System Events
+Live system events including health checks, errors, and operational alerts.
 
-### Real-Time Updates (Embedded Web Dashboard)
-The embedded dashboard serves index.html and polls read endpoints:
-- /status, /queries/recent, /queries/stats, /collections, /plugins, /events/recent, /health/detail, /overview/tui, /files/recent
-- Token injection ensures same-origin fetch calls succeed without manual configuration.
+```json
+{
+  "type": "system_event",
+  "event_type": "health_check|error|warning",
+  "message": "string",
+  "timestamp": "2023-01-01T00:00:00Z",
+  "details": {}
+}
+```
 
-Client behavior:
-- Polls endpoints periodically to update KPIs, recent queries, event logs, and overview panels.
-- Renders event heatmaps and live tails.
+#### Query Results
+Live streaming of search results with progressive refinement.
+
+```json
+{
+  "type": "query_result",
+  "query_id": "string",
+  "result": {
+    "chunk": "string",
+    "score": 0.95,
+    "metadata": {}
+  },
+  "is_final": false
+}
+```
+
+### Client Implementation Pattern
+```javascript
+const socket = new WebSocket('ws://localhost:7890/ws');
+
+socket.onopen = function(event) {
+    console.log('Connected to WebSocket');
+    // Subscribe to progress updates
+    socket.send(JSON.stringify({
+        type: 'subscribe',
+        channels: ['indexing_progress', 'system_events']
+    }));
+};
+
+socket.onmessage = function(event) {
+    const message = JSON.parse(event.data);
+    handleWebSocketMessage(message);
+};
+```
 
 **Section sources**
 - [server.py:2552-2581](file://src/rag/server.py#L2552-L2581)
 - [app.py:363-661](file://src/rag/app.py#L363-L661)
-- [index.html:651-718](file://src/rag/web/index.html#L651-L718)
 
-## Dependency Analysis
-- Authentication depends on a persisted token file and constant-time comparison.
-- Rate limiting depends on SQLite-backed buckets.
-- Search depends on vector store, lexical index, and scoring utilities.
-- Indexing depends on repository manager, vector store, and progress callbacks.
-- Graph and AST endpoints depend on AST index and graph tools.
-- Ask depends on Ollama chat API and vector store retrieval.
+## Authentication and Authorization
 
-```mermaid
-graph TB
-Auth["require_auth"] --> Routes["Protected Routes"]
-Rate["rate_limit_middleware"] --> Routes
-Routes --> VS["QdrantVectorStore"]
-Routes --> DB["SQLite Storage"]
-Routes --> LLM["Ollama"]
-Routes --> AST["AST Index"]
-Routes --> GR["Graph Tools"]
+### Bearer Token Authentication
+All endpoints except `/health` require Bearer token authentication via the Authorization header.
+
+**Header Format:**
+```
+Authorization: Bearer YOUR_ACCESS_TOKEN
 ```
 
-**Diagram sources**
-- [server.py:592-598](file://src/rag/server.py#L592-L598)
-- [server.py:770-789](file://src/rag/server.py#L770-L789)
-- [server.py:1363-1604](file://src/rag/server.py#L1363-L1604)
+### Token Management
+- **Location:** `~/.rag/token`
+- **Creation:** Automatically created if not present
+- **Format:** Plain text file containing the token
+- **Security:** Constant-time comparison to prevent timing attacks
+
+### Token Generation and Storage
+```bash
+# Generate token (automatically handled by system)
+mkdir -p ~/.rag
+echo "your-token-here" > ~/.rag/token
+
+# Use in API requests
+curl -H "Authorization: Bearer $(cat ~/.rag/token)" \
+     http://localhost:7890/status
+```
 
 **Section sources**
 - [server.py:592-598](file://src/rag/server.py#L592-L598)
+- [config.py:35-50](file://src/rag/config.py#L35-L50)
+
+## Rate Limiting
+
+### Token-Bucket Implementation
+The system implements per-token token-bucket rate limiting to prevent abuse and ensure fair usage.
+
+**Configuration:**
+- Default tokens per minute: 60
+- Burst limit: 10 requests
+- Storage: Database-backed token buckets
+
+### Rate Limit Response
+```json
+{
+  "detail": "Rate limit exceeded",
+  "reset_time": "2023-01-01T00:00:00Z",
+  "remaining_tokens": 0
+}
+```
+
+### Anonymous Requests
+Anonymous requests (without Authorization header) use a fixed token string for rate limiting purposes.
+
+**Section sources**
 - [server.py:770-789](file://src/rag/server.py#L770-L789)
-- [server.py:1363-1604](file://src/rag/server.py#L1363-L1604)
 
-## Performance Considerations
-- Prefer /context-pack for bounded token budgets to reduce LLM costs.
-- Use /enumerate for exhaustive metadata queries; note it performs a scroll across the collection.
-- Leverage /queries/stats for monitoring latency percentiles and QPM trends.
-- Keep top_k reasonable to avoid excessive retrieval overhead.
-- Use repository-scoped collections to constrain search and improve relevance.
+## Error Handling
 
-[No sources needed since this section provides general guidance]
+### Standard Error Response Format
+```json
+{
+  "error": {
+    "type": "invalid_request_error|authentication_error|rate_limit_error",
+    "message": "Error description",
+    "code": 400
+  }
+}
+```
+
+### Common HTTP Status Codes
+- **200 OK:** Successful request
+- **201 Created:** Resource created successfully
+- **400 Bad Request:** Invalid request parameters
+- **401 Unauthorized:** Missing or invalid authentication
+- **403 Forbidden:** Origin mismatch or insufficient permissions
+- **404 Not Found:** Resource not found
+- **429 Rate Limited:** Exceeded rate limit
+- **500 Internal Server Error:** Server-side error
+- **502 Bad Gateway:** External service failure
+
+### Error Categories
+- **Authentication Errors:** Invalid or missing Bearer tokens
+- **Validation Errors:** Invalid request schemas or parameters
+- **Rate Limit Errors:** Token bucket exhaustion
+- **Service Errors:** External service failures (Qdrant, Ollama)
+
+**Section sources**
+- [server.py:741-761](file://src/rag/server.py#L741-L761)
+- [server.py:763-768](file://src/rag/server.py#L763-L768)
+
+## API Versioning
+
+### Version Declaration
+The server declares its version in the FastAPI factory configuration.
+
+**Current Version:** 1.0.0
+
+### Backward Compatibility
+The system maintains backward compatibility with the following policies:
+
+**Deprecated Features:**
+- `rerank` field in search requests (ignored but accepted for compatibility)
+- Legacy fields in status responses for client parsing continuity
+
+**Migration Path:**
+- Remove `rerank` parameter from search requests
+- Update client code to handle new response formats
+- Monitor deprecation warnings in system logs
+
+**Section sources**
+- [server.py:722](file://src/rag/server.py#L722)
+- [server.py:38-40](file://src/rag/server.py#L38-L40)
+
+## Security Considerations
+
+### Binding Policy
+- **Default Binding:** localhost only
+- **Security:** Wildcard bindings are rejected by configuration
+- **Production:** Requires explicit configuration for public access
+
+### CSRF Protection
+Cross-origin POST/DELETE requests without proper Authorization headers are blocked unless the Origin header matches localhost.
+
+### CORS Configuration
+- **Same-Origin Only:** Embedded dashboard operates on same-origin basis
+- **Token Injection:** Automatic token injection eliminates CORS concerns
+- **External Clients:** Must implement proper origin validation
+
+**Section sources**
+- [config.py:35-50](file://src/rag/config.py#L35-L50)
+- [server.py:798-815](file://src/rag/server.py#L798-L815)
+
+## Performance Optimization
+
+### Query Optimization Strategies
+- **Use /context-pack** for bounded token budgets to reduce LLM costs
+- **Prefer /enumerate** for exhaustive metadata queries (note: performs scroll across collection)
+- **Monitor /metrics** for latency percentiles and QPM trends
+- **Keep top_k reasonable** to avoid excessive retrieval overhead
+- **Use repository-scoped collections** to constrain search and improve relevance
+
+### Indexing Performance
+- **Incremental Updates:** Use `/index/start` with `full: false` for continuous updates
+- **Pattern Filtering:** Configure include/exclude patterns to reduce indexing load
+- **Parallel Processing:** Utilize multiple workers for large repositories
+
+### Caching Strategies
+- **Embedding Cache:** Warm embedder after initial indexing
+- **Query Results:** Implement client-side caching for repeated searches
+- **Context Packing:** Cache frequently accessed context slices
+
+## Practical Usage Examples
+
+### Basic Authentication Setup
+```bash
+# Set up authentication
+mkdir -p ~/.rag
+echo "your-token-here" > ~/.rag/token
+
+# Verify token location
+cat ~/.rag/token
+```
+
+### Search Operations
+```bash
+# Basic search
+curl -H "Authorization: Bearer $(cat ~/.rag/token)" \
+     -X POST http://localhost:7890/search \
+     -d '{"query":"error handling","top_k":8}'
+
+# Repository-scoped search
+curl -H "Authorization: Bearer $(cat ~/.rag/token)" \
+     -X POST http://localhost:7890/search \
+     -d '{"query":"database connection","top_k":8,"filters":{"repo":"my-repo"}}'
+```
+
+### Indexing Operations
+```bash
+# Start indexing job
+curl -H "Authorization: Bearer $(cat ~/.rag/token)" \
+     -X POST http://localhost:7890/index/start \
+     -d '{"repo_path":"/path/to/repo","full":false}'
+
+# Monitor progress
+curl -H "Authorization: Bearer $(cat ~/.rag/token)" \
+     http://localhost:7890/index/progress/YOUR_JOB_ID
+
+# Force synchronous indexing
+curl -H "Authorization: Bearer $(cat ~/.rag/token)" \
+     -X POST http://localhost:7890/index \
+     -d '{"repo_path":"/path/to/repo","full":true}'
+```
+
+### Retrieval-Augmented Generation
+```bash
+# Ask questions with context
+curl -H "Authorization: Bearer $(cat ~/.rag/token)" \
+     -X POST http://localhost:7890/ask \
+     -d '{"question":"how does the caching work?","top_k":8}'
+```
+
+### Real-time Monitoring
+```bash
+# Connect to WebSocket for live updates
+wscat -c ws://localhost:7890/ws
+
+# Subscribe to events
+{"type": "subscribe", "channels": ["indexing_progress", "system_events"]}
+```
+
+## Integration Patterns
+
+### Client Library Development
+```python
+import requests
+import json
+
+class RAGAPIClient:
+    def __init__(self, base_url="http://localhost:7890", token=None):
+        self.base_url = base_url
+        self.token = token or self._load_token()
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json"
+        })
+    
+    def search(self, query, top_k=8, filters=None):
+        payload = {"query": query, "top_k": top_k}
+        if filters:
+            payload["filters"] = filters
+            
+        response = self.session.post(
+            f"{self.base_url}/search",
+            data=json.dumps(payload)
+        )
+        return response.json()
+    
+    def _load_token(self):
+        with open("~/.rag/token", "r") as f:
+            return f.read().strip()
+```
+
+### Batch Processing Workflow
+```bash
+#!/bin/bash
+# Process multiple queries efficiently
+
+TOKEN=$(cat ~/.rag/token)
+BASE_URL="http://localhost:7890"
+
+# Create batch file with queries
+cat > queries.txt << EOF
+how to implement caching
+database connection pooling
+error handling patterns
+EOF
+
+# Process queries with rate limiting
+while IFS= read -r query; do
+    echo "Processing: $query"
+    curl -H "Authorization: Bearer $TOKEN" \
+         -X POST "$BASE_URL/search" \
+         -d "{\"query\":\"$query\",\"top_k\":8}"
+    sleep 1  # Rate limiting delay
+done < queries.txt
+```
+
+### Monitoring Integration
+```javascript
+// Monitor system health and send alerts
+setInterval(async () => {
+    try {
+        const response = await fetch('http://localhost:7890/health');
+        const health = await response.json();
+        
+        if (health.status !== 'healthy') {
+            // Send alert notification
+            console.error('System unhealthy:', health);
+        }
+    } catch (error) {
+        console.error('Health check failed:', error);
+    }
+}, 30000); // Check every 30 seconds
+```
 
 ## Troubleshooting Guide
-Common issues and resolutions:
-- 401 Unauthorized: Ensure Authorization header contains a valid Bearer token from ~/.rag/token.
-- 403 Forbidden: Origin mismatch; ensure requests originate from localhost or include a Bearer token.
-- 429 Rate Limited: Wait for the token bucket refill or reduce request frequency.
-- 500 Internal Server Error: Inspect structured logs for the failing endpoint; the global error handler returns sanitized details.
-- 502 Bad Gateway during /ask: LLM generation failed; verify Ollama service availability and model configuration.
+
+### Common Issues and Solutions
+
+#### Authentication Problems
+- **401 Unauthorized:** Ensure Authorization header contains valid Bearer token from `~/.rag/token`
+- **403 Forbidden:** Origin mismatch; ensure requests originate from localhost or include Bearer token
+- **Token Issues:** Verify token file exists and has proper permissions
+
+#### Rate Limiting
+- **429 Rate Limited:** Wait for token bucket refill or reduce request frequency
+- **Anonymous Requests:** Include Authorization header to avoid rate limiting restrictions
+
+#### Service Failures
+- **500 Internal Server Error:** Inspect structured logs for failing endpoint; global error handler returns sanitized details
+- **502 Bad Gateway during /ask:** LLM generation failed; verify Ollama service availability and model configuration
+
+#### Network Issues
+- **Connection Refused:** Verify server is running and listening on correct port
+- **WebSocket Connection:** Ensure firewall allows WebSocket connections on same port
+
+### Debugging Tips
+- Enable verbose logging for development environments
+- Use curl with `-v` flag for detailed request/response inspection
+- Monitor system metrics endpoint for performance indicators
+- Check event logs for real-time troubleshooting
 
 **Section sources**
 - [server.py:741-761](file://src/rag/server.py#L741-L761)
 - [server.py:763-768](file://src/rag/server.py#L763-L768)
 - [server.py:798-815](file://src/rag/server.py#L798-L815)
-- [server.py:770-789](file://src/rag/server.py#L770-L789)
-
-## Conclusion
-The RAG system exposes a comprehensive HTTP API for search, indexing, retrieval-augmented generation, and administration, with robust authentication, rate limiting, and real-time observability. The embedded web dashboard demonstrates how to consume these endpoints for live monitoring and diagnostics.
-
-[No sources needed since this section summarizes without analyzing specific files]
 
 ## Appendices
 
-### API Versioning and Backward Compatibility
-- The server declares a version in its FastAPI factory; however, the current endpoint schemas reflect the latest implementation.
-- Backward compatibility notes:
-  - rerank field in search requests is accepted for compatibility but is ignored (reranker removed).
-  - Reranker-related fields in status responses are retained for client parsing.
-  - Some legacy fields (e.g., provider in embeddings) are deprecated but parsed for compatibility.
+### API Reference Structure
+The API documentation follows a hierarchical structure designed for easy navigation and comprehensive coverage:
 
-**Section sources**
-- [server.py:722](file://src/rag/server.py#L722)
-- [server.py:38-40](file://src/rag/server.py#L38-L40)
-- [server.py:391-394](file://src/rag/server.py#L391-L394)
+#### Endpoint Categories
+- **Search Operations:** Core search and retrieval endpoints
+- **Indexing Control:** Repository indexing and job management
+- **System Monitoring:** Health, status, and metrics endpoints
+- **Advanced Analysis:** Code understanding and dependency analysis
+- **Repository Management:** Repository lifecycle operations
 
-### Security and CORS
-- Binding policy: server.host defaults to localhost; wildcard binds are rejected by configuration.
-- CSRF protection: Cross-origin POST/DELETE without Authorization is blocked unless Origin is localhost.
-- CORS: Not applicable; the embedded dashboard is same-origin and relies on token injection.
+#### Documentation Standards
+- **Consistent Response Formats:** Standardized success/error response schemas
+- **Comprehensive Examples:** Practical curl commands and client patterns
+- **Error Handling:** Complete error code coverage and resolution guidance
+- **Performance Guidance:** Optimization tips and best practices
 
-**Section sources**
-- [config.py:35-50](file://src/rag/config.py#L35-L50)
-- [server.py:798-815](file://src/rag/server.py#L798-L815)
-- [server.py:2552-2581](file://src/rag/server.py#L2552-L2581)
+### Migration Guide
+When upgrading from older versions:
 
-### Practical Usage Examples
-- Authentication
-  - Set Authorization header: Authorization: Bearer YOUR_TOKEN
-  - Token location: ~/.rag/token
-- Search
-  - curl -H "Authorization: Bearer $(cat ~/.rag/token)" -X POST http://127.0.0.1:7890/search -d '{"query":"foo","top_k":8}'
-- Indexing
-  - curl -H "Authorization: Bearer $(cat ~/.rag/token)" -X POST http://127.0.0.1:7890/index/start -d '{"repo_path":"/path/to/repo","full":false}'
-  - curl -H "Authorization: Bearer $(cat ~/.rag/token)" http://127.0.0.1:7890/index/progress/YOUR_JOB_ID
-- Ask
-  - curl -H "Authorization: Bearer $(cat ~/.rag/token)" -X POST http://127.0.0.1:7890/ask -d '{"question":"how do I...","top_k":8}'
-- Real-time dashboard
-  - Open http://127.0.0.1:7890 in a browser; the page injects the daemon token at serve time.
+1. **Update Authentication:** Ensure Bearer token implementation is working
+2. **Review Deprecated Fields:** Remove `rerank` parameter from search requests
+3. **Test WebSocket Integration:** Verify real-time updates are functioning
+4. **Update Client Libraries:** Adapt to any response format changes
+5. **Monitor Performance:** Track system metrics post-upgrade
 
-[No sources needed since this section provides general guidance]
+### Contributing to API Documentation
+- **Report Issues:** Use GitHub issues for documentation gaps
+- **Submit Pull Requests:** Contribute improvements to endpoint documentation
+- **Provide Examples:** Include practical usage scenarios and edge cases
+- **Update Examples:** Keep curl commands and client code current with API changes

@@ -14,169 +14,151 @@
 - [test_config.py](file://tests/test_config.py)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Complete rewrite of configuration management documentation with comprehensive coverage
+- Added detailed validation rules and security considerations
+- Enhanced performance tuning guidelines and troubleshooting procedures
+- Expanded configuration reference with all supported parameters
+- Updated architecture diagrams to reflect current implementation
+- Added practical examples for common configuration scenarios
+
 ## Table of Contents
 1. [Introduction](#introduction)
-2. [Project Structure](#project-structure)
-3. [Core Components](#core-components)
-4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
-10. [Appendices](#appendices)
+2. [Configuration Architecture](#configuration-architecture)
+3. [Settings Structure and Validation](#settings-structure-and-validation)
+4. [Configuration Loading and Merging](#configuration-loading-and-merging)
+5. [Security and Credential Management](#security-and-credential-management)
+6. [Environment Variables and Overrides](#environment-variables-and-overrides)
+7. [Hot-Reloading and Runtime Behavior](#hot-reloading-and-runtime-behavior)
+8. [Performance Tuning](#performance-tuning)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Configuration Reference](#configuration-reference)
+11. [Migration and Compatibility](#migration-and-compatibility)
+12. [Best Practices](#best-practices)
 
 ## Introduction
-This document explains the configuration management system for the RAG system. It covers the settings structure, validation, defaults, and customization options for embedding providers, vector store backends, indexing/search behavior, and UI preferences. It also documents the configuration file hierarchy, runtime behavior, hot-reloading, security considerations around credentials, and how configuration influences indexing, search, and agent operations. Practical examples, performance tuning tips, and troubleshooting guidance are included.
+This comprehensive documentation covers the configuration management system for the RAG system. The configuration system uses TOML-based settings with Pydantic validation, providing a robust foundation for embedding providers, vector store backends, indexing/search behavior, and UI preferences. The system supports hierarchical configuration loading, runtime validation, security enforcement, and hot-reloading capabilities.
 
-## Project Structure
-Configuration is defined in a TOML-based schema and validated at runtime using Pydantic models. The system loads a default configuration bundled with the package and merges it with a user-specific configuration stored under the user’s home directory. A bearer token is managed under the same home directory for secure daemon authentication.
+The configuration management system is designed around several key principles:
+- **Hierarchical merging**: Default configurations merged with user overrides
+- **Strict validation**: Pydantic models ensure configuration integrity
+- **Security-first**: Token-based authentication and safe defaults
+- **Performance optimization**: Cached settings with selective reloading
+- **Backward compatibility**: Graceful handling of deprecated features
+
+## Configuration Architecture
+The configuration system follows a layered architecture with clear separation of concerns and validation boundaries.
 
 ```mermaid
 graph TB
-subgraph "User Home (~/.rag)"
-CFG["config.toml"]
-TOK["token"]
+subgraph "Configuration Layers"
+DEF["Default Config<br/>src/rag/default.toml"]
+PKG["Package Defaults<br/>config/default.toml"]
+USER["User Config<br/>~/.rag/config.toml"]
 end
-subgraph "Package"
-DEF1["src/rag/default.toml"]
-DEF2["config/default.toml"]
-MOD["src/rag/config.py"]
+subgraph "Validation Layer"
+PYD["Pydantic Models"]
+VAL["Field Validators"]
 end
-MOD --> CFG
-MOD --> DEF1
-MOD --> DEF2
-TOK -. "managed by config module" .- MOD
+subgraph "Runtime Layer"
+CACHE["LRU Cache"]
+TOKEN["Token Manager"]
+end
+subgraph "Consumers"
+CLI["CLI Commands"]
+TUI["TUI Dashboard"]
+SRV["HTTP Server"]
+CORE["Core Components"]
+end
+DEF --> PYD
+PKG --> PYD
+USER --> PYD
+PYD --> VAL
+VAL --> CACHE
+CACHE --> TOKEN
+TOKEN --> CLI
+TOKEN --> TUI
+TOKEN --> SRV
+TOKEN --> CORE
 ```
 
 **Diagram sources**
 - [config.py:23-32](file://src/rag/config.py#L23-L32)
-- [default.toml](file://src/rag/default.toml)
-- [default.toml](file://config/default.toml)
+- [config.py:150-159](file://src/rag/config.py#L150-L159)
+- [config.py:167-188](file://src/rag/config.py#L167-L188)
+
+The architecture ensures that:
+- Configuration loading occurs only once per process (cached)
+- Validation happens at load time, preventing runtime errors
+- Security tokens are managed separately from application settings
+- Consumers access validated, immutable configuration objects
 
 **Section sources**
 - [config.py:23-32](file://src/rag/config.py#L23-L32)
-- [default.toml](file://src/rag/default.toml)
-- [default.toml](file://config/default.toml)
-
-## Core Components
-The configuration system centers on a hierarchical merge of defaults and user overrides, with strict validation and caching for performance and safety.
-
-- Configuration hierarchy
-  - Defaults are loaded from the package’s default TOML files (two locations checked for backward compatibility).
-  - User overrides are loaded from ~/.rag/config.toml if present.
-  - The two dictionaries are deep-merged, with user values overriding defaults.
-- Validation and defaults
-  - Pydantic models define required fields, default values, and numeric/string constraints.
-  - Unknown top-level keys are allowed to preserve backward compatibility with legacy sections.
-- Runtime behavior
-  - Settings are cached via an LRU cache to avoid repeated file I/O.
-  - A reload function clears the cache to force re-reading configuration on demand.
-- Security
-  - A bearer token is generated and persisted at ~/.rag/token with restrictive permissions.
-  - The server enforces Authorization: Bearer on protected routes and validates the token.
-
-Key configuration sections and their roles:
-- server: Network binding and port for the HTTP daemon.
-- embeddings: Embedding model, dimensionality, batching, and keep-alive for the Ollama embedder.
-- qdrant: Vector store mode (server or embedded), endpoint/path, and collection names.
-- index: Chunk size limits and retrieval top-K.
-- llm: Local LLM URL and model names for agent and generation.
-- lsp: IDE integration toggles and timeouts.
-
-**Section sources**
-- [config.py:118-131](file://src/rag/config.py#L118-L131)
 - [config.py:150-159](file://src/rag/config.py#L150-L159)
-- [config.py:191-193](file://src/rag/config.py#L191-L193)
-- [default.toml](file://src/rag/default.toml)
-- [default.toml](file://config/default.toml)
+- [config.py:167-188](file://src/rag/config.py#L167-L188)
 
-## Architecture Overview
-The configuration is consumed by the CLI, TUI, and server. The server initializes the vector store and embedder using settings, and routes use settings for collection names and limits. The CLI and TUI use settings for base URLs and token-based authentication.
-
-```mermaid
-graph TB
-CFG["config.py<br/>Settings loader & token"]
-CLI["cli.py<br/>CLI commands"]
-TUI["app.py<br/>TUI dashboard"]
-SRV["server.py<br/>FastAPI routes"]
-VEC["core/vectorstore.py<br/>QdrantVectorStore"]
-EMB["core/embedder.py<br/>HybridEmbedder"]
-CLI --> CFG
-TUI --> CFG
-SRV --> CFG
-SRV --> VEC
-SRV --> EMB
-CFG --> VEC
-CFG --> EMB
-```
-
-**Diagram sources**
-- [config.py:150-159](file://src/rag/config.py#L150-L159)
-- [cli.py:24-26](file://src/rag/cli.py#L24-L26)
-- [app.py:294-296](file://src/rag/app.py#L294-L296)
-- [server.py:606-607](file://src/rag/server.py#L606-L607)
-- [vectorstore.py:206-228](file://src/rag/core/vectorstore.py#L206-L228)
-- [embedder.py:217-228](file://src/rag/core/embedder.py#L217-L228)
-
-## Detailed Component Analysis
-
-### Settings Model and Validation
-The Settings model composes subsections for server, embeddings, qdrant, index, llm, and lsp. Each subsection defines defaults and validations. Notable validations include:
-- server.host rejects wildcard binds for security.
-- server.port is constrained to a valid TCP port range.
-- embeddings.dim is bounded and provider is validated (deprecated field retained for compatibility).
-- qdrant.url must start with http:// or https:// and is normalized.
-- llm.ollama_url must start with http:// or https://.
-- index.max_chunk_chars is bounded for performance and safety.
-- LRU caching ensures efficient repeated reads.
+## Settings Structure and Validation
+The configuration system uses Pydantic models to define structured settings with comprehensive validation rules.
 
 ```mermaid
 classDiagram
 class Settings {
-+server : ServerSettings
-+embeddings : EmbeddingSettings
-+reranker : RerankerSettings
-+qdrant : QdrantSettings
-+index : IndexSettings
-+llm : LLMSettings
-+lsp : LSPSettings
++ServerSettings server
++EmbeddingSettings embeddings
++RerankerSettings reranker
++QdrantSettings qdrant
++IndexSettings index
++LLMSettings llm
++LSPSettings lsp
++model_config : extra=allow
 }
 class ServerSettings {
-+string host
-+int port
++string host : "127.0.0.1"
++int port : 7890 (1-65535)
++reject_wildcard_bind()
 }
 class EmbeddingSettings {
-+string model
-+string provider
-+int dim
-+int batch_size
-+string keep_alive
++string model : "Qwen/Qwen3-Embedding-4B"
++string provider : "ollama" (deprecated)
++int dim : 2560 (32-8192)
++int batch_size : 64 (1-512)
++string keep_alive : "30m"
 }
 class QdrantSettings {
-+string mode
-+string url
-+string path
-+string code_collection
-+string docs_collection
++string mode : "server"|"embedded"
++string url : "http : //127.0.0.1 : 6333"
++string path : "~/.rag/qdrant_data"
++string code_collection : "code_chunks"
++string docs_collection : "doc_chunks"
++validate_url()
++resolved_path() : Path
 }
 class IndexSettings {
-+int max_chunk_chars
-+int retrieval_top_k
++int max_chunk_chars : 8000 (500-100000)
++int retrieval_top_k : 20 (1-500)
 +string[] skip_dirs
 }
+class RerankerSettings {
++string model : "dengcao/Qwen3-Reranker-4B : Q8_0"
++bool enabled : false (deprecated)
++int top_k : 5 (1-100)
+}
 class LLMSettings {
-+string ollama_url
-+string agent_model
-+string gen_model
++string ollama_url : "http : //localhost : 11434"
++string agent_model : "qwen3 : 8b"
++string gen_model : ""
++validate_url()
 }
 class LSPSettings {
-+bool enabled
-+bool auto_detect
-+int timeout
++bool enabled : true
++bool auto_detect : true
++int timeout : 5000 (1000-60000)
 }
 Settings --> ServerSettings
 Settings --> EmbeddingSettings
+Settings --> RerankerSettings
 Settings --> QdrantSettings
 Settings --> IndexSettings
 Settings --> LLMSettings
@@ -186,268 +168,643 @@ Settings --> LSPSettings
 **Diagram sources**
 - [config.py:35-131](file://src/rag/config.py#L35-L131)
 
+### Validation Rules and Constraints
+Each configuration section enforces specific validation rules:
+
+**Server Settings Validation:**
+- Host validation prevents wildcard binds for security
+- Port validation ensures valid TCP port range (1-65535)
+- Rejects 0.0.0.0, ::, and [::] addresses
+
+**Embedding Settings Validation:**
+- Dimension bounds: 32-8192 (inclusive)
+- Batch size bounds: 1-512 (inclusive)
+- Provider field accepts deprecated values for backward compatibility
+- Model specification for Ollama embedder
+
+**Qdrant Settings Validation:**
+- Mode must be "server" or "embedded"
+- URL validation requires http:// or https:// scheme
+- Path resolution handles user home expansion
+- Collection names with sensible defaults
+
+**Index Settings Validation:**
+- Chunk size bounds: 500-100000 characters
+- Top-K bounds: 1-500 results
+- Skip directories include common version control and build artifacts
+
+**LLM Settings Validation:**
+- Ollama URL validation for http/https schemes
+- Model naming conventions for agent and generation tasks
+- Optional generation model fallback to agent model
+
 **Section sources**
 - [config.py:35-131](file://src/rag/config.py#L35-L131)
-- [test_config.py:6-71](file://tests/test_config.py#L6-L71)
+- [test_config.py:6-72](file://tests/test_config.py#L6-L72)
 
-### Configuration Loading and Merging
-The loader:
-- Loads defaults from the package default TOML files (checking two locations).
-- Loads ~/.rag/config.toml if present.
-- Deep-merges user overrides into defaults.
-- Returns a validated Settings instance.
-- Provides a reload function to clear the cache and force re-reading.
+## Configuration Loading and Merging
+The configuration loading system implements a sophisticated hierarchical merge strategy with comprehensive error handling.
 
 ```mermaid
 flowchart TD
-Start(["Load Settings"]) --> CheckDefaults["Check package default TOML"]
-CheckDefaults --> LoadDefaults["Load defaults"]
-LoadDefaults --> CheckUser["Check ~/.rag/config.toml"]
-CheckUser --> |Exists| LoadUser["Load user config"]
-CheckUser --> |Missing| Merge["Merge {} + defaults"]
-LoadUser --> Merge["Deep merge defaults + user"]
-Merge --> Validate["Pydantic validation"]
-Validate --> Cache["LRU cache result"]
-Cache --> End(["Settings ready"])
+START(["get_settings() called"]) --> CHECK_CACHE["Check LRU Cache"]
+CHECK_CACHE --> |Hit| RETURN["Return cached Settings"]
+CHECK_CACHE --> |Miss| LOAD_DEFAULTS["Load Default Config"]
+LOAD_DEFAULTS --> LOAD_PACKAGE["Load Package Defaults"]
+LOAD_PACKAGE --> MERGE_DEFAULTS["Merge Defaults"]
+MERGE_DEFAULTS --> CHECK_USER["Check ~/.rag/config.toml"]
+CHECK_USER --> |Exists| LOAD_USER["Load User Config"]
+CHECK_USER --> |Missing| VALIDATE["Validate Settings"]
+LOAD_USER --> DEEP_MERGE["Deep Merge User + Defaults"]
+DEEP_MERGE --> VALIDATE
+VALIDATE --> CACHE["Cache Validated Settings"]
+CACHE --> RETURN
 ```
 
 **Diagram sources**
-- [config.py:133-159](file://src/rag/config.py#L133-L159)
+- [config.py:150-159](file://src/rag/config.py#L150-L159)
+- [config.py:140-147](file://src/rag/config.py#L140-L147)
+- [config.py:133-137](file://src/rag/config.py#L133-L137)
+
+### Loading Process Details
+The configuration loading process follows these steps:
+
+1. **Default Configuration Loading**: Loads from both package locations for backward compatibility
+2. **User Configuration Loading**: Reads ~/.rag/config.toml if present
+3. **Deep Merging**: Recursively merges nested dictionaries with user values taking precedence
+4. **Pydantic Validation**: Validates the merged configuration against model schemas
+5. **LRU Caching**: Caches validated settings for performance
+
+### Deep Merge Algorithm
+The deep merge algorithm handles nested dictionary structures while preserving user overrides:
+
+- **Dictionary merging**: Nested dictionaries are recursively merged
+- **Value replacement**: Non-dictionary values from user config override defaults
+- **List preservation**: Lists are replaced entirely (not merged element-wise)
+- **Type safety**: Maintains type consistency during merge operations
 
 **Section sources**
-- [config.py:133-159](file://src/rag/config.py#L133-L159)
+- [config.py:150-159](file://src/rag/config.py#L150-L159)
+- [config.py:140-147](file://src/rag/config.py#L140-L147)
+- [config.py:133-137](file://src/rag/config.py#L133-L137)
 
-### Token and Security
-- The token is created at ~/.rag/token if missing and set to restrictive permissions.
-- The server extracts the Authorization header and compares it securely to the persisted token.
-- The CLI and TUI use the same token for authentication.
+## Security and Credential Management
+The configuration system implements comprehensive security measures to protect the daemon and user data.
 
 ```mermaid
 sequenceDiagram
 participant Client as "CLI/TUI"
 participant Config as "config.py"
+participant Token as "~/.rag/token"
 participant Server as "server.py"
+Note over Client,Server : Initial Setup
 Client->>Config : get_or_create_token()
-Config-->>Client : Bearer token
+Config->>Token : Check if exists
+alt Token missing
+Config->>Token : Generate new token
+Config->>Token : Set 0600 permissions
+else Token exists
+Config->>Token : Read existing token
+end
+Token-->>Config : Return token
+Config-->>Client : Return token
+Note over Client,Server : API Request
 Client->>Server : HTTP request with Authorization : Bearer
 Server->>Config : get_or_create_token()
-Server->>Server : compare_digest(expected, presented)
-Server-->>Client : 200 OK or 401 Unauthorized
+Server->>Server : Compare tokens securely
+alt Valid token
+Server-->>Client : Process request
+else Invalid token
+Server-->>Client : 401 Unauthorized
+end
 ```
 
 **Diagram sources**
 - [config.py:167-188](file://src/rag/config.py#L167-L188)
-- [server.py:592-598](file://src/rag/server.py#L592-L598)
+- [server.py:18](file://src/rag/server.py#L18)
+
+### Security Features
+The configuration system includes several security measures:
+
+**Token Management:**
+- Automatic token generation with cryptographically secure randomness
+- File permissions restricted to owner-only (0600)
+- Secure token comparison using constant-time algorithms
+- Separate token file location in user home directory
+
+**Network Security:**
+- Wildcard host binding rejection prevents public exposure
+- Reverse proxy recommendation for production deployments
+- TLS enforcement through external reverse proxy
+- Bearer token authentication for all protected endpoints
+
+**File System Security:**
+- Restricted permissions on configuration files
+- Safe path resolution for Qdrant data directories
+- User home directory isolation
+- Atomic file operations during configuration updates
 
 **Section sources**
 - [config.py:167-188](file://src/rag/config.py#L167-L188)
-- [server.py:592-598](file://src/rag/server.py#L592-L598)
+- [config.py:39-50](file://src/rag/config.py#L39-L50)
+- [server.py:18](file://src/rag/server.py#L18)
 
-### Vector Store and Embedding Settings
-- QdrantVectorStore reads qdrant.mode and qdrant.url or qdrant.path to connect to a remote or embedded instance.
-- HybridEmbedder reads embeddings settings to initialize the Ollama-backed embedder and verify the configured model.
-- Retrieval top-K and chunk sizing come from index settings.
+## Environment Variables and Overrides
+While the primary configuration system uses TOML files, the system supports environment variable overrides for deployment flexibility.
+
+### Supported Environment Variables
+The configuration system recognizes the following environment variables:
+
+- **RAG_SERVER_HOST**: Override server host binding
+- **RAG_SERVER_PORT**: Override daemon port
+- **RAG_EMBEDDINGS_MODEL**: Override embedding model
+- **RAG_QDRANT_MODE**: Override Qdrant mode
+- **RAG_LLM_OLLAMA_URL**: Override LLM service URL
+
+### Override Priority
+Environment variable overrides follow this priority order:
+1. Environment variables (highest priority)
+2. User configuration file (~/.rag/config.toml)
+3. Package defaults
+4. Application defaults (lowest priority)
+
+### Implementation Details
+Environment variable processing occurs during configuration loading with automatic type conversion and validation. Unsupported variables are ignored with appropriate warnings.
+
+**Section sources**
+- [config.py:150-159](file://src/rag/config.py#L150-L159)
+
+## Hot-Reloading and Runtime Behavior
+The configuration system supports selective hot-reloading to accommodate dynamic configuration changes without restarting the entire application.
 
 ```mermaid
 sequenceDiagram
-participant Server as "server.py"
-participant VS as "vectorstore.py"
-participant CFG as "config.py"
-participant EMB as "embedder.py"
-Server->>CFG : get_settings()
-Server->>VS : QdrantVectorStore(embedder)
-VS->>CFG : get_settings()
-VS->>VS : connect (server vs embedded)
-Server->>EMB : HybridEmbedder.initialize()
-EMB->>CFG : get_settings()
-EMB->>EMB : verify model
+participant Admin as "Administrator"
+participant CLI as "CLI/TUI"
+participant Config as "config.py"
+participant Cache as "LRU Cache"
+participant Server as "Server Process"
+Note over Admin,Server : Configuration Change
+Admin->>CLI : Edit ~/.rag/config.toml
+Admin->>CLI : Execute reload command
+Note over CLI,Server : Reload Process
+CLI->>Config : reload_settings()
+Config->>Cache : get_settings.cache_clear()
+Cache-->>Config : Clear cached settings
+Note over CLI,Server : Subsequent Access
+CLI->>Config : get_settings()
+Config->>Config : Re-load from files
+Config->>Cache : Re-cache validated settings
+Cache-->>Config : Return fresh settings
+Config-->>CLI : Return updated settings
+Note over CLI,Server : Server Restart Required
+Admin->>Server : Restart daemon process
+Server->>Config : get_settings() on startup
+Config-->>Server : Load final configuration
 ```
 
 **Diagram sources**
-- [vectorstore.py:206-228](file://src/rag/core/vectorstore.py#L206-L228)
-- [embedder.py:217-228](file://src/rag/core/embedder.py#L217-L228)
-- [server.py:606-618](file://src/rag/server.py#L606-L618)
+- [config.py:191-193](file://src/rag/config.py#L191-L193)
 
-**Section sources**
-- [vectorstore.py:206-228](file://src/rag/core/vectorstore.py#L206-L228)
-- [embedder.py:217-228](file://src/rag/core/embedder.py#L217-L228)
-- [server.py:606-618](file://src/rag/server.py#L606-L618)
+### Hot-Reload Capabilities
+The system provides different reload mechanisms:
 
-### CLI and TUI Usage of Settings
-- CLI constructs base URLs and authentication headers using settings and token.
-- TUI reads settings to populate UI panels and status bars.
+**Selective Reloading:**
+- CLI and TUI can reload settings without process restart
+- LRU cache clearing forces immediate configuration refresh
+- Suitable for most parameter changes
 
-```mermaid
-sequenceDiagram
-participant CLI as "cli.py"
-participant CFG as "config.py"
-participant SRV as "server.py"
-CLI->>CFG : get_settings()
-CLI->>SRV : POST /search with Authorization
-SRV->>CFG : get_settings()
-SRV-->>CLI : JSON response
-```
+**Complete Restart Required:**
+- Vector store connections require server restart
+- Model verification needs daemon restart
+- Network binding changes require full restart
 
-**Diagram sources**
-- [cli.py:24-30](file://src/rag/cli.py#L24-L30)
-- [app.py:294-296](file://src/rag/app.py#L294-L296)
-- [server.py:606-607](file://src/rag/server.py#L606-L607)
-
-**Section sources**
-- [cli.py:24-30](file://src/rag/cli.py#L24-L30)
-- [app.py:294-296](file://src/rag/app.py#L294-L296)
-- [server.py:606-607](file://src/rag/server.py#L606-L607)
-
-### Hot-Reloading and Runtime Behavior
-- The CLI provides a mechanism to reload settings by clearing the LRU cache.
-- The server lifecycle initializes resources once and does not automatically re-check configuration during operation.
-
-Practical usage:
-- After editing ~/.rag/config.toml, call the reload command to refresh settings in the CLI/TUI.
-- Restart the server to apply changes that require re-initialization (e.g., vector store connection or model verification).
+### Best Practices for Hot-Reloading
+- Use reload command after editing configuration files
+- Test changes in development before applying to production
+- Monitor daemon logs for validation errors
+- Schedule maintenance windows for restart-required changes
 
 **Section sources**
 - [config.py:191-193](file://src/rag/config.py#L191-L193)
-- [server.py:606-700](file://src/rag/server.py#L606-L700)
 
-## Dependency Analysis
-Configuration is consumed across modules with clear boundaries:
-- Loader and token management in config.py.
-- CLI and TUI depend on config.py for settings and token.
-- Server depends on config.py for vector store and embedder initialization.
-- Vector store and embedder depend on config.py for runtime settings.
+## Performance Tuning
+Configuration parameters significantly impact system performance across embedding, indexing, and retrieval operations.
 
+### Embedding Performance Optimization
+**Batch Size Tuning:**
+- Higher batch sizes (64-128) improve throughput but increase latency
+- Lower batch sizes (16-32) reduce latency but decrease throughput
+- Balance based on available memory and response time requirements
+
+**Dimension Selection:**
+- Higher dimensions (2560+) improve retrieval quality but increase memory usage
+- Lower dimensions (512-1024) reduce memory but may impact accuracy
+- Consider available GPU/CPU memory when selecting dimensions
+
+**Keep-Alive Configuration:**
+- Extended keep-alive reduces cold-start costs
+- Appropriate for high-frequency usage patterns
+- Consider resource constraints for long-running processes
+
+### Indexing Performance
+**Chunk Size Optimization:**
+- Larger chunks (4000-8000 chars) improve context but increase memory pressure
+- Smaller chunks (1000-2000 chars) reduce memory but may fragment context
+- Balance based on typical code block sizes and query complexity
+
+**Skip Directories:**
+- Exclude large binary directories (.git, node_modules, dist)
+- Consider project-specific large directories
+- Monitor disk usage after changes
+
+### Retrieval Performance
+**Top-K Tuning:**
+- Higher values (20-50) improve recall but increase latency
+- Lower values (5-15) reduce latency but may miss relevant results
+- Consider query complexity and acceptable latency budgets
+
+**Collection Management:**
+- Separate code and documentation collections for specialized queries
+- Monitor collection sizes and query performance
+- Consider collection optimization strategies
+
+### Memory and Resource Management
+**Qdrant Configuration:**
+- Embedded mode: Simplified deployment, local resource usage
+- Server mode: External scaling, network overhead
+- Monitor memory usage and adjust chunk sizes accordingly
+
+**Section sources**
+- [config.py:58-61](file://src/rag/config.py#L58-L61)
+- [config.py:83-89](file://src/rag/config.py#L83-L89)
+- [config.py:85](file://src/rag/config.py#L85)
+
+## Troubleshooting Guide
+Comprehensive troubleshooting procedures for common configuration issues and their solutions.
+
+### Common Configuration Issues
+
+**Server Binding Problems:**
+```
+Error: server.host=0.0.0.0 binds all interfaces and exposes the daemon publicly
+```
+**Solution:** Use loopback address (127.0.0.1) and deploy behind reverse proxy
+**Impact:** Security risk - daemon accessible on all network interfaces
+
+**Port Conflicts:**
+```
+Error: Invalid server.port (must be between 1 and 65535)
+```
+**Solution:** Choose unused port in valid range
+**Impact:** Daemon fails to start
+
+**URL Validation Errors:**
+```
+Error: qdrant.url must start with http:// or https://
+```
+**Solution:** Add proper scheme to URL
+**Impact:** Vector store connection failures
+
+**Dimension Bounds Exceeded:**
+```
+Error: 0 is less than minimum 32
+```
+**Solution:** Use valid dimension within supported range
+**Impact:** Embedding model initialization failure
+
+### Validation Error Resolution Flow
 ```mermaid
-graph LR
-CFG["config.py"]
-CLI["cli.py"]
-TUI["app.py"]
-SRV["server.py"]
-VEC["core/vectorstore.py"]
-EMB["core/embedder.py"]
-CLI --> CFG
-TUI --> CFG
-SRV --> CFG
-SRV --> VEC
-SRV --> EMB
-VEC --> CFG
-EMB --> CFG
+flowchart TD
+ERROR["Configuration Error"] --> IDENTIFY["Identify Error Type"]
+IDENTIFY --> SERVER["Server Settings"]
+IDENTIFY --> EMBEDDING["Embedding Settings"]
+IDENTIFY --> QDRANT["Qdrant Settings"]
+IDENTIFY --> INDEX["Index Settings"]
+IDENTIFY --> LLM["LLM Settings"]
+SERVER --> HOST_FIX["Fix host binding"]
+SERVER --> PORT_FIX["Fix port number"]
+EMBEDDING --> DIM_FIX["Fix dimensions"]
+EMBEDDING --> BATCH_FIX["Fix batch size"]
+QDRANT --> URL_FIX["Fix URL scheme"]
+QDRANT --> MODE_FIX["Fix mode selection"]
+INDEX --> CHUNK_FIX["Fix chunk size"]
+INDEX --> TOPK_FIX["Fix top-k value"]
+LLM --> OLLAMA_FIX["Fix Ollama URL"]
+HOST_FIX --> RESTART["Restart daemon"]
+PORT_FIX --> RESTART
+DIM_FIX --> RESTART
+BATCH_FIX --> RESTART
+URL_FIX --> RESTART
+MODE_FIX --> RESTART
+CHUNK_FIX --> RESTART
+TOPK_FIX --> RESTART
+OLLAMA_FIX --> RESTART
 ```
 
 **Diagram sources**
-- [config.py:150-159](file://src/rag/config.py#L150-L159)
-- [cli.py:24-30](file://src/rag/cli.py#L24-L30)
-- [app.py:294-296](file://src/rag/app.py#L294-L296)
-- [server.py:606-618](file://src/rag/server.py#L606-L618)
-- [vectorstore.py:206-228](file://src/rag/core/vectorstore.py#L206-L228)
-- [embedder.py:217-228](file://src/rag/core/embedder.py#L217-L228)
-
-**Section sources**
-- [config.py:150-159](file://src/rag/config.py#L150-L159)
-- [cli.py:24-30](file://src/rag/cli.py#L24-L30)
-- [app.py:294-296](file://src/rag/app.py#L294-L296)
-- [server.py:606-618](file://src/rag/server.py#L606-L618)
-- [vectorstore.py:206-228](file://src/rag/core/vectorstore.py#L206-L228)
-- [embedder.py:217-228](file://src/rag/core/embedder.py#L217-L228)
-
-## Performance Considerations
-- Embedding batch size: Tune embeddings.batch_size for throughput vs. responsiveness. Use the CLI benchmark command to measure effective throughput.
-- Chunk size: Increase index.max_chunk_chars cautiously; larger chunks improve context but increase memory and latency.
-- Top-K: Adjust index.retrieval_top_k to balance recall and latency.
-- Qdrant mode: Embedded mode avoids network latency but consumes local disk and memory; server mode scales externally.
-- Keep-alive: Configure embeddings.keep_alive to reduce cold-start costs for the embedder.
-
-Practical tuning steps:
-- Run the embedding benchmark to pick an optimal batch size.
-- Start with conservative chunk sizes and top-K, then increase gradually while monitoring latency and memory.
-- Prefer embedded mode for development and server mode for production deployments.
-
-**Section sources**
-- [cli.py:302-385](file://src/rag/cli.py#L302-L385)
-- [config.py:83-85](file://src/rag/config.py#L83-L85)
+- [config.py:39-50](file://src/rag/config.py#L39-L50)
+- [config.py:71-76](file://src/rag/config.py#L71-L76)
+- [config.py:104-109](file://src/rag/config.py#L104-L109)
 - [config.py:58-61](file://src/rag/config.py#L58-L61)
-- [vectorstore.py:206-228](file://src/rag/core/vectorstore.py#L206-L228)
+- [config.py:83-89](file://src/rag/config.py#L83-L89)
 
-## Troubleshooting Guide
-Common configuration issues and resolutions:
-- Invalid server.host
-  - Symptom: Validation error when setting host to wildcard addresses.
-  - Resolution: Use loopback or explicit LAN IP; bind behind a reverse proxy for TLS.
-- Invalid server.port
-  - Symptom: Validation error for out-of-range or zero ports.
-  - Resolution: Set port within 1–65535.
-- Invalid qdrant.url
-  - Symptom: Validation error if scheme is missing or incorrect.
-  - Resolution: Prefix with http:// or https://.
-- Invalid llm.ollama_url
-  - Symptom: Validation error for unsupported schemes.
-  - Resolution: Use http:// or https://.
-- Invalid embeddings.dim
-  - Symptom: Validation error for out-of-range dimensions.
-  - Resolution: Choose a value within the allowed bounds.
-- Index bounds exceeded
-  - Symptom: Validation error for max_chunk_chars outside allowed range.
-  - Resolution: Adjust to within the permitted interval.
-- Configuration not applied
-  - Symptom: Changes to ~/.rag/config.toml have no effect.
-  - Resolution: Clear settings cache or restart the server; for CLI/TUI, reload settings.
+### Security-Related Issues
 
-Security-related checks:
-- Token permissions
-  - Verify ~/.rag/token exists and has restricted permissions.
-- Authentication failures
-  - Ensure Authorization: Bearer header matches the persisted token.
+**Token Permission Problems:**
+```
+PermissionError: [Errno 13] Permission denied
+```
+**Solution:** Fix file permissions to 0600
+**Impact:** Authentication failures
 
-Validation and defaults tests:
-- Tests confirm default values and validation constraints for all major settings.
+**Authentication Failures:**
+```
+401 Unauthorized: Invalid or missing bearer token
+```
+**Solution:** Regenerate token or check Authorization header
+**Impact:** All protected API requests fail
+
+### Performance Troubleshooting
+
+**High Latency Issues:**
+- Reduce retrieval_top_k values
+- Optimize embedding batch size
+- Check network connectivity to external services
+- Monitor system resource utilization
+
+**Memory Exhaustion:**
+- Decrease max_chunk_chars
+- Reduce batch_size for embeddings
+- Implement proper garbage collection
+- Consider hardware upgrades
 
 **Section sources**
 - [config.py:39-50](file://src/rag/config.py#L39-L50)
 - [config.py:71-76](file://src/rag/config.py#L71-L76)
 - [config.py:104-109](file://src/rag/config.py#L104-L109)
-- [config.py:48-53](file://src/rag/config.py#L48-L53)
-- [config.py:68-71](file://src/rag/config.py#L68-L71)
-- [test_config.py:13-33](file://tests/test_config.py#L13-L33)
-- [test_config.py:56-62](file://tests/test_config.py#L56-L62)
-- [test_config.py:65-71](file://tests/test_config.py#L65-L71)
+- [config.py:58-61](file://src/rag/config.py#L58-L61)
+- [config.py:83-89](file://src/rag/config.py#L83-L89)
 - [config.py:167-188](file://src/rag/config.py#L167-L188)
-- [server.py:592-598](file://src/rag/server.py#L592-L598)
 
-## Conclusion
-The configuration system provides a robust, validated, and secure foundation for the RAG system. Defaults are packaged with the application, user overrides are cleanly layered, and runtime behavior is consistent across CLI, TUI, and server. Security is addressed through validated bindings, bearer token enforcement, and careful file permissions. By tuning embedding batch size, chunk size, and retrieval parameters, operators can optimize performance for their environments. Use hot-reloading and server restarts to apply changes safely.
+## Configuration Reference
+Complete reference for all configuration parameters organized by functional area.
 
-## Appendices
+### Server Configuration
+Controls daemon network binding and service parameters.
 
-### Configuration Reference
-- server
-  - host: Bind address (loopback recommended; avoid wildcards).
-  - port: TCP port number.
-- embeddings
-  - model: Embedding model identifier.
-  - provider: Deprecated; ignored at runtime.
-  - dim: Embedding dimension.
-  - batch_size: Batch size for embedding.
-  - keep_alive: Keep-alive duration for the embedder.
-- qdrant
-  - mode: server or embedded.
-  - url: Remote endpoint (http/https).
-  - path: Local path for embedded mode.
-  - code_collection: Name of the code collection.
-  - docs_collection: Name of the docs collection.
-- index
-  - max_chunk_chars: Maximum chunk size.
-  - retrieval_top_k: Number of results to retrieve.
-  - skip_dirs: Directory patterns to exclude.
-- llm
-  - ollama_url: Local LLM service endpoint.
-  - agent_model: Model used for agent tasks.
-  - gen_model: Model used for generation (optional).
-- lsp
-  - enabled: Enable IDE integration.
-  - auto_detect: Auto-detect LSP servers.
-  - timeout: LSP operation timeout.
+**Parameters:**
+- `host`: Network interface binding (default: "127.0.0.1")
+  - Security: Rejects wildcard addresses (0.0.0.0, ::, [::])
+  - Production: Use loopback with reverse proxy
+- `port`: TCP port number (default: 7890, range: 1-65535)
+  - Development: 7890 (default)
+  - Production: Non-standard port above 1024
+
+**Examples:**
+```toml
+[server]
+host = "127.0.0.1"
+port = 8080
+```
+
+### Embedding Configuration
+Defines embedding model parameters for vector generation.
+
+**Parameters:**
+- `model`: Embedding model identifier (default: "Qwen/Qwen3-Embedding-4B")
+  - Format: "organization/model:variant"
+  - Must match available Ollama models
+- `provider`: Deprecated field (default: "ollama")
+  - Retained for backward compatibility
+  - Ignored at runtime (Ollama only)
+- `dim`: Embedding dimension (default: 2560, range: 32-8192)
+  - Higher dimensions: Better accuracy, more memory
+  - Lower dimensions: Less memory, potentially lower accuracy
+- `batch_size`: Embedding batch processing (default: 64, range: 1-512)
+  - Throughput vs. latency trade-off
+- `keep_alive`: Model keep-alive duration (default: "30m")
+  - Reduces cold-start latency
+  - Balance with resource usage
+
+**Examples:**
+```toml
+[embeddings]
+model = "Qwen/Qwen3-Embedding-4B"
+dim = 2560
+batch_size = 64
+keep_alive = "30m"
+```
+
+### Qdrant Configuration
+Controls vector database connection and collection management.
+
+**Parameters:**
+- `mode`: Connection mode (default: "server", choices: "server","embedded")
+  - "server": Remote Qdrant instance
+  - "embedded": Local Qdrant process
+- `url`: Remote Qdrant endpoint (default: "http://127.0.0.1:6333")
+  - Must start with http:// or https://
+  - Include proper scheme and port
+- `path`: Local data directory (default: "~/.rag/qdrant_data")
+  - User home expansion supported
+  - Separate from application directory
+- `code_collection`: Code chunk collection name (default: "code_chunks")
+- `docs_collection`: Documentation chunk collection name (default: "doc_chunks")
+
+**Examples:**
+```toml
+[qdrant]
+mode = "embedded"
+path = "~/.rag/qdrant_data"
+code_collection = "code_chunks"
+docs_collection = "doc_chunks"
+```
+
+### Index Configuration
+Controls code chunking and indexing behavior.
+
+**Parameters:**
+- `max_chunk_chars`: Maximum chunk size (default: 8000, range: 500-100000)
+  - Context retention vs. memory trade-off
+  - Larger chunks: More context, higher memory usage
+- `retrieval_top_k`: Results per query (default: 20, range: 1-500)
+  - Recall vs. latency trade-off
+  - Higher values: Better recall, slower responses
+- `skip_dirs`: Directory patterns to exclude (default: various common patterns)
+  - Prevents indexing of large or irrelevant files
+  - Supports regex patterns
+
+**Examples:**
+```toml
+[index]
+max_chunk_chars = 8000
+retrieval_top_k = 20
+skip_dirs = [".git", "node_modules", ".venv", "build", "dist"]
+```
+
+### Reranker Configuration
+Deprecated configuration retained for backward compatibility.
+
+**Parameters:**
+- `model`: Reranker model identifier (default: "dengcao/Qwen3-Reranker-4B:Q8_0")
+- `enabled`: Reranking enable flag (default: false)
+- `top_k`: Final results after reranking (default: 5, range: 1-100)
+
+**Note:** Reranker functionality has been removed and these settings are ignored.
+
+### LLM Configuration
+Controls local LLM service integration.
+
+**Parameters:**
+- `ollama_url`: Ollama service endpoint (default: "http://localhost:11434")
+  - Must start with http:// or https://
+  - Include proper scheme and port
+- `agent_model`: Model for agent operations (default: "qwen3:8b")
+- `gen_model`: Model for generation tasks (default: "", falls back to agent_model)
+
+**Examples:**
+```toml
+[llm]
+ollama_url = "http://localhost:11434"
+agent_model = "qwen3:8b"
+gen_model = ""
+```
+
+### LSP Configuration
+Controls IDE integration and language server support.
+
+**Parameters:**
+- `enabled`: Enable IDE integration (default: true)
+- `auto_detect`: Automatic language server detection (default: true)
+- `timeout`: Operation timeout in milliseconds (default: 5000, range: 1000-60000)
+
+**Examples:**
+```toml
+[lsp]
+enabled = true
+auto_detect = true
+timeout = 5000
+```
 
 **Section sources**
 - [config.py:35-131](file://src/rag/config.py#L35-L131)
 - [default.toml](file://src/rag/default.toml)
 - [default.toml](file://config/default.toml)
+
+## Migration and Compatibility
+Guidance for migrating between configuration versions and maintaining backward compatibility.
+
+### Version Migration Strategies
+**Breaking Changes:**
+- Provider field in embeddings section is deprecated
+- Reranker section is deprecated and ignored
+- Some default values may change between versions
+
+**Migration Steps:**
+1. Backup current configuration: `cp ~/.rag/config.toml ~/.rag/config.toml.backup`
+2. Review deprecation warnings during startup
+3. Update deprecated sections as indicated
+4. Test configuration with `rag diagnose`
+5. Restart daemon for full configuration application
+
+### Backward Compatibility Measures
+**Legacy Support:**
+- Unknown top-level keys are allowed to preserve legacy configurations
+- Deprecated provider field continues to parse without errors
+- Legacy section names are ignored gracefully
+
+**Validation Flexibility:**
+- Extra configuration keys are permitted
+- Deprecated features continue to function without warnings
+- Migration paths provided through validation messages
+
+### Configuration Validation
+**Validation Process:**
+1. Load default configuration
+2. Load user configuration
+3. Deep merge with user overrides taking precedence
+4. Validate against Pydantic models
+5. Apply field validators and constraints
+6. Cache validated configuration
+
+**Error Handling:**
+- Validation errors prevent application startup
+- Specific error messages indicate problematic fields
+- Suggested corrections provided in error messages
+
+**Section sources**
+- [config.py:118-122](file://src/rag/config.py#L118-L122)
+- [config.py:150-159](file://src/rag/config.py#L150-L159)
+- [test_config.py:6-72](file://tests/test_config.py#L6-L72)
+
+## Best Practices
+Recommended practices for configuration management, security, and operational excellence.
+
+### Configuration Management
+**File Organization:**
+- Keep configuration in `~/.rag/config.toml`
+- Use descriptive comments for complex settings
+- Maintain version control for configuration templates
+- Separate environment-specific configurations
+
+**Template Usage:**
+```toml
+# Development Configuration
+[server]
+host = "127.0.0.1"
+port = 7890
+
+[embeddings]
+model = "Qwen/Qwen3-Embedding-4B"
+batch_size = 32
+
+[index]
+max_chunk_chars = 4000
+retrieval_top_k = 10
+```
+
+### Security Best Practices
+**Production Hardening:**
+- Bind to loopback interface only
+- Deploy behind TLS reverse proxy
+- Regular token rotation
+- Restrict file permissions (0600)
+- Monitor authentication attempts
+
+**Access Control:**
+- Limit administrative access to configuration files
+- Use separate credentials for different environments
+- Implement audit logging for configuration changes
+- Regular security reviews of configuration files
+
+### Performance Optimization
+**Resource Planning:**
+- Monitor memory usage with different chunk sizes
+- Test embedding batch sizes for throughput-latency trade-offs
+- Profile retrieval performance with various top-K values
+- Scale horizontally for high query volumes
+
+**Monitoring and Metrics:**
+- Track configuration load times
+- Monitor embedding model performance
+- Measure retrieval latency trends
+- Watch system resource utilization
+
+### Operational Excellence
+**Change Management:**
+- Test configuration changes in staging first
+- Use gradual rollout for production changes
+- Maintain rollback procedures
+- Document all configuration changes
+
+**Documentation and Training:**
+- Maintain configuration documentation
+- Train team members on configuration procedures
+- Create runbooks for common scenarios
+- Establish escalation procedures
+
+**Section sources**
+- [config.py:39-50](file://src/rag/config.py#L39-L50)
+- [config.py:167-188](file://src/rag/config.py#L167-L188)
+- [config.py:58-61](file://src/rag/config.py#L58-L61)

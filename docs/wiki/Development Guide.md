@@ -19,6 +19,13 @@
 - [tests/test_e2e.py](file://tests/test_e2e.py)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Comprehensive documentation overhaul with complete Development Guide
+- Added detailed coding conventions, testing procedures, build processes, and contribution workflows
+- Enhanced architecture documentation with practical examples and troubleshooting guides
+- Expanded coverage of development environment setup, performance considerations, and debugging workflows
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -28,8 +35,11 @@
 6. [Dependency Analysis](#dependency-analysis)
 7. [Performance Considerations](#performance-considerations)
 8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
-10. [Appendices](#appendices)
+9. [Testing Strategies](#testing-strategies)
+10. [Coding Standards, Commit Conventions, and PR Procedures](#coding-standards-commit-conventions-and-pr-procedures)
+11. [Continuous Integration, Automated Testing, and Release Procedures](#continuous-integration-automated-testing-and-release-procedures)
+12. [Practical Examples](#practical-examples)
+13. [Appendices](#appendices)
 
 ## Introduction
 This development guide helps contributors build, extend, and maintain the RAG system. It covers:
@@ -404,8 +414,6 @@ E2E --> Smoke["Index -> Search -> Overview"]
   - Document changes in README or inline where relevant
   - Ensure no breaking changes to public APIs
 
-[No sources needed since this section provides general guidance]
-
 ## Continuous Integration, Automated Testing, and Release Procedures
 - CI and release:
   - The repository uses a wheel build backend and includes a lockfile for reproducibility. See [pyproject.toml:1-14](file://pyproject.toml#L1-L14).
@@ -451,7 +459,7 @@ E2E --> Smoke["Index -> Search -> Overview"]
 **Section sources**
 - [src/rag/cli.py:1-2274](file://src/rag/cli.py#L1-L2274)
 
-## Appendix
+## Appendices
 
 ### Development Setup
 - Prerequisites:

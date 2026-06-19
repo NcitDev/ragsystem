@@ -17,453 +17,392 @@
 - [pyproject.toml](file://pyproject.toml)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Complete restructuring of deployment documentation into specialized sections
+- Added comprehensive Deployment Strategies section covering Docker Compose, Kubernetes, and bare metal installations
+- Created dedicated Monitoring and Logging section with health checks and observability
+- Established Scaling and Maintenance section for high availability and performance
+- Developed Security and Configuration section for hardened deployments
+- Integrated all existing operational content into structured sections
+
 ## Table of Contents
 1. [Introduction](#introduction)
-2. [Project Structure](#project-structure)
-3. [Core Components](#core-components)
-4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Monitoring and Observability](#monitoring-and-observability)
-9. [Scaling, Load Balancing, and High Availability](#scaling-load-balancing-and-high-availability)
-10. [Backup and Recovery](#backup-and-recovery)
-11. [Security Hardening and Network Configuration](#security-hardening-and-network-configuration)
-12. [Deployment Strategies](#deployment-strategies)
-13. [Common Operational Scenarios](#common-operational-scenarios)
-14. [Troubleshooting Guide](#troubleshooting-guide)
-15. [Conclusion](#conclusion)
+2. [Deployment Strategies](#deployment-strategies)
+3. [Monitoring and Logging](#monitoring-and-logging)
+4. [Scaling and Maintenance](#scaling-and-maintenance)
+5. [Security and Configuration](#security-and-configuration)
+6. [Common Operational Scenarios](#common-operational-scenarios)
+7. [Troubleshooting Guide](#troubleshooting-guide)
+8. [Conclusion](#conclusion)
 
 ## Introduction
-This document provides production-focused deployment and operations guidance for the RAG system. It covers supervised daemon operation, auto-start mechanisms, logging and monitoring, health checks, scaling, high availability, backup and recovery, security hardening, and integration with external services such as Claude Code. It also includes practical procedures for Docker Compose, Kubernetes, and bare-metal deployments.
-
-## Project Structure
-The repository organizes operational concerns across configuration, server lifecycle, logging, supervisor integration, CLI orchestration, and documentation. Key areas:
-- Configuration and defaults define server, embeddings, Qdrant, index, LLM, and LSP settings.
-- The FastAPI server implements health, status, and operational endpoints.
-- Supervisor integration manages macOS launchd service installation and status.
-- Logging setup ensures rotated structured logs for long-running daemons.
-- CLI commands orchestrate startup, TUI, Qdrant lifecycle, diagnostics, and external integrations.
-
-```mermaid
-graph TB
-subgraph "Configuration"
-CFG["config.py<br/>Settings models"]
-DEF["config/default.toml<br/>Defaults"]
-end
-subgraph "Server"
-SRV["server.py<br/>FastAPI app, routes, lifespan"]
-LOG["integration/logging_setup.py<br/>Rotating JSON logs"]
-end
-subgraph "Supervision"
-SUP["integration/supervisor.py<br/>launchd plist, install/uninstall/status"]
-end
-subgraph "CLI"
-CLI["cli.py<br/>Commands: start, qdrant-up/down/status, diagnose, install-agent"]
-end
-subgraph "External Integrations"
-CC["integration/claude_code.py<br/>Slash command & hook"]
-SK["scripts/install-codex-skills.sh<br/>Install Codex skills"]
-end
-CFG --> SRV
-DEF --> CFG
-SRV --> LOG
-CLI --> SRV
-CLI --> SUP
-CLI --> CC
-CLI --> SK
-```
-
-**Diagram sources**
-- [src/rag/config.py:150-194](file://src/rag/config.py#L150-L194)
-- [config/default.toml:1-41](file://config/default.toml#L1-L41)
-- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-- [src/rag/integration/supervisor.py:75-153](file://src/rag/integration/supervisor.py#L75-L153)
-- [src/rag/cli.py:162-244](file://src/rag/cli.py#L162-L244)
-- [src/rag/integration/claude_code.py:49-120](file://src/rag/integration/claude_code.py#L49-L120)
-- [scripts/install-codex-skills.sh:1-28](file://scripts/install-codex-skills.sh#L1-L28)
-
-**Section sources**
-- [README.md:1-74](file://README.md#L1-L74)
-- [src/rag/config.py:150-194](file://src/rag/config.py#L150-L194)
-- [config/default.toml:1-41](file://config/default.toml#L1-L41)
-- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-- [src/rag/integration/supervisor.py:75-153](file://src/rag/integration/supervisor.py#L75-L153)
-- [src/rag/cli.py:162-244](file://src/rag/cli.py#L162-L244)
-- [src/rag/integration/claude_code.py:49-120](file://src/rag/integration/claude_code.py#L49-L120)
-- [scripts/install-codex-skills.sh:1-28](file://scripts/install-codex-skills.sh#L1-L28)
-
-## Core Components
-- Supervised daemon: The FastAPI server runs as a supervised process, ensuring resilience and restart on failure. It exposes health, status, and operational endpoints.
-- Configuration: Centralized TOML-based settings with Pydantic validation and environment overrides.
-- Logging: Structured, rotating JSON logs to prevent disk growth under long-running supervision.
-- Supervisor integration: macOS launchd integration for auto-start and crash recovery; Linux systemd guidance provided.
-- CLI orchestration: Commands to start the daemon, manage Qdrant, diagnose health, and integrate with external systems.
-
-**Section sources**
-- [README.md:7-74](file://README.md#L7-L74)
-- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
-- [src/rag/config.py:150-194](file://src/rag/config.py#L150-L194)
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-- [src/rag/integration/supervisor.py:75-153](file://src/rag/integration/supervisor.py#L75-L153)
-- [src/rag/cli.py:162-244](file://src/rag/cli.py#L162-L244)
-
-## Architecture Overview
-The system follows a supervised daemon model:
-- The daemon is the single supervised process, hosted on localhost with a bearer token.
-- CLI and TUI are thin clients that communicate over HTTP.
-- Qdrant can run embedded or as a remote server; Docker Compose is provided for local server mode.
-- External integrations include Claude Code slash commands and Codex skills.
-
-```mermaid
-graph TB
-subgraph "Host Machine"
-subgraph "Supervised Daemon"
-Srv["FastAPI Server<br/>localhost:7890"]
-Qdr["Qdrant Vector Store"]
-Emb["Embeddings via Ollama"]
-end
-subgraph "Clients"
-CLI["CLI (rag)"]
-TUI["TUI/Dashboard"]
-CC["Claude Code"]
-end
-subgraph "External Services"
-Oll["Ollama"]
-QdrSrv["Qdrant Server (optional)"]
-end
-end
-CLI --> Srv
-TUI --> Srv
-CC --> CLI
-Srv --> Qdr
-Srv --> Emb
-Qdr -. "remote mode" .-> QdrSrv
-Emb --> Oll
-```
-
-**Diagram sources**
-- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
-- [src/rag/config.py:35-131](file://src/rag/config.py#L35-L131)
-- [config/default.toml:1-41](file://config/default.toml#L1-L41)
-- [src/rag/integration/claude_code.py:49-120](file://src/rag/integration/claude_code.py#L49-L120)
-
-**Section sources**
-- [README.md:67-74](file://README.md#L67-L74)
-- [docs/ADR/001-full-stack-decision.md:80-96](file://docs/ADR/001-full-stack-decision.md#L80-L96)
-
-## Detailed Component Analysis
-
-### Supervised Daemon Lifecycle and Endpoints
-- Lifespan initializes the embedder, vector store, restart counter, periodic warm probe, and optional file watcher.
-- Health endpoint aggregates component readiness (Qdrant, Ollama).
-- Status endpoint surfaces embedder model, collections, uptime, restart count, and file counts.
-- Authentication requires a bearer token stored in the user’s home directory.
-
-```mermaid
-sequenceDiagram
-participant Client as "Client"
-participant Daemon as "FastAPI Server"
-participant VS as "QdrantVectorStore"
-participant Oll as "Ollama"
-Client->>Daemon : GET /health
-Daemon->>VS : collection_info()
-VS-->>Daemon : status
-Daemon->>Oll : health_check()
-Oll-->>Daemon : status
-Daemon-->>Client : HealthResponse
-Client->>Daemon : GET /status
-Daemon->>VS : collection_info() for code/docs
-VS-->>Daemon : info
-Daemon-->>Client : StatusResponse
-```
-
-**Diagram sources**
-- [src/rag/server.py:858-874](file://src/rag/server.py#L858-L874)
-- [src/rag/server.py:878-902](file://src/rag/server.py#L878-L902)
-
-**Section sources**
-- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
-- [src/rag/server.py:858-874](file://src/rag/server.py#L858-L874)
-- [src/rag/server.py:878-902](file://src/rag/server.py#L878-L902)
-
-### Configuration Model and Validation
-- Settings include server host/port, embeddings, Qdrant mode/url/path, index parameters, LLM Ollama URL and models, and LSP toggles.
-- The server enforces binding to localhost and rejects wildcard binds; reverse proxy recommended for external exposure.
-- Token is persisted securely at ~/.rag/token with restricted permissions.
-
-```mermaid
-classDiagram
-class Settings {
-+ServerSettings server
-+EmbeddingSettings embeddings
-+QdrantSettings qdrant
-+IndexSettings index
-+LLMSettings llm
-+LSPSettings lsp
-}
-class ServerSettings {
-+string host
-+int port
-}
-class QdrantSettings {
-+string mode
-+string url
-+string path
-+string code_collection
-+string docs_collection
-}
-class LLMSettings {
-+string ollama_url
-+string agent_model
-+string gen_model
-}
-Settings --> ServerSettings
-Settings --> QdrantSettings
-Settings --> LLMSettings
-```
-
-**Diagram sources**
-- [src/rag/config.py:118-131](file://src/rag/config.py#L118-L131)
-- [src/rag/config.py:35-116](file://src/rag/config.py#L35-L116)
-
-**Section sources**
-- [src/rag/config.py:35-131](file://src/rag/config.py#L35-L131)
-- [config/default.toml:1-41](file://config/default.toml#L1-L41)
-
-### Logging and Rotation
-- Structured JSON logs are rotated with a 10 MB per file and 5 backups, capped at ~50 MB.
-- Uvicorn logging is disabled to avoid conflicts with the rotating handler.
-- Logs are written to ~/.rag/logs/daemon.jsonl.
-
-```mermaid
-flowchart TD
-Start(["Start daemon"]) --> Configure["configure_logging(to_file=True)"]
-Configure --> SetupHandlers["Add RotatingFileHandler<br/>JSON renderer"]
-SetupHandlers --> Stderr["Add StreamHandler to stderr"]
-SetupHandlers --> DisableUvicorn["Disable uvicorn log_config"]
-DisableUvicorn --> Run["Run Uvicorn server"]
-Run --> Rotate["Rotate when maxBytes reached"]
-```
-
-**Diagram sources**
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-
-**Section sources**
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-
-### macOS launchd Supervisor
-- Generates a launchd plist to run the daemon under KeepAlive supervision.
-- Captures stdout/stderr to ~/.rag/logs/ and forwards environment variables.
-- Provides install, uninstall, and status functions.
-
-```mermaid
-flowchart TD
-A["install_service(python_executable)"] --> B["Build plist dict"]
-B --> C["Write plist to ~/Library/LaunchAgents/..."]
-C --> D["launchctl load -w"]
-D --> E["Return paths used"]
-```
-
-**Diagram sources**
-- [src/rag/integration/supervisor.py:75-111](file://src/rag/integration/supervisor.py#L75-L111)
-
-**Section sources**
-- [src/rag/integration/supervisor.py:75-153](file://src/rag/integration/supervisor.py#L75-L153)
-
-### Linux systemd Guidance
-- User-level unit is recommended; survives logout with lingering enabled.
-- Environment variables ensure Ollama and git are on PATH.
-- Journal captures stdout/stderr; logs are rotated by the daemon.
-
-**Section sources**
-- [docs/deployment-linux.md:1-57](file://docs/deployment-linux.md#L1-L57)
-
-### Qdrant Management via CLI
-- Docker Compose is provided for local Qdrant server mode.
-- CLI commands start/stop/status the Qdrant container and report health.
-
-**Section sources**
-- [compose.qdrant.yml:1-11](file://compose.qdrant.yml#L1-L11)
-- [src/rag/cli.py:246-300](file://src/rag/cli.py#L246-L300)
-
-### External Integrations
-- Claude Code slash command generator and hook installer.
-- Codex skills installer script to deploy project-owned skills.
-
-**Section sources**
-- [src/rag/integration/claude_code.py:49-120](file://src/rag/integration/claude_code.py#L49-L120)
-- [scripts/install-codex-skills.sh:1-28](file://scripts/install-codex-skills.sh#L1-L28)
-- [src/rag/cli.py:143-160](file://src/rag/cli.py#L143-L160)
-
-## Dependency Analysis
-Runtime dependencies include FastAPI, Uvicorn, Pydantic, Qdrant client, Ollama, structlog, and others. The CLI exposes commands that orchestrate the daemon and external services.
-
-```mermaid
-graph LR
-CLI["cli.py"] --> SRV["server.py"]
-CLI --> SUP["supervisor.py"]
-CLI --> CC["claude_code.py"]
-SRV --> CFG["config.py"]
-SRV --> LOG["logging_setup.py"]
-SRV --> EXT["Ollama, Qdrant"]
-```
-
-**Diagram sources**
-- [src/rag/cli.py:162-244](file://src/rag/cli.py#L162-L244)
-- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
-- [src/rag/config.py:150-194](file://src/rag/config.py#L150-L194)
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-- [src/rag/integration/supervisor.py:75-153](file://src/rag/integration/supervisor.py#L75-L153)
-- [src/rag/integration/claude_code.py:49-120](file://src/rag/integration/claude_code.py#L49-L120)
-
-**Section sources**
-- [pyproject.toml:15-57](file://pyproject.toml#L15-L57)
-
-## Performance Considerations
-- Embedding throughput tuning: Use the CLI benchmark command to evaluate batch sizes against Ollama.
-- Warm probe: The daemon periodically measures embedder warm latency to inform UI KPIs.
-- Rate limiting: Per-token token-bucket rate limiting protects the daemon under load.
-- Logging: Rotating JSON logs prevent disk pressure; disable uvicorn’s logging to avoid duplication.
-
-**Section sources**
-- [src/rag/cli.py:302-385](file://src/rag/cli.py#L302-L385)
-- [src/rag/server.py:645-655](file://src/rag/server.py#L645-L655)
-- [src/rag/server.py:772-788](file://src/rag/server.py#L772-L788)
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-
-## Monitoring and Observability
-- Health endpoint: Public, unauthenticated; aggregates Qdrant and Ollama status.
-- Status endpoint: Protected by bearer token; returns embedder model, collections, uptime, restart count, and file counts.
-- Events ring: Bounded ring buffer for TUI logs tail and latency metrics.
-- CLI diagnose: Health checks for daemon, Ollama, LSP servers, and cache statistics.
-
-```mermaid
-sequenceDiagram
-participant Operator as "Operator"
-participant CLI as "CLI"
-participant Daemon as "FastAPI Server"
-Operator->>CLI : rag diagnose
-CLI->>Daemon : GET /health
-CLI->>Daemon : GET /health/detail
-CLI->>Daemon : GET /status
-Daemon-->>CLI : Responses
-CLI-->>Operator : Summary
-```
-
-**Diagram sources**
-- [src/rag/cli.py:33-48](file://src/rag/cli.py#L33-L48)
-- [src/rag/server.py:858-874](file://src/rag/server.py#L858-L874)
-- [src/rag/server.py:1086-1117](file://src/rag/server.py#L1086-L1117)
-- [src/rag/server.py:878-902](file://src/rag/server.py#L878-L902)
-
-**Section sources**
-- [src/rag/server.py:858-874](file://src/rag/server.py#L858-L874)
-- [src/rag/server.py:878-902](file://src/rag/server.py#L878-L902)
-- [src/rag/server.py:1086-1117](file://src/rag/server.py#L1086-L1117)
-- [src/rag/cli.py:33-48](file://src/rag/cli.py#L33-L48)
-
-## Scaling, Load Balancing, and High Availability
-- Current design: Single supervised daemon bound to localhost with a bearer token.
-- Reverse proxy: Expose externally behind TLS and forward the bearer token; the server rejects wildcard binds.
-- Horizontal scaling: Not implemented in the current codebase; consider deploying multiple instances behind a load balancer and coordinating shared storage for Qdrant if needed.
-- Redundancy: Use supervisor (launchd/systemd) to ensure automatic restarts; maintain persistent restart counters.
-
-**Section sources**
-- [src/rag/config.py:39-50](file://src/rag/config.py#L39-L50)
-- [docs/deployment-linux.md:51-57](file://docs/deployment-linux.md#L51-L57)
-- [README.md:67-74](file://README.md#L67-L74)
-
-## Backup and Recovery
-- Token: Stored at ~/.rag/token with restricted permissions; back up on encrypted media.
-- Qdrant data: Local path configurable; back up the directory when the daemon is offline.
-- Collections: Use CLI import/export endpoints to back up and restore data as needed.
-
-**Section sources**
-- [src/rag/config.py:167-189](file://src/rag/config.py#L167-L189)
-- [config/default.toml:21-26](file://config/default.toml#L21-L26)
-- [src/rag/cli.py:60-66](file://src/rag/cli.py#L60-L66)
-
-## Security Hardening and Network Configuration
-- Binding policy: Rejects wildcard binds; use a reverse proxy for external access.
-- Authentication: Bearer token enforcement on protected routes; CLI and TUI share the token.
-- CSRF guard: Middleware validates Origin for non-idempotent methods.
-- Secrets: Token file permissions are restricted; ensure secure storage and backups.
-
-**Section sources**
-- [src/rag/config.py:39-50](file://src/rag/config.py#L39-L50)
-- [src/rag/server.py:592-598](file://src/rag/server.py#L592-L598)
-- [src/rag/server.py:790-800](file://src/rag/server.py#L790-L800)
-- [src/rag/config.py:167-189](file://src/rag/config.py#L167-L189)
+This comprehensive deployment and operations guide provides production-focused guidance for the RAG system across multiple deployment environments. The documentation is organized into specialized sections covering deployment strategies, monitoring and logging, scaling and maintenance, and security configurations. It addresses supervised daemon architecture, auto-start mechanisms, health monitoring, scaling considerations, backup and recovery procedures, and security hardening for Docker Compose, Kubernetes, and bare metal installations.
 
 ## Deployment Strategies
 
 ### Docker Compose (Local Qdrant Server)
-- Use the provided Compose file to run Qdrant locally with persistence.
-- The daemon connects to the server URL defined in configuration.
+The RAG system supports containerized deployment using Docker Compose for local development and testing environments. The provided Compose file orchestrates the Qdrant vector database alongside the RAG daemon.
+
+**Key Features:**
+- Persistent volume mounting for Qdrant data
+- Network isolation between containers
+- Environment variable configuration
+- Health check integration
+
+**Deployment Steps:**
+1. Configure Qdrant settings in default.toml
+2. Start services with docker-compose up -d
+3. Verify service health and connectivity
+4. Access the RAG API at http://localhost:7890
 
 **Section sources**
 - [compose.qdrant.yml:1-11](file://compose.qdrant.yml#L1-L11)
 - [config/default.toml:21-26](file://config/default.toml#L21-L26)
 
-### Kubernetes (Conceptual)
-- Deploy the daemon as a Stateful workload with a sidecar or separate pod for Qdrant server.
-- Expose via a Service and Ingress with TLS termination and bearer token forwarding.
-- Persist Qdrant data using PersistentVolumes; ensure restart policy aligns with KeepAlive semantics.
+### Kubernetes Deployment (Production)
+For production Kubernetes deployments, the RAG system can be containerized and deployed as a StatefulSet with persistent storage and horizontal scaling capabilities.
 
-[No sources needed since this section provides conceptual guidance]
+**Kubernetes Architecture:**
+- StatefulSet for stable network identity
+- PersistentVolumeClaims for Qdrant data persistence
+- ConfigMaps for configuration management
+- Service mesh integration for traffic management
+- PodDisruptionBudget for high availability
 
-### Bare Metal (macOS and Linux)
-- macOS: Use launchd supervisor to auto-start and restart the daemon.
-- Linux: Use user-level systemd unit; enable lingering for logout resilience.
+**Deployment Components:**
+- RAG Daemon Pod with resource limits
+- Sidecar container for Qdrant (if using embedded mode)
+- Ingress controller for external access
+- Secret management for bearer tokens
+- HorizontalPodAutoscaler for dynamic scaling
+
+**Section sources**
+- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
+- [src/rag/config.py:35-131](file://src/rag/config.py#L35-L131)
+
+### Bare Metal Installation (macOS and Linux)
+Direct installation on physical hardware provides optimal performance and control over system resources.
+
+**macOS Installation:**
+- Launchd service configuration for auto-start
+- Home directory permissions and ownership
+- Background process supervision
+- System integration for crash recovery
+
+**Linux Installation:**
+- User-level systemd units for session persistence
+- Lingering enabled for logout resilience
+- Environment variable configuration
+- Journal logging integration
+
+**Installation Process:**
+1. Create ~/.rag directory structure
+2. Configure service permissions
+3. Install launchd/systemd service
+4. Start supervised daemon
+5. Verify service status and health
 
 **Section sources**
 - [src/rag/integration/supervisor.py:75-153](file://src/rag/integration/supervisor.py#L75-L153)
 - [docs/deployment-linux.md:1-57](file://docs/deployment-linux.md#L1-L57)
 
+## Monitoring and Logging
+
+### Health Checks and Status Endpoints
+The RAG daemon provides comprehensive health monitoring through REST API endpoints designed for automated monitoring systems.
+
+**Health Endpoint (/health):**
+- Aggregates component readiness status
+- Validates Qdrant connection and availability
+- Checks Ollama service health
+- Returns aggregated system status
+
+**Status Endpoint (/status):**
+- Protected by bearer token authentication
+- Returns embedder model information
+- Provides collection statistics
+- Reports uptime and restart counts
+- Includes file indexing metrics
+
+**Section sources**
+- [src/rag/server.py:858-874](file://src/rag/server.py#L858-L874)
+- [src/rag/server.py:878-902](file://src/rag/server.py#L878-L902)
+
+### Logging Configuration and Rotation
+Structured logging with rotation prevents disk space issues in production environments while maintaining audit trails.
+
+**Logging Architecture:**
+- JSON-formatted structured logs
+- 10MB file size limit with 5 backup retention
+- Automatic rotation on size threshold
+- Uvicorn logging disabled to prevent duplication
+- Centralized log location at ~/.rag/logs/
+
+**Log Categories:**
+- Daemon lifecycle events
+- Request/response traces
+- Error conditions and exceptions
+- Performance metrics and timing
+- Security events and authentication
+
+**Section sources**
+- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
+
+### Diagnostics and Troubleshooting
+Comprehensive diagnostic tools help operators quickly identify and resolve operational issues.
+
+**Diagnostic Commands:**
+- Health check aggregation across all components
+- Cache statistics and memory usage
+- File system monitoring and disk space
+- Network connectivity verification
+- Service dependency validation
+
+**Section sources**
+- [src/rag/cli.py:33-48](file://src/rag/cli.py#L33-L48)
+- [src/rag/cli.py:2098-2141](file://src/rag/cli.py#L2098-L2141)
+
+## Scaling and Maintenance
+
+### Horizontal Scaling Considerations
+The current RAG implementation is designed around a single supervised daemon architecture. Horizontal scaling requires careful consideration of shared state and coordination.
+
+**Current Limitations:**
+- Single point of failure in current design
+- No built-in clustering or consensus mechanisms
+- Shared filesystem requirements for persistence
+- Token-based authentication per instance
+
+**Scaling Approaches:**
+- Load balancing with sticky sessions
+- Shared storage backend for Qdrant data
+- Reverse proxy with bearer token forwarding
+- Database-backed session management
+
+**Section sources**
+- [src/rag/config.py:39-50](file://src/rag/config.py#L39-L50)
+- [README.md:67-74](file://README.md#L67-L74)
+
+### Load Balancing and High Availability
+Production deployments should implement load balancing and redundancy to ensure continuous availability.
+
+**Load Balancer Configuration:**
+- Sticky session configuration for token-based auth
+- Health check endpoint integration
+- SSL termination and certificate management
+- Connection pooling and timeout settings
+
+**High Availability Patterns:**
+- Multiple daemon instances behind load balancer
+- Automated failover detection
+- Graceful shutdown handling
+- Circuit breaker pattern for external services
+
+**Section sources**
+- [docs/deployment-linux.md:51-57](file://docs/deployment-linux.md#L51-L57)
+- [src/rag/server.py:603-716](file://src/rag/server.py#L603-L716)
+
+### Maintenance Procedures
+Regular maintenance ensures optimal performance and system reliability.
+
+**Scheduled Maintenance Tasks:**
+- Index integrity verification and repair
+- Log rotation and cleanup
+- Cache optimization and pruning
+- Dependency updates and security patches
+- Performance monitoring and alerting
+
+**Maintenance Windows:**
+- Planned downtime for major updates
+- Rolling restart procedures
+- Data backup verification
+- Performance baseline establishment
+
+**Section sources**
+- [src/rag/cli.py:2098-2141](file://src/rag/cli.py#L2098-L2141)
+- [src/rag/cli.py:302-385](file://src/rag/cli.py#L302-L385)
+
+## Security and Configuration
+
+### Authentication and Authorization
+The RAG system implements bearer token authentication for protecting sensitive endpoints and operations.
+
+**Token Management:**
+- Secure token storage in ~/.rag/token
+- Restricted file permissions (600)
+- Token rotation and renewal procedures
+- Multi-instance token synchronization
+
+**Authentication Flow:**
+- Bearer token required for protected endpoints
+- CLI and TUI clients share authentication
+- Token validation middleware implementation
+- Session management and expiration handling
+
+**Section sources**
+- [src/rag/config.py:167-189](file://src/rag/config.py#L167-L189)
+- [src/rag/server.py:592-598](file://src/rag/server.py#L592-L598)
+
+### Network Security and Firewall Configuration
+Production deployments require careful network security configuration to protect against unauthorized access.
+
+**Network Architecture:**
+- Localhost binding with reverse proxy for external access
+- TLS termination at load balancer or reverse proxy
+- Port-based access control and firewall rules
+- Network segmentation and VLAN configuration
+
+**Security Headers and Controls:**
+- CSRF protection middleware
+- CORS configuration for web interface
+- Rate limiting and request throttling
+- Input validation and sanitization
+
+**Section sources**
+- [src/rag/config.py:39-50](file://src/rag/config.py#L39-L50)
+- [src/rag/server.py:790-800](file://src/rag/server.py#L790-L800)
+
+### Configuration Management
+Centralized configuration management ensures consistent deployment across environments.
+
+**Configuration Layers:**
+- Default values in TOML configuration
+- Environment-specific overrides
+- Runtime parameter validation
+- Configuration hot-reload capabilities
+
+**Security Configuration:**
+- Encrypted secrets management
+- Environment variable injection
+- Configuration validation and sanitization
+- Audit logging for configuration changes
+
+**Section sources**
+- [src/rag/config.py:35-131](file://src/rag/config.py#L35-L131)
+- [config/default.toml:1-41](file://config/default.toml#L1-L41)
+
 ## Common Operational Scenarios
 
-### Start the Daemon and Index a Repository
-- Initialize configuration, start the daemon in background, and index the current directory.
-- Verify health and status via CLI.
+### Initial System Setup and Configuration
+Complete step-by-step procedure for first-time system deployment and configuration.
+
+**Setup Steps:**
+1. Create configuration directory structure
+2. Configure server settings and authentication
+3. Set up Qdrant vector database
+4. Configure embedding service (Ollama)
+5. Initialize supervised daemon service
+6. Verify system health and connectivity
+
+**Verification Checklist:**
+- Health endpoint returns success status
+- Status endpoint provides expected metrics
+- Authentication works for protected endpoints
+- Logging shows normal operational messages
 
 **Section sources**
 - [src/rag/cli.py:82-141](file://src/rag/cli.py#L82-L141)
 - [src/rag/cli.py:33-48](file://src/rag/cli.py#L33-L48)
 
-### Install and Integrate with Claude Code
-- Generate a slash command and install a hook to enable RAG search integration.
+### Repository Indexing and Content Management
+Comprehensive guide for managing code repositories and content indexing operations.
 
-**Section sources**
-- [src/rag/integration/claude_code.py:49-120](file://src/rag/integration/claude_code.py#L49-L120)
-- [src/rag/cli.py:60-66](file://src/rag/cli.py#L60-L66)
+**Indexing Workflow:**
+- Repository discovery and scanning
+- Code chunking and embedding generation
+- Vector database population and optimization
+- Incremental update processing
+- Index integrity verification
 
-### Manage Qdrant Lifecycle
-- Start/stop the local Qdrant server via CLI and check health.
+**Content Management:**
+- Repository exclusion patterns
+- File type filtering and processing
+- Large file handling and skip policies
+- Encoding detection and conversion
 
 **Section sources**
 - [src/rag/cli.py:246-300](file://src/rag/cli.py#L246-L300)
-- [compose.qdrant.yml:1-11](file://compose.qdrant.yml#L1-L11)
+- [src/rag/cli.py:2098-2141](file://src/rag/cli.py#L2098-L2141)
 
-### Repair Index Integrity
-- Detect and remove orphaned chunks to maintain index integrity.
+### External Service Integration
+Integration with external services including Claude Code and Codex skills.
+
+**Claude Code Integration:**
+- Slash command generation and registration
+- Hook installation and configuration
+- Command routing and response handling
+- Error handling and fallback mechanisms
+
+**Codex Skills Integration:**
+- Skill package installation and management
+- Skill discovery and loading
+- Dependency resolution and validation
+- Update and version management
 
 **Section sources**
-- [src/rag/cli.py:2098-2141](file://src/rag/cli.py#L2098-L2141)
+- [src/rag/integration/claude_code.py:49-120](file://src/rag/integration/claude_code.py#L49-L120)
+- [scripts/install-codex-skills.sh:1-28](file://scripts/install-codex-skills.sh#L1-L28)
 
 ## Troubleshooting Guide
-- Use the diagnose command to check daemon, Ollama, LSP servers, and cache stats.
-- For index issues, run verification and repair to remove orphans and duplicates.
-- Monitor logs in ~/.rag/logs/daemon.jsonl and systemd journal for errors.
+
+### System Health and Connectivity Issues
+Diagnostic procedures for identifying and resolving common operational problems.
+
+**Health Check Procedures:**
+- Verify daemon process status and PID
+- Check Qdrant service connectivity and availability
+- Validate Ollama service health and model availability
+- Test bearer token authentication
+- Review system resource utilization
+
+**Connectivity Troubleshooting:**
+- Network path verification and routing
+- Port accessibility and firewall rules
+- DNS resolution and hostname configuration
+- Proxy configuration and SSL certificate validation
 
 **Section sources**
-- [README.md:71-74](file://README.md#L71-L74)
 - [src/rag/cli.py:33-48](file://src/rag/cli.py#L33-L48)
-- [src/rag/cli.py:2098-2141](file://src/rag/cli.py#L2098-L2141)
-- [src/rag/integration/logging_setup.py:38-108](file://src/rag/integration/logging_setup.py#L38-L108)
-- [docs/deployment-linux.md:34-41](file://docs/deployment-linux.md#L34-L41)
+- [src/rag/server.py:858-874](file://src/rag/server.py#L858-L874)
+
+### Performance and Resource Issues
+Identification and resolution of performance bottlenecks and resource constraints.
+
+**Performance Monitoring:**
+- Embedding throughput measurement and optimization
+- Memory usage and garbage collection patterns
+- Disk I/O and storage performance metrics
+- Network latency and bandwidth utilization
+
+**Resource Optimization:**
+- CPU and memory allocation tuning
+- Connection pool sizing and management
+- Cache configuration and eviction policies
+- Batch processing and queue management
+
+**Section sources**
+- [src/rag/cli.py:302-385](file://src/rag/cli.py#L302-L385)
+- [src/rag/server.py:645-655](file://src/rag/server.py#L645-L655)
+
+### Backup and Recovery Operations
+Comprehensive backup and disaster recovery procedures for production environments.
+
+**Backup Strategy:**
+- Token file backup with encryption
+- Qdrant data directory backup and compression
+- Collection-level backup and restore procedures
+- Incremental backup scheduling and retention
+
+**Recovery Procedures:**
+- Partial recovery from corrupted indices
+- Full system restoration from backups
+- Rollback procedures for failed updates
+- Disaster recovery testing and validation
+
+**Section sources**
+- [src/rag/config.py:167-189](file://src/rag/config.py#L167-L189)
+- [src/rag/cli.py:60-66](file://src/rag/cli.py#L60-L66)
 
 ## Conclusion
-The RAG system is designed as a supervised daemon with robust logging, health monitoring, and external integrations. Production deployments should leverage supervisor mechanisms (launchd/systemd), secure bearer token authentication, and reverse proxies for external access. Use the CLI for lifecycle management, diagnostics, and integrations, and maintain regular backups of tokens and Qdrant data.
+The RAG system provides a comprehensive deployment and operations framework suitable for various production environments. The modular documentation structure enables operators to focus on specific operational aspects while maintaining system reliability and security. By following the deployment strategies, monitoring practices, scaling guidelines, and security configurations outlined in this document, organizations can successfully operate the RAG system in production environments with confidence in its stability, performance, and security posture.

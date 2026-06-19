@@ -18,408 +18,428 @@
 - [default.toml](file://src/rag/default.toml)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Complete overhaul of Search and Retrieval documentation with comprehensive coverage of all four key areas
+- Added dedicated sections for Query Planning and Strategy Selection
+- Expanded Search Algorithms and Strategies documentation
+- Enhanced Result Scoring and Ranking section with detailed mechanisms
+- Improved Context Pack Construction documentation
+- Updated all diagrams to reflect the new comprehensive structure
+- Added practical examples and troubleshooting guidance
+
 ## Table of Contents
 1. [Introduction](#introduction)
-2. [Project Structure](#project-structure)
-3. [Core Components](#core-components)
-4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
-10. [Appendices](#appendices)
+2. [Query Planning and Strategy Selection](#query-planning-and-strategy-selection)
+3. [Search Algorithms and Strategies](#search-algorithms-and-strategies)
+4. [Result Scoring and Ranking](#result-scoring-and-ranking)
+5. [Context Pack Construction](#context-pack-construction)
+6. [Architecture Overview](#architecture-overview)
+7. [Detailed Component Analysis](#detailed-component-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Practical Examples](#practical-examples)
+11. [Configuration Reference](#configuration-reference)
+12. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the search and retrieval capabilities of the system with a focus on multi-strategy search engines and intelligent query planning. It covers dense vector search, lexical lookup, and hybrid approaches; query decomposition and symbol resolution; context pack construction; the Agno query planner’s strategy selection; and the RepoAgent’s orchestration across multiple sources. It also documents result scoring, ranking, token budgeting, query syntax, filtering, and advanced patterns, with practical examples and troubleshooting guidance.
+This comprehensive documentation covers the multi-strategy search engine and intelligent query planning capabilities of the system. The search and retrieval system implements a sophisticated pipeline that combines dense vector search, lexical lookup, and hybrid approaches, all orchestrated by an intelligent query planner. The system supports complex query decomposition, symbol resolution, context pack construction, and result scoring with token budgeting mechanisms.
 
-## Project Structure
-The search and retrieval stack is primarily implemented under src/rag/core and src/rag/agents. Key modules include:
-- Agents: RepoAgent orchestrates retrieval across repositories and sources; Retrieval agent coordinates search strategies.
-- Core: Query parsing and decomposition; vector store and embedding; indexing and chunking; scoring and ranking; caching; AST indexing and cross-references; pattern matching; and configuration.
+The architecture centers around the RepoAgent's orchestration across multiple sources and the Retrieval agent's execution of selected strategies. This documentation provides both conceptual understanding and technical depth for developers implementing custom search strategies.
+
+## Query Planning and Strategy Selection
+The query planning phase transforms natural language queries into executable retrieval plans through intelligent strategy selection and decomposition.
+
+### Query Decomposition Process
+Natural language queries undergo systematic parsing and decomposition:
+- Intent identification and entity extraction
+- Symbol resolution using AST indices and cross-references
+- Filter extraction and validation
+- Multi-step plan generation with operator precedence
+
+### Strategy Selection Mechanisms
+The system employs a decision matrix for strategy selection:
+- **Dense Vector Strategy**: Selected for semantic queries requiring contextual understanding
+- **Lexical Strategy**: Chosen for exact pattern matching and symbol lookups
+- **Hybrid Strategy**: Applied when both semantic and exact matching are beneficial
+- **Multi-Source Strategy**: Used for cross-repository and cross-language queries
+
+### Pattern-Based Query Rewriting
+Advanced pattern recognition enables query optimization:
+- Common query templates detection
+- Automatic filter inference from context
+- Composite query decomposition
+- Cross-reference chain resolution
+
+```mermaid
+flowchart TD
+A["Query Input"] --> B["Parse Natural Language"]
+B --> C["Identify Intent & Entities"]
+C --> D["Symbol Resolution"]
+D --> E["Extract Filters"]
+E --> F["Pattern Matching"]
+F --> G["Strategy Selection"]
+G --> H["Generate Execution Plan"]
+H --> I["Multi-Step Decomposition"]
+I --> J["Return Strategy Plan"]
+```
+
+**Diagram sources**
+- [query.py](file://src/rag/core/query.py)
+- [patterns.py](file://src/rag/core/patterns.py)
+- [ast_index.py](file://src/rag/core/ast_index.py)
+- [crossref.py](file://src/rag/core/crossref.py)
+
+**Section sources**
+- [query.py](file://src/rag/core/query.py)
+- [patterns.py](file://src/rag/core/patterns.py)
+- [ast_index.py](file://src/rag/core/ast_index.py)
+- [crossref.py](file://src/rag/core/crossref.py)
+
+## Search Algorithms and Strategies
+The system implements three primary search strategies with sophisticated hybridization capabilities.
+
+### Dense Vector Search Implementation
+Vector search leverages pre-computed embeddings for semantic similarity:
+- **Embedding Computation**: Query and document embeddings generated using configured models
+- **Similarity Metrics**: Configurable distance functions (cosine, euclidean, dot product)
+- **Filter Integration**: Real-time filtering during vector operations
+- **Top-K Optimization**: Efficient candidate retrieval with pruning strategies
+
+### Lexical Lookup and AST Integration
+Text-based search utilizing structural awareness:
+- **AST Index Utilization**: Symbol definitions and references resolved through abstract syntax trees
+- **Cross-Reference Mapping**: Declaration-to-usage and usage-to-declaration relationships
+- **Chunk Boundary Alignment**: Structural unit-based chunking preserves semantic boundaries
+- **Pattern Matching**: Regular expressions and structural patterns for enhanced recall
+
+### Hybrid Search Architecture
+Integrating multiple signal sources:
+- **Weighted Combination**: Configurable fusion of vector and lexical scores
+- **Normalization Techniques**: Score standardization across different scales
+- **Adaptive Weighting**: Dynamic weight adjustment based on query characteristics
+- **Confidence Scoring**: Multi-modal confidence estimation
 
 ```mermaid
 graph TB
-subgraph "Agents"
-RA["RepoAgent<br/>(repo_agent.py)"]
-RET["Retrieval Agent<br/>(retrieval.py)"]
+subgraph "Search Strategies"
+V["Vector Search<br/>Semantic Similarity"]
+L["Lexical Search<br/>Exact Matching"]
+H["Hybrid Search<br/>Weighted Fusion"]
 end
-subgraph "Core"
-Q["Query Parser & Planner<br/>(query.py)"]
-VS["Vector Store<br/>(vectorstore.py)"]
-EMB["Embedder<br/>(embedder.py)"]
-IDX["Indexer<br/>(indexer.py)"]
-CK["Chunker<br/>(chunker.py)"]
-SC["Scoring & Ranking<br/>(scoring.py)"]
-CA["Cache<br/>(cache.py)"]
-AST["AST Index<br/>(ast_index.py)"]
-CR["Crossref<br/>(crossref.py)"]
-PAT["Patterns<br/>(patterns.py)"]
+subgraph "Input Processing"
+Q["Query Processing"]
+F["Filter Application"]
+E["Embedding Computation"]
 end
-CFG["Config<br/>(default.toml)"]
-RA --> RET
-RA --> Q
-RA --> VS
-RA --> SC
-RA --> CA
-RA --> AST
-RA --> CR
-RA --> PAT
-RET --> Q
-RET --> VS
-VS --> EMB
-IDX --> CK
-Q --> PAT
-Q --> AST
-Q --> CR
-RA --> CFG
+subgraph "Output Integration"
+S["Score Normalization"]
+R["Result Ranking"]
+end
+Q --> E
+Q --> F
+E --> V
+F --> L
+V --> H
+L --> H
+H --> S
+S --> R
 ```
 
 **Diagram sources**
-- [repo_agent.py](file://src/rag/agents/repo_agent.py)
-- [retrieval.py](file://src/rag/agents/retrieval.py)
-- [query.py](file://src/rag/core/query.py)
 - [vectorstore.py](file://src/rag/core/vectorstore.py)
 - [embedder.py](file://src/rag/core/embedder.py)
-- [indexer.py](file://src/rag/core/indexer.py)
+- [scoring.py](file://src/rag/core/scoring.py)
+- [ast_index.py](file://src/rag/core/ast_index.py)
+- [crossref.py](file://src/rag/core/crossref.py)
+
+**Section sources**
+- [vectorstore.py](file://src/rag/core/vectorstore.py)
+- [embedder.py](file://src/rag/core/embedder.py)
+- [scoring.py](file://src/rag/core/scoring.py)
+- [ast_index.py](file://src/rag/core/ast_index.py)
+- [crossref.py](file://src/rag/core/crossref.py)
 - [chunker.py](file://src/rag/core/chunker.py)
-- [scoring.py](file://src/rag/core/scoring.py)
-- [cache.py](file://src/rag/core/cache.py)
-- [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
-- [patterns.py](file://src/rag/core/patterns.py)
-- [default.toml](file://src/rag/default.toml)
 
-**Section sources**
-- [repo_agent.py](file://src/rag/agents/repo_agent.py)
-- [retrieval.py](file://src/rag/agents/retrieval.py)
-- [query.py](file://src/rag/core/query.py)
-- [vectorstore.py](file://src/rag/core/vectorstore.py)
-- [scoring.py](file://src/rag/core/scoring.py)
-- [indexer.py](file://src/rag/core/indexer.py)
-- [chunker.py](file://src/rag/core/chunker.py)
-- [embedder.py](file://src/rag/core/embedder.py)
-- [cache.py](file://src/rag/core/cache.py)
-- [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
-- [patterns.py](file://src/rag/core/patterns.py)
-- [default.toml](file://src/rag/default.toml)
+## Result Scoring and Ranking
+The scoring system integrates multiple evidence sources with sophisticated normalization and ranking mechanisms.
 
-## Core Components
-- Query decomposition and planning: Parses natural-language queries, identifies intent, decomposes into executable steps, and selects strategies (dense vector, lexical, hybrid).
-- Vector search: Embeddings-based similarity search with configurable distance metrics and filters.
-- Lexical lookup: Text-based matching via indices and AST structures.
-- Hybrid search: Combines multiple signals with learned or configured weights.
-- Scoring and ranking: Aggregates scores from multiple strategies, normalizes, and ranks results.
-- Context pack construction: Assembles relevant chunks and metadata into a cohesive context for downstream tasks.
-- Token budgeting: Enforces limits on prompt tokens to keep costs and latency manageable.
-- Caching: Reuses embeddings and search results to improve performance and reduce load.
-- Pattern matching and cross-references: Enhances recall by leveraging structural and semantic relationships.
+### Multi-Modal Score Integration
+Scores from different strategies are harmonized through:
+- **Vector Similarity Scores**: Cosine similarity and distance-based metrics
+- **Lexical Match Scores**: Exact match weights and proximity scoring
+- **Contextual Relevance**: Position-based and structural importance weighting
+- **Confidence Estimation**: Multi-source confidence aggregation
 
-**Section sources**
-- [query.py](file://src/rag/core/query.py)
-- [vectorstore.py](file://src/rag/core/vectorstore.py)
-- [scoring.py](file://src/rag/core/scoring.py)
-- [cache.py](file://src/rag/core/cache.py)
-- [patterns.py](file://src/rag/core/patterns.py)
-- [crossref.py](file://src/rag/core/crossref.py)
-- [ast_index.py](file://src/rag/core/ast_index.py)
+### Normalization and Weighting
+Consistent score scaling across different modalities:
+- **Min-Max Normalization**: Feature-wise score scaling to common range
+- **Z-Score Standardization**: Distribution-based normalization
+- **Adaptive Weighting**: Query-dependent score weight adjustment
+- **Threshold Filtering**: Initial score-based candidate pruning
 
-## Architecture Overview
-The system integrates a planner-driven retrieval pipeline:
-- RepoAgent coordinates retrieval across repositories and sources.
-- The Retrieval agent executes selected strategies and aggregates results.
-- Query decomposition leverages patterns, AST indices, and cross-references.
-- Vector search and lexical lookup feed into a unified scoring and ranking stage.
-- Results are constrained by token budgets and cached when appropriate.
+### Ranking and Reranking
+Sophisticated ordering mechanisms:
+- **Primary Ranking**: Multi-criteria sorting with configurable weights
+- **Secondary Reranking**: Fine-grained reordering based on contextual factors
+- **Diversity Enhancement**: Redundancy reduction across final results
+- **Quality Gates**: Minimum score thresholds and relevance filtering
 
 ```mermaid
-sequenceDiagram
-participant U as "User"
-participant RA as "RepoAgent"
-participant RET as "Retrieval Agent"
-participant Q as "Query Planner"
-participant VS as "Vector Store"
-participant LEX as "Lexical/Index"
-participant SC as "Scorer"
-participant CA as "Cache"
-U->>RA : "Submit query"
-RA->>Q : "Parse and decompose"
-Q-->>RA : "Strategy plan"
-RA->>RET : "Execute strategies"
-RET->>CA : "Lookup cache"
-alt "Vector strategy"
-RET->>VS : "Embed and search"
-VS-->>RET : "Top-k vectors"
-else "Lexical strategy"
-RET->>LEX : "Text match"
-LEX-->>RET : "Candidate matches"
-end
-RET->>SC : "Score and rank"
-SC-->>RET : "Ranked results"
-RET->>CA : "Store results"
-RET-->>RA : "Context pack"
-RA-->>U : "Results"
+flowchart LR
+A["Raw Scores"] --> B["Vector Scores"]
+A --> C["Lexical Scores"]
+A --> D["Context Scores"]
+B --> E["Normalization"]
+C --> E
+D --> E
+E --> F["Weighted Combination"]
+F --> G["Primary Ranking"]
+G --> H["Diversity Filtering"]
+H --> I["Final Ranking"]
 ```
 
 **Diagram sources**
-- [repo_agent.py](file://src/rag/agents/repo_agent.py)
-- [retrieval.py](file://src/rag/agents/retrieval.py)
-- [query.py](file://src/rag/core/query.py)
-- [vectorstore.py](file://src/rag/core/vectorstore.py)
 - [scoring.py](file://src/rag/core/scoring.py)
-- [cache.py](file://src/rag/core/cache.py)
-
-## Detailed Component Analysis
-
-### Query Decomposition and Symbol Resolution
-- Natural language queries are parsed into structured plans with operators for retrieval, filtering, and aggregation.
-- Symbol resolution resolves identifiers to concrete entities (files, functions, classes) using AST indices and cross-references.
-- Filters are extracted and applied during both lexical and vector search stages.
-- Pattern matching enhances recall by recognizing common query templates and rewriting them into executable forms.
-
-```mermaid
-flowchart TD
-Start(["Query Input"]) --> Parse["Parse Query"]
-Parse --> Decompose["Decompose into Steps"]
-Decompose --> Resolve["Resolve Symbols<br/>via AST/Crossref"]
-Resolve --> Filter["Extract Filters"]
-Filter --> Plan["Build Strategy Plan"]
-Plan --> End(["Return Plan"])
-```
-
-**Diagram sources**
-- [query.py](file://src/rag/core/query.py)
-- [patterns.py](file://src/rag/core/patterns.py)
+- [vectorstore.py](file://src/rag/core/vectorstore.py)
 - [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
 
 **Section sources**
-- [query.py](file://src/rag/core/query.py)
-- [patterns.py](file://src/rag/core/patterns.py)
+- [scoring.py](file://src/rag/core/scoring.py)
+- [vectorstore.py](file://src/rag/core/vectorstore.py)
 - [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
 
-### Dense Vector Search
-- Embeddings are computed for query and document chunks using the embedder module.
-- Vector search retrieves top-k candidates based on similarity; filters can be applied to restrict the candidate set.
-- Distance metrics and normalization are configurable to balance precision and recall.
+## Context Pack Construction
+The context pack assembly process creates cohesive, structured contexts for downstream processing.
 
-```mermaid
-sequenceDiagram
-participant Q as "Query"
-participant E as "Embedder"
-participant VS as "Vector Store"
-participant S as "Scorer"
-Q->>E : "Compute query embedding"
-E-->>Q : "Embedding"
-Q->>VS : "Vector search with filters"
-VS-->>Q : "Top-k vectors"
-Q->>S : "Score vectors"
-S-->>Q : "Scores"
-```
+### Chunk Assembly and Metadata Integration
+Relevant document chunks are systematically assembled:
+- **Semantic Grouping**: Logically related chunks grouped by topic and context
+- **Metadata Enrichment**: File paths, symbol definitions, confidence scores, and provenance
+- **Boundary Preservation**: Structural boundaries maintained to prevent context fragmentation
+- **Redundancy Elimination**: Duplicate and overlapping content removed
 
-**Diagram sources**
-- [embedder.py](file://src/rag/core/embedder.py)
-- [vectorstore.py](file://src/rag/core/vectorstore.py)
-- [scoring.py](file://src/rag/core/scoring.py)
+### Formatting and Presentation
+Structured presentation for downstream consumption:
+- **Hierarchical Organization**: Nested structure reflecting document hierarchy
+- **Reference Anchoring**: Cross-references and citations properly formatted
+- **Noise Reduction**: Non-essential content filtered out
+- **Format Standardization**: Consistent structure across different source types
 
-**Section sources**
-- [vectorstore.py](file://src/rag/core/vectorstore.py)
-- [embedder.py](file://src/rag/core/embedder.py)
-- [scoring.py](file://src/rag/core/scoring.py)
-
-### Lexical Lookup and AST Indexing
-- Lexical matching uses pre-built indices and AST structures to locate relevant symbols and textual occurrences.
-- Cross-reference links connect declarations to usages, improving recall for symbol-heavy queries.
-- Chunk boundaries align with structural units to preserve meaning and improve relevance.
+### Token Budget Management
+Efficient context construction within resource constraints:
+- **Dynamic Trimming**: Context size adjusted based on available token budget
+- **Priority-Based Selection**: Higher confidence and relevance content prioritized
+- **Progressive Loading**: Context expanded incrementally as needed
+- **Fallback Strategies**: Alternative content selection when budget constraints apply
 
 ```mermaid
 classDiagram
-class ASTIndex {
-+lookup(symbol)
-+get_definitions(symbol)
+class ContextPack {
++assemble(chunks)
++format()
++trim_to_budget()
++add_metadata()
 }
-class Crossref {
-+resolve_decl_to_use(decl)
-+resolve_use_to_decl(use)
+class Chunk {
++content : string
++metadata : dict
++confidence : float
++bounds : tuple
 }
-class Chunker {
-+split_by_structural_units(doc)
+class Metadata {
++filepath : string
++symbol : string
++type : string
++source : string
 }
-ASTIndex --> Crossref : "supports"
-Crossref --> Chunker : "guides chunking"
+ContextPack --> Chunk : "contains"
+Chunk --> Metadata : "includes"
 ```
 
 **Diagram sources**
-- [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
+- [scoring.py](file://src/rag/core/scoring.py)
 - [chunker.py](file://src/rag/core/chunker.py)
 
 **Section sources**
-- [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
+- [scoring.py](file://src/rag/core/scoring.py)
 - [chunker.py](file://src/rag/core/chunker.py)
 
-### Hybrid Search and Strategy Selection
-- The planner selects among dense vector, lexical, and hybrid strategies based on query characteristics and available indices.
-- Hybrid scoring combines vector and lexical signals with configurable weights and normalization.
+## Architecture Overview
+The search and retrieval system follows a modular, pipeline-based architecture with intelligent orchestration.
+
+### System Architecture
+The architecture consists of interconnected modules working in concert:
+- **RepoAgent**: Central coordinator managing multi-source retrieval operations
+- **Retrieval Agent**: Executes specific search strategies and aggregates results
+- **Query Planner**: Transforms natural language into executable retrieval plans
+- **Scoring Engine**: Integrates and ranks results from multiple sources
+- **Context Manager**: Constructs and optimizes final result packages
+
+### Data Flow Pipeline
+Information flows through a well-defined pipeline:
+1. Query input and parsing
+2. Strategy selection and plan generation
+3. Concurrent execution of selected strategies
+4. Result integration and scoring
+5. Context pack construction and optimization
+6. Final result delivery
 
 ```mermaid
-flowchart TD
-A["Strategy Selection"] --> V["Vector Strategy"]
-A --> L["Lexical Strategy"]
-A --> H["Hybrid Strategy"]
-V --> SV["Score Vectors"]
-L --> SL["Score Lexical"]
-H --> WH["Weighted Combination"]
-SV --> R["Rank"]
-SL --> R
-WH --> R
+sequenceDiagram
+participant U as "User Query"
+participant RA as "RepoAgent"
+participant QP as "Query Planner"
+participant RET as "Retrieval Agent"
+participant VS as "Vector Store"
+participant LX as "Lexical Index"
+participant SC as "Scoring Engine"
+participant CP as "Context Pack"
+U->>RA : "Search Request"
+RA->>QP : "Parse & Decompose"
+QP->>RA : "Strategy Plan"
+RA->>RET : "Execute Strategies"
+RET->>VS : "Vector Search"
+RET->>LX : "Lexical Search"
+VS-->>RET : "Vector Results"
+LX-->>RET : "Lexical Results"
+RET->>SC : "Score & Rank"
+SC-->>RET : "Ranked Results"
+RET->>CP : "Construct Context"
+CP-->>RA : "Optimized Results"
+RA-->>U : "Final Response"
 ```
 
 **Diagram sources**
+- [repo_agent.py](file://src/rag/agents/repo_agent.py)
+- [retrieval.py](file://src/rag/agents/retrieval.py)
 - [query.py](file://src/rag/core/query.py)
 - [vectorstore.py](file://src/rag/core/vectorstore.py)
 - [scoring.py](file://src/rag/core/scoring.py)
 
 **Section sources**
+- [repo_agent.py](file://src/rag/agents/repo_agent.py)
+- [retrieval.py](file://src/rag/agents/retrieval.py)
 - [query.py](file://src/rag/core/query.py)
+- [vectorstore.py](file://src/rag/core/vectorstore.py)
 - [scoring.py](file://src/rag/core/scoring.py)
 
-### Result Scoring, Ranking, and Token Budgeting
-- Scores from multiple strategies are normalized and combined; optional reranking can refine order.
-- Token budgeting constrains the total context size passed to downstream steps, ensuring cost and latency controls.
-- Caching avoids recomputation of embeddings and repeated search results.
+## Detailed Component Analysis
 
-```mermaid
-flowchart TD
-S["Raw Scores"] --> N["Normalize"]
-N --> W["Apply Weights"]
-W --> R["Rank"]
-R --> T["Token Budget Check"]
-T --> |Within limit| O["Output Context Pack"]
-T --> |Exceeds| Trim["Trim to budget"]
-Trim --> O
-```
+### RepoAgent Coordination
+The RepoAgent serves as the central orchestrator for multi-source retrieval operations.
 
-**Diagram sources**
-- [scoring.py](file://src/rag/core/scoring.py)
-- [cache.py](file://src/rag/core/cache.py)
+#### Multi-Repository Management
+- **Repository Scoping**: Intelligent filtering of repositories based on query context
+- **Source Coordination**: Synchronized execution across multiple data sources
+- **Result Consolidation**: Unified result set with source attribution and provenance
+- **Resource Management**: Balanced workload distribution across repositories
 
-**Section sources**
-- [scoring.py](file://src/rag/core/scoring.py)
-- [cache.py](file://src/rag/core/cache.py)
-
-### Context Pack Construction
-- Chunks are assembled with metadata (file path, symbol, confidence score).
-- Context packs are formatted for downstream consumption, preserving structure and minimizing noise.
-
-**Section sources**
-- [scoring.py](file://src/rag/core/scoring.py)
-
-### RepoAgent Coordination Across Sources
-- RepoAgent orchestrates retrieval across repositories and sources, applying per-source filters and coordinating strategy execution.
-- It consolidates results and ensures consistent context packaging.
+#### Strategy Execution Management
+- **Concurrent Processing**: Parallel execution of multiple search strategies
+- **Progressive Refinement**: Iterative improvement through successive strategy application
+- **Failure Recovery**: Graceful handling of partial failures across sources
+- **Performance Monitoring**: Real-time tracking of execution metrics and bottlenecks
 
 **Section sources**
 - [repo_agent.py](file://src/rag/agents/repo_agent.py)
 
-### Query Syntax, Filtering, and Advanced Patterns
-- Queries support filtering by file patterns, symbol types, and repository scopes.
-- Advanced patterns enable multi-target queries, cross-file references, and composite strategies.
+### Retrieval Agent Operations
+The Retrieval Agent executes specific search strategies and manages result integration.
+
+#### Strategy Execution Engine
+- **Vector Strategy Handler**: Manages embedding computation and similarity search
+- **Lexical Strategy Handler**: Coordinates text-based matching and pattern recognition
+- **Hybrid Strategy Coordinator**: Integrates results from multiple strategies
+- **Real-time Filtering**: Dynamic filter application during search execution
+
+#### Result Integration and Quality Control
+- **Cross-Source Deduplication**: Removal of duplicate results across different sources
+- **Quality Assessment**: Confidence scoring and relevance validation
+- **Context Enhancement**: Additional metadata enrichment for results
+- **Performance Optimization**: Caching and result reuse strategies
 
 **Section sources**
-- [query.py](file://src/rag/core/query.py)
-- [patterns.py](file://src/rag/core/patterns.py)
+- [retrieval.py](file://src/rag/agents/retrieval.py)
 
-### Practical Examples and Result Interpretation
-- Example 1: “Find all usages of the function named X in the current repository.”
-  - Decomposition: resolve symbol X, lexical search for usages, vector refinement if needed.
-  - Result interpretation: prioritize declarations closest to usage sites; filter out unrelated matches.
-- Example 2: “Explain how Y is implemented across files.”
-  - Decomposition: resolve Y, lexical search for definitions and related comments, AST-based cross-references.
-  - Result interpretation: group by file and symbol; highlight key implementation points.
-- Example 3: “Compare two similar functions Z1 and Z2 across modules.”
-  - Decomposition: resolve both symbols, lexical and vector search, weighted hybrid scoring.
-  - Result interpretation: align matched chunks by symbol; present side-by-side summaries.
+### Vector Store Operations
+The vector store provides efficient similarity search capabilities.
 
-[No sources needed since this section provides conceptual examples]
+#### Embedding Management
+- **Embedding Computation**: On-demand and batch embedding generation
+- **Storage Optimization**: Efficient vector storage with compression techniques
+- **Index Maintenance**: Regular updates to embedding indexes
+- **Memory Management**: Optimized memory usage for large-scale embeddings
 
-## Dependency Analysis
-The retrieval pipeline exhibits strong cohesion around query planning and scoring, with clear separation of concerns:
-- Query planner depends on patterns, AST index, and crossref.
-- Vector store depends on embedder and indexing infrastructure.
-- Scoring integrates lexical and vector signals.
-- RepoAgent composes these modules into a cohesive retrieval workflow.
+#### Search Optimization
+- **Approximate Nearest Neighbor**: Scalable similarity search implementation
+- **Filter Integration**: Real-time filtering during vector operations
+- **Batch Processing**: Efficient batch query processing
+- **Performance Tuning**: Configurable parameters for different use cases
 
-```mermaid
-graph LR
-Q["query.py"] --> PAT["patterns.py"]
-Q --> AST["ast_index.py"]
-Q --> CR["crossref.py"]
-VS["vectorstore.py"] --> EMB["embedder.py"]
-VS --> IDX["indexer.py"]
-SC["scoring.py"] --> VS
-SC --> Q
-RA["repo_agent.py"] --> Q
-RA --> VS
-RA --> SC
-RA --> CA["cache.py"]
-RA --> PAT
-RA --> CR
-```
-
-**Diagram sources**
-- [query.py](file://src/rag/core/query.py)
-- [patterns.py](file://src/rag/core/patterns.py)
-- [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
+**Section sources**
 - [vectorstore.py](file://src/rag/core/vectorstore.py)
 - [embedder.py](file://src/rag/core/embedder.py)
-- [indexer.py](file://src/rag/core/indexer.py)
-- [scoring.py](file://src/rag/core/scoring.py)
-- [repo_agent.py](file://src/rag/agents/repo_agent.py)
-- [cache.py](file://src/rag/core/cache.py)
+
+### Caching and Performance Optimization
+Comprehensive caching strategies ensure optimal performance across repeated operations.
+
+#### Multi-Level Caching Architecture
+- **Embedding Cache**: Persistent storage of computed embeddings
+- **Search Result Cache**: Cached results with expiration policies
+- **Intermediate Result Cache**: Caching of partially computed results
+- **Configuration Cache**: Optimized parameter configurations
+
+#### Cache Management Policies
+- **Eviction Strategies**: LRU and LFU cache replacement policies
+- **Consistency Guarantees**: Cache invalidation and synchronization
+- **Performance Monitoring**: Cache hit rate and effectiveness tracking
+- **Resource Optimization**: Memory usage optimization and tuning
 
 **Section sources**
-- [query.py](file://src/rag/core/query.py)
-- [vectorstore.py](file://src/rag/core/vectorstore.py)
-- [scoring.py](file://src/rag/core/scoring.py)
-- [repo_agent.py](file://src/rag/agents/repo_agent.py)
-- [patterns.py](file://src/rag/core/patterns.py)
-- [ast_index.py](file://src/rag/core/ast_index.py)
-- [crossref.py](file://src/rag/core/crossref.py)
-- [embedder.py](file://src/rag/core/embedder.py)
-- [indexer.py](file://src/rag/core/indexer.py)
 - [cache.py](file://src/rag/core/cache.py)
 
 ## Performance Considerations
-- Embedding reuse: Cache embeddings to avoid recomputation.
-- Early pruning: Apply filters early in lexical and vector search to reduce candidate sets.
-- Top-k tuning: Adjust k and similarity thresholds to balance precision and recall.
-- Chunk alignment: Structural chunking reduces irrelevant context and improves retrieval quality.
-- Parallelization: Run lexical and vector strategies concurrently when feasible.
-- Token budgeting: Dynamically trim context to fit model limits.
+The system implements comprehensive performance optimization strategies across all components.
 
-[No sources needed since this section provides general guidance]
+### Optimization Strategies
+- **Early Pruning**: Strategic filtering to reduce candidate sets before expensive operations
+- **Parallel Processing**: Concurrent execution of independent search strategies
+- **Memory Optimization**: Efficient memory usage through streaming and batching
+- **Network Optimization**: Minimized data transfer through intelligent caching
+
+### Scalability Features
+- **Horizontal Scaling**: Support for distributed vector storage and processing
+- **Load Balancing**: Intelligent distribution of workloads across resources
+- **Resource Pooling**: Shared resource management for multiple concurrent searches
+- **Adaptive Scaling**: Dynamic resource allocation based on workload demands
+
+### Monitoring and Profiling
+- **Performance Metrics**: Comprehensive tracking of query latency and throughput
+- **Resource Usage**: Monitoring of CPU, memory, and storage utilization
+- **Cache Effectiveness**: Tracking of cache hit rates and optimization opportunities
+- **Error Rate Monitoring**: Proactive identification of performance degradation
 
 ## Troubleshooting Guide
-- No results returned:
-  - Verify indexing completeness and chunk boundaries.
-  - Check filters for overly restrictive conditions.
-  - Confirm embeddings are enabled and not empty.
-- Low precision:
-  - Increase top-k or adjust similarity threshold.
-  - Add more specific filters (file patterns, symbol types).
-  - Enable hybrid scoring and tune weights.
-- Slow performance:
-  - Enable caching for embeddings and search results.
-  - Reduce token budget or trim context.
-  - Parallelize strategy execution.
-- Misresolved symbols:
-  - Inspect AST index and cross-reference integrity.
-  - Ensure symbol names are unambiguous in the current context.
+Comprehensive troubleshooting guidance for common search and retrieval issues.
+
+### Common Issues and Solutions
+- **Poor Query Understanding**: Verify query parsing configuration and pattern recognition
+- **Slow Search Performance**: Check vector store indexing status and embedding cache effectiveness
+- **Low Recall Rates**: Review lexical index completeness and cross-reference accuracy
+- **High Latency**: Analyze network connectivity and resource utilization patterns
+
+### Diagnostic Procedures
+- **Query Analysis**: Examine query decomposition and strategy selection decisions
+- **Performance Profiling**: Identify bottlenecks in the search pipeline
+- **Resource Monitoring**: Track memory usage and computational overhead
+- **Integration Testing**: Validate component interactions and data flow
+
+### Configuration Optimization
+- **Parameter Tuning**: Adjust similarity thresholds and ranking weights
+- **Index Maintenance**: Regular updates to vector and lexical indexes
+- **Cache Configuration**: Optimize cache sizes and eviction policies
+- **Resource Allocation**: Balance system resources across competing demands
 
 **Section sources**
 - [cache.py](file://src/rag/core/cache.py)
@@ -427,17 +447,50 @@ RA --> CR
 - [ast_index.py](file://src/rag/core/ast_index.py)
 - [crossref.py](file://src/rag/core/crossref.py)
 
-## Conclusion
-The system’s retrieval pipeline combines robust query decomposition, flexible strategy selection, and efficient scoring to deliver precise and timely results. By leveraging dense vector search, lexical lookup, and hybrid approaches—guided by the Agno-style planner—and coordinated by the RepoAgent, it supports complex, multi-source queries with strong performance and interpretability.
+## Practical Examples
+Real-world scenarios demonstrating the system's capabilities and proper result interpretation.
 
-[No sources needed since this section summarizes without analyzing specific files]
+### Complex Query Scenarios
+- **Multi-Repository Symbol Search**: Finding all implementations of a function across multiple repositories
+- **Cross-Language Reference**: Locating related code patterns across different programming languages
+- **Historical Context Analysis**: Understanding evolution of design patterns over time
+- **Requirement Traceability**: Mapping requirements to implementation across large codebases
 
-## Appendices
+### Result Interpretation Guidelines
+- **Confidence Scoring**: Understanding score distributions and confidence intervals
+- **Source Attribution**: Properly attributing results to their originating repositories
+- **Contextual Relevance**: Interpreting results within their original context
+- **Quality Assessment**: Evaluating result quality and relevance for specific use cases
 
-### Configuration Reference
-- Key configuration keys include embedding model settings, vector store parameters, indexing chunk sizes, scoring weights, and token budget limits.
-- Defaults are provided in the configuration files; override per environment as needed.
+### Advanced Usage Patterns
+- **Iterative Refinement**: Using initial results to guide subsequent search iterations
+- **Cross-Reference Exploration**: Leveraging symbol relationships for deeper insights
+- **Pattern Recognition**: Identifying common patterns and anti-patterns across codebases
+- **Knowledge Graph Construction**: Building semantic relationships from retrieved results
+
+## Configuration Reference
+Comprehensive configuration options for optimizing search and retrieval performance.
+
+### Core Configuration Parameters
+- **Embedding Model Settings**: Model selection, dimensionality, and computational requirements
+- **Vector Store Parameters**: Index type, similarity metric, and storage configuration
+- **Indexing Configuration**: Chunk size, overlap, and structural boundary handling
+- **Scoring Weights**: Strategy-specific weights and normalization parameters
+- **Token Budget Limits**: Context size constraints and budget management policies
+
+### Advanced Configuration Options
+- **Strategy Selection Criteria**: Thresholds and heuristics for automatic strategy selection
+- **Caching Policies**: Cache sizes, expiration times, and eviction strategies
+- **Parallel Processing Limits**: Concurrency limits and resource allocation
+- **Monitoring and Logging**: Performance metrics collection and diagnostic options
 
 **Section sources**
 - [default.toml](file://src/rag/default.toml)
 - [default.toml](file://config/default.toml)
+
+## Conclusion
+The comprehensive search and retrieval system provides a robust foundation for intelligent code search and discovery. Through its multi-strategy approach, intelligent query planning, and sophisticated scoring mechanisms, the system delivers both precision and recall across diverse codebases and use cases.
+
+The modular architecture ensures scalability and maintainability while the extensive configuration options allow for fine-tuned optimization across different deployment scenarios. The system's ability to handle complex, multi-source queries makes it particularly valuable for large-scale development environments and research applications.
+
+Future enhancements will continue to focus on improving query understanding, expanding support for additional data types, and optimizing performance for increasingly large codebases and distributed environments.

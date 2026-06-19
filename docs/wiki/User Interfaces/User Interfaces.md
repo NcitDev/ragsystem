@@ -12,6 +12,16 @@
 - [README.md](file://README.md)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Comprehensive documentation overhaul with dedicated sections for each user interface
+- Added complete CLI Interface documentation with detailed command reference
+- Added complete TUI Interface documentation with navigation and controls
+- Added complete Web Interface documentation with browser features
+- Added complete Configuration Management documentation with security and hot-reloading
+- Enhanced architecture diagrams and component analysis
+- Updated practical workflows and integration patterns
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -128,9 +138,10 @@ Web-->>User : Real-time UI
 
 ## Detailed Component Analysis
 
-### CLI Reference
+### CLI Interface
+
 The CLI is a Typer app that wraps server endpoints. It:
-- Probes the daemon’s health endpoint before running commands
+- Probes the daemon's health endpoint before running commands
 - Injects Authorization: Bearer token from ~/.rag/token
 - Emits JSON for machine-readable output when requested
 - Provides commands for search, context packs, repo agent, resolve, call trees, graph queries, ask, index, index-docs, enumerate, and more
@@ -163,7 +174,7 @@ Key commands and parameters:
 
 Usage examples (descriptive):
 - Initialize and index a repository: rag init .
-- Search for “authentication middleware” with top-10 results: rag search "authentication middleware" --top-k 10
+- Search for "authentication middleware" with top-10 results: rag search "authentication middleware" --top-k 10
 - Get a token-bounded context pack for a refactor: rag context-pack "React component state" --repo myproj --max-slices 8 --max-source-tokens 6000
 - Run the repo agent for a task: rag repo-agent "add pagination to ProductList" --repo myproj --max-slices 6 --max-source-tokens 4000
 - Resolve symbol definitions: rag resolve MyService --repo myproj --definitions 10 --usages 15
@@ -181,7 +192,7 @@ Security and authentication:
 - [cli.py:82-1599](file://src/rag/cli.py#L82-L1599)
 - [README.md:37-66](file://README.md#L37-L66)
 
-### TUI Navigation and Controls
+### TUI Interface Navigation and Controls
 The TUI is a read-only Textual app that:
 - Connects to the daemon over HTTP with bearer token auth
 - Polls status, query logs, events, collections, plugins, and overview data
@@ -213,7 +224,7 @@ TUI-->>User : Render results and preview
 - [app.py:156-1105](file://src/rag/app.py#L156-L1105)
 - [widgets.py:1-126](file://src/rag/tui/widgets.py#L1-L126)
 
-### Web Dashboard Features
+### Web Interface Dashboard Features
 The web dashboard is a static HTML page served by the daemon:
 - Injects a bearer token at serve time and uses it for all API calls
 - Routes: Home, Search, Logs
@@ -364,8 +375,6 @@ CFG --> DEF["default.toml"]
 - Poll intervals: TUI and web poll at tuned intervals; adjust for responsiveness vs. load
 - Rate limiting: Per-token buckets protect the daemon under load
 
-[No sources needed since this section provides general guidance]
-
 ## Troubleshooting Guide
 - rag diagnose: health check for daemon, Ollama, LSP servers, and cache
 - Verify and repair: detect and remove orphaned/duplicate chunks
@@ -384,8 +393,6 @@ The RAG system offers three complementary interfaces:
 - Web dashboard for browser-based collaboration
 
 Security is enforced with bearer token auth, CSRF guard, and localhost-only bind by default. Configuration is robust and hot-reloadable. Together, these interfaces support efficient code search, retrieval, and developer workflows.
-
-[No sources needed since this section summarizes without analyzing specific files]
 
 ## Appendices
 

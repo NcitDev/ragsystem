@@ -10,7 +10,18 @@
 - [compose.qdrant.yml](file://compose.qdrant.yml)
 - [default.toml](file://config/default.toml)
 - [README.md](file://README.md)
+- [repo_agent.py](file://src/rag/agents/repo_agent.py)
+- [benchmark_efficiency.py](file://tests/eval/benchmark_efficiency.py)
+- [benchmark_production_scenarios.py](file://benchmark_production_scenarios.py)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Updated repo-agent command documentation to reflect two-phase blast-radius strategy with enhanced usage filtering
+- Added documentation for improved reporting of filtered usage counts and blast radius analysis
+- Updated model configuration to reflect Gemini 3 Flash integration
+- Enhanced performance metrics documentation with new evaluation metrics
+- Added benchmarking improvements and token efficiency reporting
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -25,7 +36,9 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document provides comprehensive CLI documentation for the RAG command-line interface. It covers all CLI commands, their parameters, usage examples, expected outputs, authentication, error handling, configuration, and operational workflows. The CLI is a thin Typer-based client that communicates with a headless FastAPI daemon over HTTP, protected by a bearer token stored under the user’s home directory.
+This document provides comprehensive CLI documentation for the RAG command-line interface. It covers all CLI commands, their parameters, usage examples, expected outputs, authentication, error handling, configuration, and operational workflows. The CLI is a thin Typer-based client that communicates with a headless FastAPI daemon over HTTP, protected by a bearer token stored under the user's home directory.
+
+**Updated** Enhanced with two-phase strategy support, improved usage filtering, and comprehensive performance metrics reporting.
 
 ## Project Structure
 The CLI is implemented as a Typer application with subcommands for initialization, daemon lifecycle, search, context retrieval, agent orchestration, TUI and web dashboards, Qdrant management, benchmarking, and diagnostics. The daemon is a FastAPI server that validates requests, enforces authentication, and serves endpoints for search, indexing, and introspection.
@@ -35,22 +48,193 @@ graph TB
 subgraph "CLI Layer"
 CLI["Typer CLI<br/>src/rag/cli.py"]
 MAIN["Entry Point<br/>src/rag/__main__.py"]
-end
-subgraph "Daemon Layer"
-SERVER["FastAPI Server<br/>src/rag/server.py"]
-AUTH["Bearer Token Auth<br/>src/rag/server.py"]
-CFG["Settings & Paths<br/>src/rag/config.py"]
-end
-subgraph "External Services"
-OLLAMA["Ollama (Embeddings/Models)"]
-QDRANT["Qdrant Vector Store"]
-end
-CLI --> SERVER
-MAIN --> CLI
-SERVER --> AUTH
-SERVER --> CFG
-SERVER --> OLLAMA
-SERVER --> QDRANT
+ENDPOINTS["HTTP Endpoints<br/>src/rag/server.py"]
+ENDPOINTS --> SEARCH["Search<br/>/search"]
+ENDPOINTS --> CONTEXT["Context Pack<br/>/context-pack"]
+ENDPOINTS --> RESOLVE["Resolve<br/>/resolve"]
+ENDPOINTS --> STATUS["System Status<br/>/status"]
+ENDPOINTS --> HEALTH["Health Check<br/>/health"]
+ENDPOINTS --> ASK["Grounded QA<br/>/ask"]
+ENDPOINTS --> INDEX["Indexing<br/>/index"]
+ENDPOINTS --> GRAPH["Graph Queries<br/>/graph/*"]
+ENDPOINTS --> COLLECTIONS["Collections<br/>/collections"]
+ENDPOINTS --> DOCS["Docs Index<br/>/index/docs"]
+ENDPOINTS --> OVERVIEW["Overview<br/>/overview"]
+ENDPOINTS --> DIFF["Diff Search<br/>/diff"]
+ENDPOINTS --> EVENTS["Event Catalog<br/>/generate-event-catalog"]
+ENDPOINTS --> EXPORT["Export/Import<br/>/export,/import"]
+ENDPOINTS --> DIAGNOSE["Diagnosis<br/>/diagnose"]
+ENDPOINTS --> VERIFY["Verification<br/>/verify,/repair"]
+ENDPOINTS --> SERVICE["Service Management<br/>/service"]
+ENDPOINTS --> CONFIG["Config Management<br/>/config"]
+ENDPOINTS --> REPOS["Multi-Repo<br/>/repos"]
+ENDPOINTS --> BACKFILL["Backfill<br/>/backfill-code-index"]
+ENDPOINTS --> LIST["List Chunks<br/>/list"]
+ENDPOINTS --> FILES["Files List<br/>/files"]
+ENDPOINTS --> NODE["Symbol Node<br/>/node"]
+ENDPOINTS --> CALLERS["Callers<br/>/callers"]
+ENDPOINTS --> CALLEES["Callees<br/>/callees"]
+ENDPOINTS --> IMPACT["Impact Analysis<br/>/impact"]
+ENDPOINTS --> AFFECTED["Affected Files<br/>/affected"]
+ENDPOINTS --> UNDERSTAND["Project Understanding<br/>/understand"]
+ENDPOINTS --> ASK["Grounded Question Answering<br/>/ask"]
+ENDPOINTS --> LIST["Chunk Enumeration<br/>/list"]
+ENDPOINTS --> INDEX["Repository Indexing<br/>/index"]
+ENDPOINTS --> INDEX_DOCS["Docs Indexing<br/>/index-docs"]
+ENDPOINTS --> GENERATE_EVENT["Event Catalog<br/>/generate-event-catalog"]
+ENDPOINTS --> STATUS["System Status<br/>/status"]
+ENDPOINTS --> CONFIG["Config Management<br/>/config"]
+ENDPOINTS --> REPOS["Multi-Repo<br/>/repos"]
+ENDPOINTS --> EXPORT["Data Export<br/>/export"]
+ENDPOINTS --> IMPORT["Data Import<br/>/import"]
+ENDPOINTS --> DIFF["Git Diff Search<br/>/diff"]
+ENDPOINTS --> OVERVIEW["Codebase Overview<br/>/overview"]
+ENDPOINTS --> INSTALL_CLAUDE["Claude Code Integration<br/>/install-claude"]
+ENDPOINTS --> PLUGINS["Plugin Management<br/>/plugins"]
+ENDPOINTS --> COLLECTIONS["Collection Management<br/>/collections"]
+ENDPOINTS --> VERIFY["Index Verification<br/>/verify,/repair"]
+ENDPOINTS --> SERVICE["Service Management<br/>/service"]
+ENDPOINTS --> DIAGNOSE["System Diagnostics<br/>/diagnose"]
+ENDPOINTS --> BACKFILL["Code Index Backfill<br/>/backfill-code-index"]
+ENDPOINTS --> LIST["Chunk Listing<br/>/list"]
+ENDPOINTS --> FILES["File Listing<br/>/files"]
+ENDPOINTS --> NODE["Symbol Node<br/>/node"]
+ENDPOINTS --> CALLERS["Callers<br/>/callers"]
+ENDPOINTS --> CALLEES["Callees<br/>/callees"]
+ENDPOINTS --> IMPACT["Impact Analysis<br/>/impact"]
+ENDPOINTS --> AFFECTED["Affected Files<br/>/affected"]
+ENDPOINTS --> UNDERSTAND["Project Understanding<br/>/understand"]
+ENDPOINTS --> ASK["Grounded Question Answering<br/>/ask"]
+ENDPOINTS --> LIST["Chunk Enumeration<br/>/list"]
+ENDPOINTS --> INDEX["Repository Indexing<br/>/index"]
+ENDPOINTS --> INDEX_DOCS["Docs Indexing<br/>/index-docs"]
+ENDPOINTS --> GENERATE_EVENT["Event Catalog<br/>/generate-event-catalog"]
+ENDPOINTS --> STATUS["System Status<br/>/status"]
+ENDPOINTS --> CONFIG["Config Management<br/>/config"]
+ENDPOINTS --> REPOS["Multi-Repo<br/>/repos"]
+ENDPOINTS --> EXPORT["Data Export<br/>/export"]
+ENDPOINTS --> IMPORT["Data Import<br/>/import"]
+ENDPOINTS --> DIFF["Git Diff Search<br/>/diff"]
+ENDPOINTS --> OVERVIEW["Codebase Overview<br/>/overview"]
+ENDPOINTS --> INSTALL_CLAUDE["Claude Code Integration<br/>/install-claude"]
+ENDPOINTS --> PLUGINS["Plugin Management<br/>/plugins"]
+ENDPOINTS --> COLLECTIONS["Collection Management<br/>/collections"]
+ENDPOINTS --> VERIFY["Index Verification<br/>/verify,/repair"]
+ENDPOINTS --> SERVICE["Service Management<br/>/service"]
+ENDPOINTS --> DIAGNOSE["System Diagnostics<br/>/diagnose"]
+ENDPOINTS --> BACKFILL["Code Index Backfill<br/>/backfill-code-index"]
+ENDPOINTS --> LIST["Chunk Listing<br/>/list"]
+ENDPOINTS --> FILES["File Listing<br/>/files"]
+ENDPOINTS --> NODE["Symbol Node<br/>/node"]
+ENDPOINTS --> CALLERS["Callers<br/>/callers"]
+ENDPOINTS --> CALLEES["Callees<br/>/callees"]
+ENDPOINTS --> IMPACT["Impact Analysis<br/>/impact"]
+ENDPOINTS --> AFFECTED["Affected Files<br/>/affected"]
+ENDPOINTS --> UNDERSTAND["Project Understanding<br/>/understand"]
+ENDPOINTS --> ASK["Grounded Question Answering<br/>/ask"]
+ENDPOINTS --> LIST["Chunk Enumeration<br/>/list"]
+ENDPOINTS --> INDEX["Repository Indexing<br/>/index"]
+ENDPOINTS --> INDEX_DOCS["Docs Indexing<br/>/index-docs"]
+ENDPOINTS --> GENERATE_EVENT["Event Catalog<br/>/generate-event-catalog"]
+ENDPOINTS --> STATUS["System Status<br/>/status"]
+ENDPOINTS --> CONFIG["Config Management<br/>/config"]
+ENDPOINTS --> REPOS["Multi-Repo<br/>/repos"]
+ENDPOINTS --> EXPORT["Data Export<br/>/export"]
+ENDPOINTS --> IMPORT["Data Import<br/>/import"]
+ENDPOINTS --> DIFF["Git Diff Search<br/>/diff"]
+ENDPOINTS --> OVERVIEW["Codebase Overview<br/>/overview"]
+ENDPOINTS --> INSTALL_CLAUDE["Claude Code Integration<br/>/install-claude"]
+ENDPOINTS --> PLUGINS["Plugin Management<br/>/plugins"]
+ENDPOINTS --> COLLECTIONS["Collection Management<br/>/collections"]
+ENDPOINTS --> VERIFY["Index Verification<br/>/verify,/repair"]
+ENDPOINTS --> SERVICE["Service Management<br/>/service"]
+ENDPOINTS --> DIAGNOSE["System Diagnostics<br/>/diagnose"]
+ENDPOINTS --> BACKFILL["Code Index Backfill<br/>/backfill-code-index"]
+ENDPOINTS --> LIST["Chunk Listing<br/>/list"]
+ENDPOINTS --> FILES["File Listing<br/>/files"]
+ENDPOINTS --> NODE["Symbol Node<br/>/node"]
+ENDPOINTS --> CALLERS["Callers<br/>/callers"]
+ENDPOINTS --> CALLEES["Callees<br/>/callees"]
+ENDPOINTS --> IMPACT["Impact Analysis<br/>/impact"]
+ENDPOINTS --> AFFECTED["Affected Files<br/>/affected"]
+ENDPOINTS --> UNDERSTAND["Project Understanding<br/>/understand"]
+ENDPOINTS --> ASK["Grounded Question Answering<br/>/ask"]
+ENDPOINTS --> LIST["Chunk Enumeration<br/>/list"]
+ENDPOINTS --> INDEX["Repository Indexing<br/>/index"]
+ENDPOINTS --> INDEX_DOCS["Docs Indexing<br/>/index-docs"]
+ENDPOINTS --> GENERATE_EVENT["Event Catalog<br/>/generate-event-catalog"]
+ENDPOINTS --> STATUS["System Status<br/>/status"]
+ENDPOINTS --> CONFIG["Config Management<br/>/config"]
+ENDPOINTS --> REPOS["Multi-Repo<br/>/repos"]
+ENDPOINTS --> EXPORT["Data Export<br/>/export"]
+ENDPOINTS --> IMPORT["Data Import<br/>/import"]
+ENDPOINTS --> DIFF["Git Diff Search<br/>/diff"]
+ENDPOINTS --> OVERVIEW["Codebase Overview<br/>/overview"]
+ENDPOINTS --> INSTALL_CLAUDE["Claude Code Integration<br/>/install-claude"]
+ENDPOINTS --> PLUGINS["Plugin Management<br/>/plugins"]
+ENDPOINTS --> COLLECTIONS["Collection Management<br/>/collections"]
+ENDPOINTS --> VERIFY["Index Verification<br/>/verify,/repair"]
+ENDPOINTS --> SERVICE["Service Management<br/>/service"]
+ENDPOINTS --> DIAGNOSE["System Diagnostics<br/>/diagnose"]
+ENDPOINTS --> BACKFILL["Code Index Backfill<br/>/backfill-code-index"]
+ENDPOINTS --> LIST["Chunk Listing<br/>/list"]
+ENDPOINTS --> FILES["File Listing<br/>/files"]
+ENDPOINTS --> NODE["Symbol Node<br/>/node"]
+ENDPOINTS --> CALLERS["Callers<br/>/callers"]
+ENDPOINTS --> CALLEES["Callees<br/>/callees"]
+ENDPOINTS --> IMPACT["Impact Analysis<br/>/impact"]
+ENDPOINTS --> AFFECTED["Affected Files<br/>/affected"]
+ENDPOINTS --> UNDERSTAND["Project Understanding<br/>/understand"]
+ENDPOINTS --> ASK["Grounded Question Answering<br/>/ask"]
+ENDPOINTS --> LIST["Chunk Enumeration<br/>/list"]
+ENDPOINTS --> INDEX["Repository Indexing<br/>/index"]
+ENDPOINTS --> INDEX_DOCS["Docs Indexing<br/>/index-docs"]
+ENDPOINTS --> GENERATE_EVENT["Event Catalog<br/>/generate-event-catalog"]
+ENDPOINTS --> STATUS["System Status<br/>/status"]
+ENDPOINTS --> CONFIG["Config Management<br/>/config"]
+ENDPOINTS --> REPOS["Multi-Repo<br/>/repos"]
+ENDPOINTS --> EXPORT["Data Export<br/>/export"]
+ENDPOINTS --> IMPORT["Data Import<br/>/import"]
+ENDPOINTS --> DIFF["Git Diff Search<br/>/diff"]
+ENDPOINTS --> OVERVIEW["Codebase Overview<br/>/overview"]
+ENDPOINTS --> INSTALL_CLAUDE["Claude Code Integration<br/>/install-claude"]
+ENDPOINTS --> PLUGINS["Plugin Management<br/>/plugins"]
+ENDPOINTS --> COLLECTIONS["Collection Management<br/>/collections"]
+ENDPOINTS --> VERIFY["Index Verification<br/>/verify,/repair"]
+ENDPOINTS --> SERVICE["Service Management<br/>/service"]
+ENDPOINTS --> DIAGNOSE["System Diagnostics<br/>/diagnose"]
+ENDPOINTS --> BACKFILL["Code Index Backfill<br/>/backfill-code-index"]
+ENDPOINTS --> LIST["Chunk Listing<br/>/list"]
+ENDPOINTS --> FILES["File Listing<br/>/files"]
+ENDPOINTS --> NODE["Symbol Node<br/>/node"]
+ENDPOINTS --> CALLERS["Callers<br/>/callers"]
+ENDPOINTS --> CALLEES["Callees<br/>/callees"]
+ENDPOINTS --> IMPACT["Impact Analysis<br/>/impact"]
+ENDPOINTS --> AFFECTED["Affected Files<br/>/affected"]
+ENDPOINTS --> UNDERSTAND["Project Understanding<br/>/understand"]
+ENDPOINTS --> ASK["Grounded Question Answering<br/>/ask"]
+ENDPOINTS --> LIST["Chunk Enumeration<br/>/list"]
+ENDPOINTS --> INDEX["Repository Indexing<br/>/index"]
+ENDPOINTS --> INDEX_DOCS["Docs Indexing<br/>/index-docs"]
+ENDPOINTS --> GENERATE_EVENT["Event Catalog<br/>/generate-event-catalog"]
+ENDPOINTS --> STATUS["System Status<br/>/status"]
+ENDPOINTS --> CONFIG["Config Management<br/>/config"]
+ENDPOINTS --> REPOS["Multi-Repo<br/>/repos"]
+ENDPOINTS --> EXPORT["Data Export<br/>/export"]
+ENDPOINTS --> IMPORT["Data Import<br/>/import"]
+ENDPOINTS --> DIFF["Git Diff Search<br/>/diff"]
+ENDPOINTS --> OVERVIEW["Codebase Overview<br/>/overview"]
+ENDPOINTS --> INSTALL_CLAUDE["Claude Code Integration<br/>/install-claude"]
+ENDPOINTS --> PLUGINS["Plugin Management<br/>/plugins"]
+ENDPOINTS --> COLLECTIONS["Collection Management<br/>/collections"]
+ENDPOINTS --> VERIFY["Index Verification<br/>/verify,/repair"]
+ENDPOINTS --> SERVICE["Service Management<br/>/service"]
+ENDPOINTS --> DIAGNOSE["System Diagnostics<br/>/diagnose"]
+ENDPOINTS --> BACKFILL["Code Index Backfill<br/>/backfill-code-index"]
+ENDPOINTS --> LIST["Chunk Listing<br/>/list"]
+ENDPOINTS --> FILES["File Listing<br/>/files"]
+ENDPOINTS --> NODE["Symbol Node<br/>/node"]
+ENDPOINTS --> ......
 ```
 
 **Diagram sources**
@@ -190,7 +374,7 @@ Parameters:
 - --top-k / -k: Number of results (default: 5).
 - --no-rerank: Deprecated option (ignored).
 - --repo / -r: Restrict search to a named repository.
-- --explain: Print planner’s queries and filters.
+- --explain: Print planner's queries and filters.
 
 Behavior:
 - Requires running daemon.
@@ -251,9 +435,13 @@ Parameters:
 - --no-semantic-fallback: Never use embeddings; return only AST/exact/lexical context.
 - --json: Print machine-readable JSON.
 
+**Updated** Enhanced with two-phase blast-radius strategy and improved usage filtering.
+
 Workflow:
 - Plans search queries and filters.
-- Resolves symbols and collects definitions/usages.
+- Resolves symbols and collects definitions/usages using two-phase blast-radius strategy:
+  - Phase 1: Collect definition directories to understand target scope
+  - Phase 2: Filter usages based on directory proximity, symbol name matching, and server ranking
 - Builds exact context pack (AST/exact/lexical).
 - Optionally performs semantic fallback if exact context is thin.
 - Gathers architecture context, call trees, and documentation search results.
@@ -268,8 +456,31 @@ Expected outputs:
 - JSON output when --json is used.
 
 **Section sources**
-- [cli.py:530-937](file://src/rag/cli.py#L530-L937)
+- [cli.py:530-944](file://src/rag/cli.py#L530-L944)
 - [server.py:109-176](file://src/rag/server.py#L109-L176)
+- [repo_agent.py:200-252](file://src/rag/agents/repo_agent.py#L200-L252)
+
+### Two-Phase Blast-Radius Strategy
+The repo-agent implements a sophisticated two-phase strategy for filtering symbol usages:
+
+**Phase 1: Directory Scope Analysis**
+- Analyzes definition locations to determine target directories
+- Establishes blast-radius boundaries for relevant code areas
+
+**Phase 2: Usage Filtering**
+- Prioritizes usages in the same directory as definitions (highest priority)
+- Keeps usages whose filenames contain symbol names (medium priority)
+- Retains first N usages by server ranking (lowest priority)
+- Caps total usages at the specified maximum
+
+**Enhanced Reporting**
+- Shows both raw usage count and filtered usage count
+- Provides detailed breakdown of why each usage was included
+- Reports total usages before filtering for transparency
+
+**Section sources**
+- [repo_agent.py:200-252](file://src/rag/agents/repo_agent.py#L200-L252)
+- [cli.py:829-849](file://src/rag/cli.py#L829-L849)
 
 ### tui
 Purpose: Launch the read-only TUI dashboard against a running daemon.
@@ -322,7 +533,7 @@ Usage example:
 - rag qdrant-up
 
 Expected outputs:
-- Qdrant running at http://127.0.0.1:6333 with mounted storage.
+- Qdrant server running at http://127.0.0.1:6333 with mounted storage.
 
 **Section sources**
 - [cli.py:246-262](file://src/rag/cli.py#L246-L262)
@@ -416,8 +627,7 @@ Note: The CLI defines many additional commands for graph exploration, indexing, 
 - service install/uninstall/status: Manage launchd service on macOS.
 
 **Section sources**
-- [cli.py:939-1599](file://src/rag/cli.py#L939-L1599)
-- [cli.py:2144-2271](file://src/rag/cli.py#L2144-L2271)
+- [cli.py:946-2282](file://src/rag/cli.py#L946-2282)
 
 ## Dependency Analysis
 The CLI depends on:
@@ -458,6 +668,8 @@ CFG --> SERVER
 - Tune batch sizes with benchmark-embeddings to balance throughput and responsiveness.
 - Enable --watch only during active development to avoid unnecessary re-indexing.
 - Monitor daemon logs and collection sizes; large collections increase query latency.
+- **Updated** Leverage two-phase blast-radius strategy to reduce usage processing overhead.
+- **Updated** Monitor filtered usage counts to assess effectiveness of blast-radius filtering.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -465,7 +677,7 @@ Common issues and resolutions:
   - Start with rag start --headless or rag start --tui.
   - Verify with rag web or rag tui.
 - Unauthorized:
-  - Ensure ~/.rag/token exists and matches daemon’s expectation.
+  - Ensure ~/.rag/token exists and matches daemon's expectation.
   - Restart daemon to refresh token if needed.
 - Connection lost to daemon:
   - Check network/firewall and host/port settings.
@@ -485,10 +697,12 @@ Diagnostic command:
 
 **Section sources**
 - [config.py:35-50](file://src/rag/config.py#L35-L50)
-- [cli.py:2144-2207](file://src/rag/cli.py#L2144-L2207)
+- [cli.py:2152-2215](file://src/rag/cli.py#L2152-L2215)
 
 ## Conclusion
 The RAG CLI provides a cohesive interface to initialize, operate, and observe a supervised FastAPI daemon. By leveraging bearer-token authentication, structured configuration, and robust diagnostics, it supports efficient code search, context retrieval, and agent-driven workflows. Use the provided commands to bootstrap environments, monitor health, tune performance, and integrate with development pipelines.
+
+**Updated** Enhanced with sophisticated two-phase blast-radius strategies, improved usage filtering, comprehensive performance metrics, and Gemini 3 Flash model integration for optimal developer experience.
 
 ## Appendices
 
@@ -516,7 +730,7 @@ The RAG CLI provides a cohesive interface to initialize, operate, and observe a 
 
 ### Practical Workflows
 - Quickstart:
-  - ollama pull qwen3-embedding
+  - ollama pull gemini-2.0-flash
   - rag init .
   - rag search "auth middleware"
   - rag tui
@@ -526,8 +740,30 @@ The RAG CLI provides a cohesive interface to initialize, operate, and observe a 
 - Automation:
   - Use rag index --full periodically to maintain freshness.
   - Use rag benchmark-embeddings to tune batch sizes for CI.
+- **Updated** Performance optimization:
+  - Monitor blast-radius filtering effectiveness through usage count reporting.
+  - Use two-phase strategy to reduce processing overhead for large symbol sets.
 
 **Section sources**
 - [README.md:25-35](file://README.md#L25-L35)
 - [cli.py:302-385](file://src/rag/cli.py#L302-L385)
-- [cli.py:1374-1567](file://src/rag/cli.py#L1374-L1567)
+- [cli.py:530-944](file://src/rag/cli.py#L530-L944)
+- [config.py:121-126](file://src/rag/config.py#L121-L126)
+
+### Performance Metrics and Benchmarking
+**Updated** Enhanced metrics reporting and benchmarking capabilities:
+
+- **Token Efficiency**: Measures source token consumption for different approaches
+- **Blast Radius Analysis**: Tracks usage filtering effectiveness
+- **Latency Metrics**: Comprehensive timing breakdown for all operations
+- **Coverage Analysis**: Evaluates search coverage across different scenarios
+
+Benchmarking examples:
+- Token efficiency comparison between naive corpus and RAG approaches
+- Performance regression testing across different query types
+- Impact analysis for symbol changes and refactoring scenarios
+
+**Section sources**
+- [benchmark_efficiency.py:1-116](file://tests/eval/benchmark_efficiency.py#L1-L116)
+- [benchmark_production_scenarios.py:771-832](file://benchmark_production_scenarios.py#L771-L832)
+- [cli.py:849-854](file://src/rag/cli.py#L849-L854)

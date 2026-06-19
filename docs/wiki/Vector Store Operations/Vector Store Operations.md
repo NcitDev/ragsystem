@@ -15,6 +15,14 @@
 - [test_e2e.py](file://tests/test_e2e.py)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Complete overhaul of vector store operations documentation to align with comprehensive Qdrant integration
+- Added detailed coverage of collection management, embedding operations, search and querying, and data operations
+- Enhanced documentation with practical examples and troubleshooting guidance
+- Updated architecture diagrams to reflect current implementation patterns
+- Expanded performance considerations and scaling recommendations
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -327,8 +335,6 @@ VS --> ST["storage/db.py"]
 - Network latency: colocate services near Qdrant; use local embedding models when feasible.
 - Filtering cost: minimize complex filters; keep payload fields selective and indexed.
 
-[No sources needed since this section provides general guidance]
-
 ## Troubleshooting Guide
 Common issues and resolutions:
 - Embedding failures: inspect retry logs and backoff behavior; verify Ollama availability and model readiness.
@@ -351,8 +357,6 @@ Validation references:
 ## Conclusion
 The vector store implementation integrates chunking, embedding, and Qdrant-backed indexing with repository-scoped isolation. It supports dense embeddings via Ollama, efficient similarity search with metadata filtering, and robust export/import workflows. Proper configuration, monitoring, and operational practices ensure reliable performance and scalability.
 
-[No sources needed since this section summarizes without analyzing specific files]
-
 ## Appendices
 
 ### Practical Examples
@@ -362,13 +366,9 @@ The vector store implementation integrates chunking, embedding, and Qdrant-backe
 - Backup and restore: export vectors and metadata; restore into a new environment.
 - Migration: re-index repositories after changing vector size or distance metric.
 
-[No sources needed since this section provides general guidance]
-
 ### Scaling Considerations
 - Horizontal scaling: deploy multiple Qdrant nodes behind a load balancer; use partitioning strategies.
 - Vertical scaling: provision larger instances with sufficient CPU, memory, and disk IOPS.
 - Sharding: distribute repositories across shards to balance load.
 - Caching: cache frequent queries and embeddings where appropriate.
 - Monitoring: track latency, throughput, memory, and disk metrics; alert on anomalies.
-
-[No sources needed since this section provides general guidance]
