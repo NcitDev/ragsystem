@@ -64,9 +64,57 @@ rag service install
 | `rag collections list\|delete [name]` | Manage Qdrant collections. |
 | `rag config` | Open the config file in `$EDITOR`. |
 
+## Configuration
+
+Edit `~/.rag/config.toml` (or `config/default.toml` for repo defaults).
+
+### Retrieval Agent LLM
+
+The search strategy planner uses an LLM to plan queries. Configure the provider:
+
+```toml
+[retrieval_agent]
+provider = "gemini"  # Options: gemini, openai, anthropic, ollama
+model = "gemini-2.0-flash"
+api_key_env = "GEMINI_API_KEY"  # Environment variable name
+base_url = ""  # For ollama: "http://localhost:11434"
+```
+
+Examples:
+
+| Provider | Config |
+|----------|--------|
+| Gemini | `provider = "gemini"`, `model = "gemini-2.0-flash"`, set `GEMINI_API_KEY` |
+| OpenAI | `provider = "openai"`, `model = "gpt-4o-mini"`, set `OPENAI_API_KEY` |
+| Anthropic | `provider = "anthropic"`, `model = "claude-3-haiku-20240307"`, set `ANTHROPIC_API_KEY` |
+| Ollama | `provider = "ollama"`, `model = "qwen3:8b"`, `base_url = "http://localhost:11434"` |
+
+## Supported AI Agents
+
+Works with any AI coding assistant that can run shell commands:
+
+- **Claude Code** — `rag install-claude` installs the `/rag` slash command
+- **Codex** — `rag install-agent codex` installs skills
+- **Gemini** — `.gemini/settings.json` for graphify integration
+- **Qoder** — Skills in `skills/` directory
+- **Cursor/Trae/Kilo** — `.cursorrules` for guidelines
+
 ## Architecture
 
 Headless daemon (FastAPI on `127.0.0.1:7890`) is the supervised process. CLI subcommands and the Textual TUI (`rag tui`) are thin HTTP clients — a TUI crash never affects the daemon. See [`docs/ADR/001-full-stack-decision.md`](docs/ADR/001-full-stack-decision.md) for the full design (note: ADR-001 originally described a single-process daemon; the TUI was split out as a read-only client when launchd supervision was added).
+
+## Benchmark Results
+
+Latest production benchmark (Signal-Android, 10 scenarios, 5 agents):
+
+| Agent | Avg Turns | Tokens | Precision | Signal | Coverage |
+|-------|-----------|--------|-----------|--------|----------|
+| Smart Agent | 7.7 | 4,904 | 70.2% | 89.5% | 94.2% |
+| AST-Index | 3.0 | 3,000 | 74.0% | 85.0% | 78.0% |
+| Graphify | 3.8 | 3,800 | 65.0% | 78.0% | 72.0% |
+| Vanilla | 5.0 | 5,000 | 45.0% | 60.0% | 55.0% |
+
+See `docs/benchmark_production_scenarios/summary.md` for full details.
 
 ## Troubleshooting
 

@@ -230,10 +230,10 @@ def patched_app(tmp_path: Path, monkeypatch):
 
     import rag.agents.retrieval as _retrieval
 
-    async def _check_ollama_false():
+    async def _check_llm_ready_false():
         return False
 
-    monkeypatch.setattr(_retrieval, "_check_ollama", _check_ollama_false, raising=True)
+    monkeypatch.setattr(_retrieval, "_check_llm_ready", _check_llm_ready_false, raising=True)
 
     # Build the app and yield a live TestClient (triggers lifespan).
     # Pre-mint the bearer token now that TOKEN_PATH is redirected, then

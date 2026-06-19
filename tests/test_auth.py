@@ -71,10 +71,10 @@ def patched_unauth_app(tmp_path: Path, monkeypatch):
 
     import rag.agents.retrieval as _retrieval
 
-    async def _check_ollama_false():
+    async def _check_llm_ready_false():
         return False
 
-    monkeypatch.setattr(_retrieval, "_check_ollama", _check_ollama_false, raising=True)
+    monkeypatch.setattr(_retrieval, "_check_llm_ready", _check_llm_ready_false, raising=True)
 
     token = _config.get_or_create_token()
     app = _server_mod.create_app()

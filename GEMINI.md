@@ -1,3 +1,40 @@
+## RAG System
+
+Standalone code-search RAG: headless FastAPI daemon with embedded Qdrant, tree-sitter chunking, and configurable LLM providers.
+
+### Commands
+
+```bash
+# Start daemon (required for most commands)
+uv run rag start
+
+# Index a repo
+uv run rag index [path] --name <repo-name>
+
+# Get code context for a task
+uv run rag repo-agent --repo <repo-name> --json "<task>"
+
+# Symbol lookups
+uv run rag node <Symbol> --repo <repo-name> --json
+uv run rag callers <Symbol> --repo <repo-name> --json
+uv run rag impact <Symbol> --repo <repo-name> --json
+```
+
+### Configuration
+
+Edit `~/.rag/config.toml` or `config/default.toml`:
+
+```toml
+[retrieval_agent]
+provider = "gemini"  # gemini, openai, anthropic, ollama
+model = "gemini-2.0-flash"
+api_key_env = "GEMINI_API_KEY"
+```
+
+### Repo Names
+
+- Signal-Android: `signal` (not `signal-android`)
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.

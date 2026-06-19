@@ -115,6 +115,18 @@ class LSPSettings(BaseModel):
     timeout: int = Field(default=5000, ge=1000, le=60000)
 
 
+class RetrievalAgentSettings(BaseModel):
+    """LLM provider for the Agno search-strategy planner."""
+
+    provider: str = Field(
+        default="gemini",
+        pattern=r"^(gemini|openai|anthropic|ollama)$",
+    )
+    model: str = "gemini-2.0-flash"
+    api_key_env: str = "GEMINI_API_KEY"
+    base_url: str = ""  # For ollama or custom endpoints
+
+
 class Settings(BaseModel):
     # Pydantic by default rejects unknown top-level keys. After the
     # FastEmbed nuke, ``[reranker]`` and ``[sparse]`` sections may still
@@ -128,6 +140,7 @@ class Settings(BaseModel):
     index: IndexSettings = IndexSettings()
     llm: LLMSettings = LLMSettings()
     lsp: LSPSettings = LSPSettings()
+    retrieval_agent: RetrievalAgentSettings = RetrievalAgentSettings()
 
 
 def _load_toml(path: Path) -> dict[str, Any]:

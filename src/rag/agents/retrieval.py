@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 import structlog
 
-from rag.config import get_settings
+from rag.config import get_settings, RetrievalAgentSettings
 from rag.core.chunker import ChunkType, supported_languages
 
 logger = structlog.get_logger()
@@ -98,13 +98,64 @@ _agent = None
 _llm_available: bool | None = None
 
 
+_RETRIEVAL_INSTRUCTIONS = [
+    "You are a code search strategy planner.",
+    "Given a user query about code, output a JSON search plan.",
+    "The plan must have these fields:",
+    '  - "queries": list of search queries (expanded with synonyms)',
+    '  - "filters": dict of Qdrant payload filters (e.g. {"language": "python", "patterns": "repository"})',
+    '  - "strategy": one of "hybrid", "filtered", "graph_walk", "aggregate"',
+    '  - "top_k": number of results (default 20)',
+    "",
+    "Strategy guide:",
+    '  - "lod_drill": DEFAULT — hierarchical drill-down (module → file → chunk).',
+    '       Best for most queries. Cheaper than flat search; reads ~100-token',
+    '       summaries before fetching full code.',
+    '  - "hybrid": flat vector search across all chunks (no drill-down).',
+    '  - "filtered": when user asks for specific patterns/language/complexity',
+    '  - "graph_walk": when user asks about call chains or relationships',
+    '  - "aggregate": when user asks about codebase-level stats',
+    '  - "global": when user asks for overview/summary of a module or architecture',
+    '  - "naive": when user wants simple vector search without reranking',
+    "",
+    "Available filter fields: language, chunk_type, patterns, domains, layers,",
+    "  is_async, complexity_cyclomatic, nesting_depth, has_docstring, decorator_tags",
+    "",
+    "Output ONLY valid JSON, no markdown, no explanation.",
+]
+
+
+def _build_model(cfg: RetrievalAgentSettings):
+    """Instantiate the Agno model for the configured provider."""
+    provider = cfg.provider
+    if provider == "gemini":
+        from agno.models.google import Gemini
+        return Gemini(id=cfg.model, api_key=os.environ.get(cfg.api_key_env))
+    elif provider == "openai":
+        from agno.models.openai import OpenAIChat
+        return OpenAIChat(id=cfg.model, api_key=os.environ.get(cfg.api_key_env))
+    elif provider == "anthropic":
+        from agno.models.anthropic import Claude
+        return Claude(id=cfg.model, api_key=os.environ.get(cfg.api_key_env))
+    elif provider == "ollama":
+        from agno.models.ollama import Ollama
+        return Ollama(id=cfg.model, host=cfg.base_url or "http://localhost:11434")
+    else:
+        raise ValueError(f"Unknown retrieval_agent provider: {provider}")
+
+
 async def _check_llm_ready() -> bool:
-    """Check if Gemini API Key is available."""
+    """Check if the configured LLM provider is available."""
     global _llm_available
     if _llm_available is not None:
         return _llm_available
 
-    _llm_available = bool(os.environ.get("GEMINI_API_KEY"))
+    cfg = get_settings().retrieval_agent
+    if cfg.provider == "ollama":
+        # Ollama is always "available" if configured — it's local.
+        _llm_available = True
+    else:
+        _llm_available = bool(os.environ.get(cfg.api_key_env))
     return _llm_available
 
 
@@ -115,42 +166,16 @@ def _get_agent():
         return _agent
 
     from agno.agent import Agent
-    from agno.models.google import Gemini
 
+    cfg = get_settings().retrieval_agent
+    model = _build_model(cfg)
     _agent = Agent(
         name="RAG Retrieval Agent",
-        model=Gemini(
-            id="gemini-3-flash-preview",
-            api_key=os.environ.get("GEMINI_API_KEY"),
-        ),
-        instructions=[
-            "You are a code search strategy planner.",
-            "Given a user query about code, output a JSON search plan.",
-            "The plan must have these fields:",
-            '  - "queries": list of search queries (expanded with synonyms)',
-            '  - "filters": dict of Qdrant payload filters (e.g. {"language": "python", "patterns": "repository"})',
-            '  - "strategy": one of "hybrid", "filtered", "graph_walk", "aggregate"',
-            '  - "top_k": number of results (default 20)',
-            "",
-            "Strategy guide:",
-            '  - "lod_drill": DEFAULT — hierarchical drill-down (module → file → chunk).',
-            '       Best for most queries. Cheaper than flat search; reads ~100-token',
-            '       summaries before fetching full code.',
-            '  - "hybrid": flat vector search across all chunks (no drill-down).',
-            '  - "filtered": when user asks for specific patterns/language/complexity',
-            '  - "graph_walk": when user asks about call chains or relationships',
-            '  - "aggregate": when user asks about codebase-level stats',
-            '  - "global": when user asks for overview/summary of a module or architecture',
-            '  - "naive": when user wants simple vector search without reranking',
-            "",
-            "Available filter fields: language, chunk_type, patterns, domains, layers,",
-            "  is_async, complexity_cyclomatic, nesting_depth, has_docstring, decorator_tags",
-            "",
-            "Output ONLY valid JSON, no markdown, no explanation.",
-        ],
+        model=model,
+        instructions=_RETRIEVAL_INSTRUCTIONS,
         markdown=False,
     )
-    logger.info("agno_agent_initialized", model="gemini-2.5-flash")
+    logger.info("agno_agent_initialized", provider=cfg.provider, model=cfg.model)
     return _agent
 
 

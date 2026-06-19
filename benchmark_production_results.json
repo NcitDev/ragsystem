@@ -17,7 +17,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 60.8,
+          "latency_ms": 81.2,
           "error": ""
         },
         "AST-Index": {
@@ -33,12 +33,12 @@
           "precision_pct": 37.5,
           "signal_pct": 62.5,
           "coverage_pct": 100.0,
-          "latency_ms": 182.5,
+          "latency_ms": 191.7,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 17209,
+          "tokens": 16453,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
@@ -47,7 +47,7 @@
           "precision_pct": 20.0,
           "signal_pct": 50.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 4807.9,
+          "latency_ms": 5665.2,
           "error": ""
         },
         "Naive Agent": {
@@ -61,12 +61,12 @@
           "precision_pct": 7.3,
           "signal_pct": 7.3,
           "coverage_pct": 100.0,
-          "latency_ms": 643.1,
+          "latency_ms": 1168.3,
           "error": ""
         },
         "Vanilla (rg)": {
           "turns": 12,
-          "tokens": 32985,
+          "tokens": 30093,
           "tool_calls": {
             "rg": 2,
             "read_file": 10
@@ -75,7 +75,7 @@
           "precision_pct": 10.0,
           "signal_pct": 30.0,
           "coverage_pct": 33.33333333333333,
-          "latency_ms": 165.3,
+          "latency_ms": 368.4,
           "error": ""
         }
       }
@@ -97,7 +97,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 30.8,
+          "latency_ms": 31.3,
           "error": ""
         },
         "AST-Index": {
@@ -113,12 +113,12 @@
           "precision_pct": 20.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 78.1,
+          "latency_ms": 70.9,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 6953,
+          "tokens": 9809,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
@@ -127,7 +127,7 @@
           "precision_pct": 20.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 3782.9,
+          "latency_ms": 4344.8,
           "error": ""
         },
         "Naive Agent": {
@@ -141,7 +141,7 @@
           "precision_pct": 7.1,
           "signal_pct": 7.1,
           "coverage_pct": 100.0,
-          "latency_ms": 603.7,
+          "latency_ms": 613.0,
           "error": ""
         },
         "Vanilla (rg)": {
@@ -155,7 +155,7 @@
           "precision_pct": 0.0,
           "signal_pct": 50.0,
           "coverage_pct": 0.0,
-          "latency_ms": 124.0,
+          "latency_ms": 127.5,
           "error": ""
         }
       }
@@ -177,7 +177,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 54.5,
+          "latency_ms": 45.5,
           "error": ""
         },
         "AST-Index": {
@@ -193,26 +193,26 @@
           "precision_pct": 30.0,
           "signal_pct": 60.0,
           "coverage_pct": 100.0,
-          "latency_ms": 161.1,
+          "latency_ms": 129.0,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 19158,
+          "tokens": 16949,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
           },
           "files_read": 10,
           "precision_pct": 30.0,
-          "signal_pct": 60.0,
+          "signal_pct": 40.0,
           "coverage_pct": 100.0,
-          "latency_ms": 4427.4,
+          "latency_ms": 4616.0,
           "error": ""
         },
         "Naive Agent": {
           "turns": 43,
-          "tokens": 14919,
+          "tokens": 15212,
           "tool_calls": {
             "context_pack": 1,
             "read_file": 42
@@ -221,7 +221,7 @@
           "precision_pct": 7.1,
           "signal_pct": 7.1,
           "coverage_pct": 100.0,
-          "latency_ms": 753.5,
+          "latency_ms": 1169.6,
           "error": ""
         },
         "Vanilla (rg)": {
@@ -235,7 +235,7 @@
           "precision_pct": 20.0,
           "signal_pct": 100.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 116.0,
+          "latency_ms": 127.7,
           "error": ""
         }
       }
@@ -257,7 +257,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 30.4,
+          "latency_ms": 39.0,
           "error": ""
         },
         "AST-Index": {
@@ -273,12 +273,12 @@
           "precision_pct": 20.0,
           "signal_pct": 70.0,
           "coverage_pct": 100.0,
-          "latency_ms": 105.5,
+          "latency_ms": 120.0,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 10611,
+          "tokens": 17007,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
@@ -287,12 +287,12 @@
           "precision_pct": 10.0,
           "signal_pct": 10.0,
           "coverage_pct": 50.0,
-          "latency_ms": 4559.5,
+          "latency_ms": 5076.2,
           "error": ""
         },
         "Naive Agent": {
           "turns": 41,
-          "tokens": 10399,
+          "tokens": 10487,
           "tool_calls": {
             "context_pack": 1,
             "read_file": 40
@@ -301,7 +301,7 @@
           "precision_pct": 5.0,
           "signal_pct": 10.0,
           "coverage_pct": 100.0,
-          "latency_ms": 616.2,
+          "latency_ms": 888.0,
           "error": ""
         },
         "Vanilla (rg)": {
@@ -315,7 +315,7 @@
           "precision_pct": 10.0,
           "signal_pct": 50.0,
           "coverage_pct": 50.0,
-          "latency_ms": 136.7,
+          "latency_ms": 124.0,
           "error": ""
         }
       }
@@ -353,21 +353,21 @@
           "precision_pct": 33.3,
           "signal_pct": 66.7,
           "coverage_pct": 33.33333333333333,
-          "latency_ms": 120.5,
+          "latency_ms": 111.9,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 7228,
+          "tokens": 6558,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
           },
           "files_read": 10,
-          "precision_pct": 0.0,
-          "signal_pct": 10.0,
-          "coverage_pct": 0.0,
-          "latency_ms": 4191.1,
+          "precision_pct": 10.0,
+          "signal_pct": 20.0,
+          "coverage_pct": 33.33333333333333,
+          "latency_ms": 5586.5,
           "error": ""
         },
         "Naive Agent": {
@@ -381,7 +381,7 @@
           "precision_pct": 5.1,
           "signal_pct": 5.1,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 721.4,
+          "latency_ms": 833.1,
           "error": ""
         },
         "Vanilla (rg)": {
@@ -395,7 +395,7 @@
           "precision_pct": 50.0,
           "signal_pct": 50.0,
           "coverage_pct": 33.33333333333333,
-          "latency_ms": 126.5,
+          "latency_ms": 111.2,
           "error": ""
         }
       }
@@ -417,7 +417,7 @@
           "precision_pct": 23.1,
           "signal_pct": 61.5,
           "coverage_pct": 75.0,
-          "latency_ms": 37.9,
+          "latency_ms": 41.9,
           "error": ""
         },
         "AST-Index": {
@@ -433,21 +433,21 @@
           "precision_pct": 10.0,
           "signal_pct": 70.0,
           "coverage_pct": 25.0,
-          "latency_ms": 45.9,
+          "latency_ms": 54.9,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 19843,
+          "tokens": 16400,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
           },
           "files_read": 10,
           "precision_pct": 0.0,
-          "signal_pct": 80.0,
+          "signal_pct": 100.0,
           "coverage_pct": 0.0,
-          "latency_ms": 4283.3,
+          "latency_ms": 6373.4,
           "error": ""
         },
         "Naive Agent": {
@@ -461,7 +461,7 @@
           "precision_pct": 7.7,
           "signal_pct": 7.7,
           "coverage_pct": 75.0,
-          "latency_ms": 8496.6,
+          "latency_ms": 9066.1,
           "error": ""
         },
         "Vanilla (rg)": {
@@ -475,7 +475,7 @@
           "precision_pct": 20.0,
           "signal_pct": 100.0,
           "coverage_pct": 50.0,
-          "latency_ms": 76.0,
+          "latency_ms": 87.1,
           "error": ""
         }
       }
@@ -497,7 +497,7 @@
           "precision_pct": 17.6,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 32.6,
+          "latency_ms": 31.9,
           "error": ""
         },
         "AST-Index": {
@@ -513,12 +513,12 @@
           "precision_pct": 20.0,
           "signal_pct": 100.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 71.1,
+          "latency_ms": 66.7,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 6953,
+          "tokens": 9809,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
@@ -527,12 +527,12 @@
           "precision_pct": 20.0,
           "signal_pct": 100.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 4514.4,
+          "latency_ms": 4816.2,
           "error": ""
         },
         "Naive Agent": {
           "turns": 37,
-          "tokens": 13017,
+          "tokens": 12419,
           "tool_calls": {
             "context_pack": 1,
             "read_file": 36
@@ -541,21 +541,21 @@
           "precision_pct": 8.3,
           "signal_pct": 27.8,
           "coverage_pct": 100.0,
-          "latency_ms": 881.6,
+          "latency_ms": 958.2,
           "error": ""
         },
         "Vanilla (rg)": {
           "turns": 12,
-          "tokens": 21486,
+          "tokens": 6458,
           "tool_calls": {
             "rg": 2,
             "read_file": 10
           },
           "files_read": 10,
           "precision_pct": 0.0,
-          "signal_pct": 50.0,
+          "signal_pct": 100.0,
           "coverage_pct": 0.0,
-          "latency_ms": 154.4,
+          "latency_ms": 129.7,
           "error": ""
         }
       }
@@ -577,12 +577,12 @@
           "precision_pct": 20.0,
           "signal_pct": 33.3,
           "coverage_pct": 100.0,
-          "latency_ms": 34.0,
+          "latency_ms": 32.7,
           "error": ""
         },
         "AST-Index": {
           "turns": 13,
-          "tokens": 31618,
+          "tokens": 32070,
           "tool_calls": {
             "ast-index:symbol": 1,
             "ast-index:usages": 1,
@@ -593,40 +593,40 @@
           "precision_pct": 10.0,
           "signal_pct": 30.0,
           "coverage_pct": 33.33333333333333,
-          "latency_ms": 53.6,
+          "latency_ms": 47.9,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 31411,
+          "tokens": 20014,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
           },
           "files_read": 10,
           "precision_pct": 10.0,
-          "signal_pct": 60.0,
+          "signal_pct": 50.0,
           "coverage_pct": 33.33333333333333,
-          "latency_ms": 4664.6,
+          "latency_ms": 5449.2,
           "error": ""
         },
         "Naive Agent": {
-          "turns": 40,
-          "tokens": 20273,
+          "turns": 39,
+          "tokens": 20126,
           "tool_calls": {
             "context_pack": 1,
-            "read_file": 39
+            "read_file": 38
           },
-          "files_read": 39,
-          "precision_pct": 7.7,
-          "signal_pct": 15.4,
+          "files_read": 38,
+          "precision_pct": 7.9,
+          "signal_pct": 15.8,
           "coverage_pct": 100.0,
-          "latency_ms": 604.0,
+          "latency_ms": 850.2,
           "error": ""
         },
         "Vanilla (rg)": {
           "turns": 12,
-          "tokens": 32462,
+          "tokens": 27695,
           "tool_calls": {
             "rg": 2,
             "read_file": 10
@@ -635,7 +635,7 @@
           "precision_pct": 0.0,
           "signal_pct": 10.0,
           "coverage_pct": 0.0,
-          "latency_ms": 133.4,
+          "latency_ms": 163.0,
           "error": ""
         }
       }
@@ -658,7 +658,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 447.3,
+          "latency_ms": 464.4,
           "error": ""
         },
         "AST-Index": {
@@ -674,12 +674,12 @@
           "precision_pct": 20.0,
           "signal_pct": 20.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 110.2,
+          "latency_ms": 111.8,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 25634,
+          "tokens": 14158,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
@@ -688,7 +688,7 @@
           "precision_pct": 10.0,
           "signal_pct": 10.0,
           "coverage_pct": 33.33333333333333,
-          "latency_ms": 4476.8,
+          "latency_ms": 4799.3,
           "error": ""
         },
         "Naive Agent": {
@@ -702,7 +702,7 @@
           "precision_pct": 9.1,
           "signal_pct": 9.1,
           "coverage_pct": 100.0,
-          "latency_ms": 945.5,
+          "latency_ms": 757.7,
           "error": ""
         },
         "Vanilla (rg)": {
@@ -716,7 +716,7 @@
           "precision_pct": 20.0,
           "signal_pct": 20.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 193.3,
+          "latency_ms": 181.3,
           "error": ""
         }
       }
@@ -739,7 +739,7 @@
           "precision_pct": 75.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 468.1,
+          "latency_ms": 448.9,
           "error": ""
         },
         "AST-Index": {
@@ -755,21 +755,21 @@
           "precision_pct": 30.0,
           "signal_pct": 70.0,
           "coverage_pct": 100.0,
-          "latency_ms": 189.6,
+          "latency_ms": 193.7,
           "error": ""
         },
         "Graphify": {
           "turns": 11,
-          "tokens": 24421,
+          "tokens": 25421,
           "tool_calls": {
             "graphify:parse": 1,
             "read_file": 10
           },
           "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 40.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 4604.8,
+          "precision_pct": 20.0,
+          "signal_pct": 50.0,
+          "coverage_pct": 66.66666666666666,
+          "latency_ms": 4693.5,
           "error": ""
         },
         "Naive Agent": {
@@ -783,12 +783,12 @@
           "precision_pct": 8.8,
           "signal_pct": 8.8,
           "coverage_pct": 100.0,
-          "latency_ms": 551.1,
+          "latency_ms": 590.1,
           "error": ""
         },
         "Vanilla (rg)": {
           "turns": 13,
-          "tokens": 23502,
+          "tokens": 23198,
           "tool_calls": {
             "rg": 3,
             "read_file": 10
@@ -797,7 +797,7 @@
           "precision_pct": 20.0,
           "signal_pct": 40.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 188.6,
+          "latency_ms": 222.4,
           "error": ""
         }
       }

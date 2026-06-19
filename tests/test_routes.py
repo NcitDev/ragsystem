@@ -104,7 +104,7 @@ def app_ctx(tmp_path: Path, monkeypatch):
     async def _check_false():
         return False
 
-    monkeypatch.setattr(_retrieval, "_check_ollama", _check_false, raising=True)
+    monkeypatch.setattr(_retrieval, "_check_llm_ready", _check_false, raising=True)
 
     token = _config.get_or_create_token()
     app = _server.create_app()
@@ -324,7 +324,7 @@ def test_context_pack_uses_ast_index_for_named_repo(app_ctx, monkeypatch):
     monkeypatch.setattr(
         _ast_index,
         "retrieve_context",
-        lambda repo_path, query, limit=12: [
+        lambda repo_path, query, limit=12, include_usages=True: [
             {
                 "chunk_id": "ast:Checkout.kt:10:completePayment",
                 "file_path": "checkout/Checkout.kt",
