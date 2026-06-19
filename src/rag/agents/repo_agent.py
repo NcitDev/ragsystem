@@ -200,10 +200,16 @@ def filter_resolve_usages(
 ) -> dict[str, Any]:
     """Filter /resolve usages to keep only the most relevant ones.
 
-    Two-phase blast-radius strategy: read definitions to learn the target
-    directory, then keep usages that are (1) in the same directory as a
-    definition, (2) have a symbol name in the filename, or (3) are among
-    the first N usages by server rank.  Caps total at *max_usages*.
+    Three-phase blast-radius strategy:
+      Phase 0 (structural): usages whose filename or why_included signals
+        inheritance/implementation (extends, implements, subclass).
+      Phase 1 (same-dir): usages in the same directory as a definition.
+      Phase 2 (name-match): symbol name appears in the filename.
+      Phase 3 (server-rank): first N usages by server rank.
+
+    A per-directory cap (max 3 files) prevents hub symbols like Recipient
+    or Job from being dominated by one heavily-coupled package.
+    Caps total at *max_usages*.
 
     Returns a shallow copy of *resolve_data* with the ``usages`` list
     trimmed and a ``total_usages_raw`` field added for reporting.
@@ -216,7 +222,7 @@ def filter_resolve_usages(
         # Already within budget — nothing to filter.
         return {**resolve_data, "total_usages_raw": len(raw_usages)}
 
-    # Phase 1: collect definition directories.
+    # Collect definition directories.
     def_dirs: set[str] = set()
     for item in resolve_data.get("definitions") or []:
         fp = item.get("file_path", "")
@@ -224,26 +230,53 @@ def filter_resolve_usages(
             def_dirs.add(str(Path(fp).parent))
 
     syms_lower = {s.lower() for s in symbols}
+    _STRUCTURAL_SIGNALS = frozenset({"extends", "implements", "subclass", "inherits"})
 
-    # Phase 2: score each usage and keep the best max_usages.
-    scored: list[tuple[int, dict[str, Any]]] = []  # (priority, item)
+    # Score each usage.
+    scored: list[tuple[int, int, dict[str, Any]]] = []  # (priority, idx, item)
     for idx, item in enumerate(raw_usages):
         fp = item.get("file_path", "")
         if not fp:
             continue
         stem = Path(fp).stem.lower()
         fp_dir = str(Path(fp).parent)
-        priority = 999  # default: low
-        if fp_dir in def_dirs:
-            priority = 0  # same directory as definition — highest
-        elif any(s in stem for s in syms_lower):
-            priority = 1  # symbol name in filename
-        elif idx < 10:
-            priority = 2  # first 10 by server rank
-        scored.append((priority, item))
+        why = str(item.get("why_included", "")).lower()
 
-    scored.sort(key=lambda t: (t[0],))
-    kept = [item for _, item in scored[:max_usages]]
+        is_structural = any(sig in why for sig in _STRUCTURAL_SIGNALS) or any(
+            sig in stem for sig in _STRUCTURAL_SIGNALS
+        )
+
+        if is_structural:
+            priority = 0   # structural callers (subclasses/implementors) — highest
+        elif fp_dir in def_dirs:
+            priority = 1   # same directory as definition
+        elif any(s in stem for s in syms_lower):
+            priority = 2   # symbol name in filename
+        elif idx < 10:
+            priority = 3   # first 10 by server rank
+        else:
+            priority = 999
+
+        scored.append((priority, idx, item))
+
+    scored.sort(key=lambda t: (t[0], t[1]))
+
+    # Per-directory cap: max 3 files from the same directory to avoid
+    # hub-symbol noise (Recipient, Job called from hundreds of files in
+    # the same package).
+    from collections import Counter
+    dir_counts: Counter[str] = Counter()
+    kept: list[dict[str, Any]] = []
+    for priority, _, item in scored:
+        fp = item.get("file_path", "")
+        fp_dir = str(Path(fp).parent)
+        # Structural hits bypass the directory cap — they are always relevant.
+        if priority > 0 and dir_counts[fp_dir] >= 3:
+            continue
+        dir_counts[fp_dir] += 1
+        kept.append(item)
+        if len(kept) >= max_usages:
+            break
 
     return {
         **resolve_data,

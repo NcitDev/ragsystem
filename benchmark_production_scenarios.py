@@ -377,7 +377,6 @@ def run_smart_agent(sc: Scenario, metrics: AgentMetrics) -> None:
                 fp, code = item.get("file_path", ""), item.get("code", "")
                 if fp and code:
                     metrics.record_file_read(fp, code)
-
     elif sc.tool_path == "resolve_usages":
         # /resolve TWO-PHASE: definitions first, then selective usages
         body = _post("/resolve", {
@@ -395,27 +394,53 @@ def run_smart_agent(sc: Scenario, metrics: AgentMetrics) -> None:
                     metrics.record_file_read(fp, code)
                     def_dirs.add(str(Path(fp).parent))
 
-        # Phase 2: Filter usages by relevance, read max 15
+        # Phase 2: Filter usages — structural first, then dir/name/rank,
+        # with a per-directory cap of 3 to prevent hub-symbol noise.
         if body:
+            _STRUCTURAL = frozenset({"extends", "implements", "subclass", "inherits"})
             syms_lower = {s.lower() for s in sc.symbols}
             usages = body.get("usages") or []
-            filtered: list[tuple[str, str]] = []
-            for item in usages:
+
+            scored: list[tuple[int, int, str, str]] = []
+            for idx, item in enumerate(usages):
                 fp, code = item.get("file_path", ""), item.get("code", "")
                 if not fp or not code:
                     continue
                 stem = Path(fp).stem.lower()
                 fp_dir = str(Path(fp).parent)
-                # Relevance: same dir as def, symbol in filename, or first 10
-                if (fp_dir in def_dirs
-                        or any(s in stem for s in syms_lower)
-                        or len(filtered) < 10):
-                    filtered.append((fp, code))
-                    if len(filtered) >= 15:
-                        break
+                why = str(item.get("why_included", "")).lower()
+                is_structural = any(s in why for s in _STRUCTURAL) or any(
+                    s in stem for s in _STRUCTURAL
+                )
+                if is_structural:
+                    priority = 0
+                elif fp_dir in def_dirs:
+                    priority = 1
+                elif any(s in stem for s in syms_lower):
+                    priority = 2
+                elif idx < 10:
+                    priority = 3
+                else:
+                    priority = 999
+                scored.append((priority, idx, fp, code))
+
+            scored.sort(key=lambda t: (t[0], t[1]))
+
+            from collections import Counter
+            dir_counts: Counter[str] = Counter()
+            filtered: list[tuple[str, str]] = []
+            for priority, _, fp, code in scored:
+                fp_dir = str(Path(fp).parent)
+                if priority > 0 and dir_counts[fp_dir] >= 3:
+                    continue
+                dir_counts[fp_dir] += 1
+                filtered.append((fp, code))
+                if len(filtered) >= 15:
+                    break
 
             for fp, code in filtered:
                 metrics.record_file_read(fp, code)
+
 
     elif sc.tool_path == "context_pack_then_resolve":
         # /context-pack (no semantic) to discover, then /resolve for exact defs
@@ -460,44 +485,7 @@ def run_smart_agent(sc: Scenario, metrics: AgentMetrics) -> None:
         _iterative_read(metrics, missing, sc.golden_files, sc.symbols)
 
 
-# ---------------------------------------------------------------------------
-# Agent 2: Naive Agent (/context-pack only, semantic ON — the old broken way)
-# ---------------------------------------------------------------------------
 
-def run_naive_agent(sc: Scenario, metrics: AgentMetrics) -> None:
-    token = _get_rag_token()
-    if not token:
-        metrics.error = "No RAG token"
-        return
-
-    payload = json.dumps({
-        "query": sc.question, "repo": REPO_NAME,
-        "max_slices": 50, "max_source_tokens": 100000,
-        "use_ast_index": True, "include_semantic": True,
-    }).encode()
-
-    req = urllib.request.Request(
-        f"{RAG_URL}/context-pack", data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        method="POST",
-    )
-    metrics.record_tool("context_pack")
-
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = json.loads(resp.read().decode())
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-        metrics.error = f"context-pack: {exc}"
-        return
-
-    for sl in (body.get("slices") or []):
-        fp, code = sl.get("file_path", ""), sl.get("code", "")
-        if fp and code:
-            metrics.record_file_read(fp, code)
-
-    _, missing = _golden_matches(metrics.files_read, sc.golden_files)
-    if missing:
-        _iterative_read(metrics, missing, sc.golden_files, sc.symbols)
 
 
 # ---------------------------------------------------------------------------
@@ -679,14 +667,13 @@ AGENTS = [
     ("Smart Agent", run_smart_agent),
     ("AST-Index", run_ast_index),
     ("Graphify", run_graphify),
-    ("Naive Agent", run_naive_agent),
     ("Vanilla (rg)", run_vanilla),
 ]
 
 
 def main() -> None:
     print("=" * 78)
-    print("  BENCHMARK: Production Scenarios — Smart Agent vs All Tools")
+    print("  BENCHMARK: Production Scenarios — Smart Agent vs AST-Index vs Graphify vs Vanilla")
     print(f"  Repo: {PROJECT_ROOT}")
     print(f"  Scenarios: {len(SCENARIOS)}")
     print("=" * 78)
@@ -822,7 +809,7 @@ def _generate_reports(
         lines.append(f"**Tool path:** `{sc_data['tool_path']}`\n")
         lines.append("| Agent | Turns | Tokens | Precision | Signal% | Coverage | Latency |")
         lines.append("|---|---:|---:|---:|---:|---:|---:|")
-        for agent_name in ["Smart Agent", "AST-Index", "Graphify", "Naive Agent", "Vanilla (rg)"]:
+        for agent_name, _ in AGENTS:
             a = sc_data["agents"][agent_name]
             lines.append(
                 f"| {agent_name} | {a['turns']} | {a['tokens']:,} | "
@@ -838,7 +825,7 @@ def _generate_reports(
         lines.append(f"### {cat.upper()} ({len(cat_data)} scenarios)\n")
         lines.append("| Agent | Avg Tokens | Avg Precision | Avg Coverage |")
         lines.append("|---|---:|---:|---:|")
-        for agent_name in ["Smart Agent", "AST-Index", "Graphify", "Naive Agent", "Vanilla (rg)"]:
+        for agent_name, _ in AGENTS:
             vals = [s["agents"][agent_name] for s in cat_data]
             avg_tok = sum(v["tokens"] for v in vals) / len(vals)
             avg_prec = sum(v["precision_pct"] for v in vals) / len(vals)

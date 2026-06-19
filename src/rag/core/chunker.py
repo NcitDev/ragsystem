@@ -183,12 +183,19 @@ def _detect_kotlin_java_coroutines(content: str, language: str) -> dict[str, Any
         # Interface decl
         if head.lstrip().startswith("interface ") or "\ninterface " in head:
             meta["is_interface"] = "true"
+        # Abstract class
+        if "abstract class " in head:
+            meta["is_abstract"] = "true"
         # Composable function (Jetpack Compose)
         if "@Composable" in cleaned:
             meta["is_composable"] = "true"
         # Hilt/Dagger module
         if "@Module" in cleaned or "@HiltViewModel" in cleaned or "@AndroidEntryPoint" in cleaned:
             meta["is_di_component"] = "true"
+        # Inheritance: class Foo : Bar, Baz(...) — extract superclass + interfaces
+        inherits = _extract_kotlin_inherits_from(head)
+        if inherits:
+            meta["inherits_from"] = inherits
 
     elif language == "java":
         if any(b in cleaned for b in _JAVA_ASYNC_BUILDERS):
@@ -208,8 +215,61 @@ def _detect_kotlin_java_coroutines(content: str, language: str) -> dict[str, Any
         # JUnit test class signal
         if "@Test" in cleaned or "extends TestCase" in cleaned:
             meta["has_unit_test"] = "true"
+        # Inheritance: class Foo extends Bar implements Baz
+        inherits = _extract_java_inherits_from(head)
+        if inherits:
+            meta["inherits_from"] = inherits
 
     return meta
+
+
+def _extract_kotlin_inherits_from(head: str) -> list[str]:
+    """Extract superclass and interface names from the first line of a Kotlin
+    class/interface declaration.  Handles:
+      class Foo : Bar(args), Baz
+      class Foo : SomeInterface
+      interface Foo : Bar
+    Returns a deduplicated list of simple type names (no generics, no args).
+    """
+    import re
+    # Match everything after the first colon on the declaration line, before
+    # the opening brace or end-of-line.
+    m = re.search(r"(?:^|\n)[^\n]*?(?:class|interface|object)\s+\w[\w<>]*?\s*(?:\([^)]*\))?\s*:\s*([^{\n]+)", head)
+    if not m:
+        return []
+    raw = m.group(1)
+    # Strip generic params and constructor args, then split on commas.
+    names: list[str] = []
+    for part in raw.split(","):
+        name = re.sub(r"<[^>]*>", "", part)  # strip generics
+        name = re.sub(r"\([^)]*\)", "", name)  # strip ctor args
+        name = name.strip()
+        if name and re.match(r"[A-Z]\w*", name):
+            names.append(name)
+    return list(dict.fromkeys(names))  # deduplicated, order-preserving
+
+
+def _extract_java_inherits_from(head: str) -> list[str]:
+    """Extract superclass and interface names from a Java class declaration.
+    Handles:
+      class Foo extends Bar implements Baz, Qux
+      interface Foo extends Bar, Baz
+    Returns a deduplicated list of simple type names.
+    """
+    import re
+    names: list[str] = []
+    extends_m = re.search(r"\bextends\s+([A-Z]\w*(?:<[^>]*>)?)", head)
+    if extends_m:
+        name = re.sub(r"<[^>]*>", "", extends_m.group(1)).strip()
+        if name:
+            names.append(name)
+    implements_m = re.search(r"\bimplements\s+([A-Z][\w,\s<>]*?)(?:\{|$)", head)
+    if implements_m:
+        for part in implements_m.group(1).split(","):
+            name = re.sub(r"<[^>]*>", "", part).strip()
+            if name and re.match(r"[A-Z]\w*", name):
+                names.append(name)
+    return list(dict.fromkeys(names))
 
 
 LANGUAGE_CONFIG: dict[str, dict[str, Any]] = {
