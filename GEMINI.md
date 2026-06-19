@@ -27,7 +27,7 @@ Edit `~/.rag/config.toml` or `config/default.toml`:
 ```toml
 [retrieval_agent]
 provider = "gemini"  # gemini, openai, anthropic, ollama
-model = "gemini-2.0-flash"
+model = "gemini-3.5-flash"
 api_key_env = "GEMINI_API_KEY"
 ```
 

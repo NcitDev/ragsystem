@@ -122,7 +122,7 @@ class RetrievalAgentSettings(BaseModel):
         default="gemini",
         pattern=r"^(gemini|openai|anthropic|ollama)$",
     )
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-3.5-flash"
     api_key_env: str = "GEMINI_API_KEY"
     base_url: str = ""  # For ollama or custom endpoints
 

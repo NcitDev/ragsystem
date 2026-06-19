@@ -43,7 +43,7 @@ timeout = 5000
 # LLM provider for the search strategy planner.
 # Options: gemini, openai, anthropic, ollama
 provider = "gemini"
-model = "gemini-2.0-flash"
+model = "gemini-3.5-flash"
 # Environment variable that holds the API key (ignored for ollama).
 api_key_env = "GEMINI_API_KEY"
 # For ollama, set provider="ollama" and point base_url at your daemon:
