@@ -493,19 +493,24 @@ def _usage_hits(root: Path, term: str, limit: int) -> list[AstIndexHit]:
     if not isinstance(data, list):
         return []
     hits = []
+    word_pattern = re.compile(rf"\b{re.escape(term)}\b")
     for row in data:
         if not isinstance(row, dict):
+            continue
+        context = str(row.get("context", ""))
+        if not word_pattern.search(context):
             continue
         hits.append(AstIndexHit(
             file_path=str(row.get("path", "")),
             line=int(row.get("line") or 0),
             name=str(row.get("name", term)),
             kind="usage",
-            context=str(row.get("context", "")),
+            context=context,
             source="usage",
             score=4.0,
         ))
     return hits
+
 
 
 def _attach_code(root: Path, hit: AstIndexHit) -> None:

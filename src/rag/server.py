@@ -1637,6 +1637,59 @@ def create_app() -> FastAPI:
 
     # --- Resolve (exact AST definitions/usages for named repos) ---
 
+    async def _query_structural_usages_from_qdrant(collection: str, symbols: list[str]) -> list[dict[str, Any]]:
+        from pathlib import Path
+        from qdrant_client import models
+        vectorstore = get_vectorstore()
+        client = await vectorstore._get_client()
+        hits = []
+        for symbol in symbols:
+            try:
+                qfilter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="inherits_from",
+                            match=models.MatchValue(value=symbol)
+                        )
+                    ]
+                )
+                res = await client.scroll(
+                    collection_name=collection,
+                    scroll_filter=qfilter,
+                    limit=50,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                points = res[0]
+                for p in points:
+                    payload = p.payload or {}
+                    file_path = payload.get("file_path", "")
+                    if not file_path:
+                        continue
+                    start_line = payload.get("start_line", 1)
+                    end_line = payload.get("end_line", 1)
+                    code = payload.get("content", "")
+                    label = payload.get("name", "") or Path(file_path).name
+                    hits.append({
+                        "chunk_id": f"graph:{file_path}:{start_line}:{label}",
+                        "file_path": file_path,
+                        "name": label,
+                        "parent_name": "",
+                        "chunk_type": "class",
+                        "language": payload.get("language", ""),
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "lines": f"{start_line}-{end_line}",
+                        "code": code,
+                        "token_estimate": max(1, (len(code) + 3) // 4),
+                        "score": 15.0,
+                        "citation": f"{file_path}:{start_line}-{end_line} ({label})",
+                        "why_included": "inherits_from_relationship",
+                    })
+            except Exception as e:
+                logger.warning("structural_usages_qdrant_error", symbol=symbol, error=str(e))
+        return hits
+
     @app.post("/resolve", response_model=ResolveResponse, dependencies=[Depends(require_auth)])
     async def resolve(req: ResolveRequest):
         start = time.time()
@@ -1662,6 +1715,15 @@ def create_app() -> FastAPI:
                 s for item in resolved.get("usages", [])
                 if (s := _context_slice_from_candidate(item)) is not None
             ]
+
+            # Query Qdrant for structural usages
+            try:
+                coll = _collection_for_repo(req.repo)
+                structural_usages = await _query_structural_usages_from_qdrant(coll, symbols)
+                usages.extend(structural_usages)
+            except Exception as e:
+                logger.warning("resolve_structural_usages_failed", error=str(e))
+
             latency = (time.time() - start) * 1000
             logger.info(
                 "resolve_executed",

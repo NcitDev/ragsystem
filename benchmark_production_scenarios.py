@@ -660,6 +660,154 @@ def run_vanilla(sc: Scenario, metrics: AgentMetrics) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Agent 6: Serena (LSP-based agent)
+# ---------------------------------------------------------------------------
+
+_SERENA_AGENT = None
+
+def get_serena_agent() -> Any:
+    global _SERENA_AGENT
+    if _SERENA_AGENT is None:
+        print("Initializing SerenaAgent (this may take ~4 minutes for language servers)...")
+        from serena.agent import SerenaAgent
+        _SERENA_AGENT = SerenaAgent(project=str(PROJECT_ROOT))
+        print("Waiting for language servers to boot...")
+        _SERENA_AGENT.execute_task(lambda: None, name="WaitForLspInit")
+        print("Language servers booted successfully.")
+    return _SERENA_AGENT
+
+
+
+def _extract_paths_from_serena_json(data: Any) -> list[str]:
+    paths: list[str] = []
+    def _walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for key in ("path", "file_path", "filePath", "relative_path"):
+                val = obj.get(key)
+                if isinstance(val, str) and val.strip():
+                    p = val.replace("\\", "/")
+                    while p.startswith("./"):
+                        p = p[2:]
+                    paths.append(p)
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+    _walk(data)
+    return paths
+
+
+def _record_reads_from_serena_data(data: Any, metrics: AgentMetrics) -> None:
+    def _walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            rp = obj.get("relative_path")
+            body = obj.get("body")
+            if isinstance(rp, str) and rp.strip() and isinstance(body, str) and body.strip():
+                metrics.record_file_read(rp, body)
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+    _walk(data)
+
+
+def run_serena(sc: Scenario, metrics: AgentMetrics) -> None:
+    try:
+        agent = get_serena_agent()
+    except Exception as exc:
+        metrics.error = f"Serena agent init: {exc}"
+        return
+
+    find_symbol = agent.get_tool_by_name("find_symbol")
+    find_usages = agent.get_tool_by_name("find_referencing_symbols")
+
+    discovered: list[str] = []
+
+    if sc.tool_path == "resolve_defs":
+        for sym in sc.symbols:
+            try:
+                res_str = find_symbol.apply(name_path_pattern=sym, include_body=True)
+                metrics.record_tool("serena:find_symbol")
+                if res_str and res_str.strip():
+                    try:
+                        data = json.loads(res_str)
+                        discovered.extend(_extract_paths_from_serena_json(data))
+                        _record_reads_from_serena_data(data, metrics)
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass
+
+    elif sc.tool_path == "resolve_usages":
+        for sym in sc.symbols:
+            # Phase 1: get definition location and body
+            try:
+                res_str = find_symbol.apply(name_path_pattern=sym, include_body=True)
+                metrics.record_tool("serena:find_symbol")
+                if res_str and res_str.strip():
+                    try:
+                        data = json.loads(res_str)
+                        discovered.extend(_extract_paths_from_serena_json(data))
+                        _record_reads_from_serena_data(data, metrics)
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass
+
+            # Phase 2: find referencing usages
+            try:
+                res_str = find_symbol.apply(name_path_pattern=sym, include_body=False)
+                metrics.record_tool("serena:find_symbol")
+                if res_str and res_str.strip():
+                    data = json.loads(res_str)
+                    defs = []
+                    def _walk_defs(obj: Any) -> None:
+                        if isinstance(obj, dict):
+                            np = obj.get("name_path")
+                            rp = obj.get("relative_path")
+                            if np and rp:
+                                defs.append((np, rp))
+                            for v in obj.values():
+                                _walk_defs(v)
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                _walk_defs(item)
+                    _walk_defs(data)
+
+                    for np, rp in defs[:5]:
+                        try:
+                            ref_str = find_usages.apply(name_path=np, relative_path=rp)
+                            metrics.record_tool("serena:find_referencing_symbols")
+                            if ref_str and ref_str.strip():
+                                ref_data = json.loads(ref_str)
+                                discovered.extend(_extract_paths_from_serena_json(ref_data))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    elif sc.tool_path == "context_pack_then_resolve":
+        for sym in sc.symbols:
+            try:
+                res_str = find_symbol.apply(name_path_pattern=sym, include_body=True)
+                metrics.record_tool("serena:find_symbol")
+                if res_str and res_str.strip():
+                    try:
+                        data = json.loads(res_str)
+                        discovered.extend(_extract_paths_from_serena_json(data))
+                        _record_reads_from_serena_data(data, metrics)
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass
+
+    discovered = list(dict.fromkeys(discovered))
+    _iterative_read(metrics, discovered, sc.golden_files, sc.symbols)
+
+
+# ---------------------------------------------------------------------------
 # Runner & Reporting
 # ---------------------------------------------------------------------------
 
@@ -668,69 +816,80 @@ AGENTS = [
     ("AST-Index", run_ast_index),
     ("Graphify", run_graphify),
     ("Vanilla (rg)", run_vanilla),
+    ("Serena", run_serena),
 ]
 
 
 def main() -> None:
     print("=" * 78)
-    print("  BENCHMARK: Production Scenarios — Smart Agent vs AST-Index vs Graphify vs Vanilla")
+    print("  BENCHMARK: Production Scenarios — Smart Agent vs AST-Index vs Graphify vs Vanilla vs Serena")
     print(f"  Repo: {PROJECT_ROOT}")
     print(f"  Scenarios: {len(SCENARIOS)}")
     print("=" * 78)
 
     all_results: dict[str, Any] = {"scenarios": []}
 
-    for sc in SCENARIOS:
-        print(f"\n{'=' * 78}")
-        print(f"  Scenario {sc.id}: {sc.category.upper()} — {sc.question[:70]}")
-        print(f"  Golden set: {len(sc.golden_files)} files | Tool path: {sc.tool_path}")
-        print(f"{'=' * 78}")
+    try:
+        for sc in SCENARIOS:
+            print(f"\n{'=' * 78}")
+            print(f"  Scenario {sc.id}: {sc.category.upper()} — {sc.question[:70]}")
+            print(f"  Golden set: {len(sc.golden_files)} files | Tool path: {sc.tool_path}")
+            print(f"{'=' * 78}")
 
-        scenario_data: dict[str, Any] = {
-            "id": sc.id, "category": sc.category,
-            "question": sc.question, "tool_path": sc.tool_path,
-            "agents": {},
-        }
-
-        for agent_name, agent_fn in AGENTS:
-            metrics = AgentMetrics()
-            t0 = time.time()
-            agent_fn(sc, metrics)
-            metrics.latency_ms = (time.time() - t0) * 1000
-
-            found, missing = _golden_matches(metrics.files_read, sc.golden_files)
-            metrics.golden_found = found
-            metrics.golden_missing = missing
-
-            total_files = len(metrics.files_read)
-            golden_count = sum(1 for f in metrics.files_read
-                               if any(f.endswith(g) for g in sc.golden_files))
-            related_count = sum(
-                1 for f in metrics.files_read
-                if _classify_file(f, sc.golden_files, sc.symbols) == "related"
-            )
-            noise_count = total_files - golden_count - related_count
-            precision = golden_count / max(1, total_files) * 100
-            signal_pct = (golden_count + related_count) / max(1, total_files) * 100
-
-            scenario_data["agents"][agent_name] = {
-                "turns": metrics.turns, "tokens": metrics.tokens,
-                "tool_calls": dict(metrics.tool_calls),
-                "files_read": total_files, "precision_pct": round(precision, 1),
-                "signal_pct": round(signal_pct, 1),
-                "coverage_pct": metrics.coverage(),
-                "latency_ms": round(metrics.latency_ms, 1),
-                "error": metrics.error,
+            scenario_data: dict[str, Any] = {
+                "id": sc.id, "category": sc.category,
+                "question": sc.question, "tool_path": sc.tool_path,
+                "agents": {},
             }
 
-            status = "OK" if not metrics.error else f"ERR: {metrics.error[:50]}"
-            print(
-                f"  {agent_name:<16} turns={metrics.turns:<5} "
-                f"tokens={metrics.tokens:<10,} prec={precision:5.1f}% "
-                f"sig={signal_pct:5.1f}% cov={metrics.coverage():5.1f}%  [{status}]"
-            )
+            for agent_name, agent_fn in AGENTS:
+                metrics = AgentMetrics()
+                t0 = time.time()
+                agent_fn(sc, metrics)
+                metrics.latency_ms = (time.time() - t0) * 1000
 
-        all_results["scenarios"].append(scenario_data)
+                found, missing = _golden_matches(metrics.files_read, sc.golden_files)
+                metrics.golden_found = found
+                metrics.golden_missing = missing
+
+                total_files = len(metrics.files_read)
+                golden_count = sum(1 for f in metrics.files_read
+                                   if any(f.endswith(g) for g in sc.golden_files))
+                related_count = sum(
+                    1 for f in metrics.files_read
+                    if _classify_file(f, sc.golden_files, sc.symbols) == "related"
+                )
+                noise_count = total_files - golden_count - related_count
+                precision = golden_count / max(1, total_files) * 100
+                signal_pct = (golden_count + related_count) / max(1, total_files) * 100
+
+                scenario_data["agents"][agent_name] = {
+                    "turns": metrics.turns, "tokens": metrics.tokens,
+                    "tool_calls": dict(metrics.tool_calls),
+                    "files_read": total_files, "precision_pct": round(precision, 1),
+                    "signal_pct": round(signal_pct, 1),
+                    "coverage_pct": metrics.coverage(),
+                    "latency_ms": round(metrics.latency_ms, 1),
+                    "error": metrics.error,
+                }
+
+                status = "OK" if not metrics.error else f"ERR: {metrics.error[:50]}"
+                print(
+                    f"  {agent_name:<16} turns={metrics.turns:<5} "
+                    f"tokens={metrics.tokens:<10,} prec={precision:5.1f}% "
+                    f"sig={signal_pct:5.1f}% cov={metrics.coverage():5.1f}%  [{status}]"
+                )
+
+            all_results["scenarios"].append(scenario_data)
+    finally:
+        global _SERENA_AGENT
+        if _SERENA_AGENT is not None:
+            print("\nShutting down SerenaAgent and its language servers...")
+            try:
+                _SERENA_AGENT.on_shutdown()
+            except Exception as e:
+                print(f"Error during SerenaAgent shutdown: {e}")
+
 
     # --- Summary ---
     print(f"\n{'=' * 78}")
