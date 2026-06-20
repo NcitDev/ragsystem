@@ -164,9 +164,13 @@ class CodeGraph:
                 visited.add(node)
 
                 if direction in ("out", "both"):
-                    next_frontier.update(self.graph.successors(node))
+                    for succ in self.graph.successors(node):
+                        if self.graph.edges[node, succ].get("relation") in ("calls", "inherits"):
+                            next_frontier.add(succ)
                 if direction in ("in", "both"):
-                    next_frontier.update(self.graph.predecessors(node))
+                    for pred in self.graph.predecessors(node):
+                        if self.graph.edges[pred, node].get("relation") in ("calls", "inherits"):
+                            next_frontier.add(pred)
 
             frontier = next_frontier - visited
             if not frontier:

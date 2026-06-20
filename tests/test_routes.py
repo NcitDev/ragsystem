@@ -303,6 +303,59 @@ def test_index_docs_and_docs_search(app_ctx, tmp_path: Path):
     assert "START_ORDER_POLLING_AFTER_PAYMENT" in body["results"][0]["code"]
 
 
+def test_search_sanity_filter_removes_noise_for_symbol_queries(app_ctx, monkeypatch):
+    client, token = app_ctx
+    from rag.core.vectorstore import SearchResult
+    import rag.server as _server
+
+    monkeypatch.setattr(
+        _server,
+        "_collection_for_repo",
+        lambda repo: "repo_demo",
+        raising=True,
+    )
+
+    # Mock vectorstore search to return a target and a noise result
+    async def mock_search(collection, query, top_k, filters=None):
+        return [
+            SearchResult(
+                content="class TargetSymbol { void process() {} }",
+                score=0.9,
+                payload={
+                    "file_path": "checkout/TargetSymbol.kt",
+                    "name": "TargetSymbol",
+                    "chunk_type": "class",
+                },
+                point_id="1"
+            ),
+            SearchResult(
+                content="class NoiseClass { void verify() {} }",
+                score=0.8,
+                payload={
+                    "file_path": "checkout/NoiseClass.kt",
+                    "name": "NoiseClass",
+                    "chunk_type": "class",
+                },
+                point_id="2"
+            )
+        ]
+
+    vectorstore = _server.get_vectorstore()
+    monkeypatch.setattr(vectorstore, "search", mock_search)
+
+    # Search query has CamelCase TargetSymbol. NoiseClass should be pruned.
+    r = client.post(
+        "/search",
+        json={"query": "Explain how TargetSymbol works", "repo": "demo"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert len(body["results"]) == 1
+    assert body["results"][0]["file_path"] == "checkout/TargetSymbol.kt"
+
+
 def test_context_pack_uses_ast_index_for_named_repo(app_ctx, monkeypatch):
     client, token = app_ctx
 
@@ -445,6 +498,80 @@ def test_resolve_returns_ast_definitions_and_usages(app_ctx, monkeypatch):
     assert body["total_usages"] == 1
     assert body["definitions"][0]["file_path"] == "checkout/Checkout.kt"
     assert body["usages"][0]["file_path"] == "checkout/CheckoutTest.kt"
+
+
+def test_resolve_returns_structural_usages_from_qdrant(app_ctx, monkeypatch):
+    client, token = app_ctx
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    import rag.server as _server
+
+    monkeypatch.setattr(
+        _server,
+        "_repo_info_for_name",
+        lambda repo: SimpleNamespace(path="/tmp/demo", collection="repo_demo"),
+        raising=True,
+    )
+
+    # Mock Qdrant client scroll method
+    # 1st call resolves symbol definitions FQN
+    # 2nd call retrieves inherits/references FQN callers
+    mock_scroll = AsyncMock()
+    mock_scroll.side_effect = [
+        (
+            [
+                SimpleNamespace(
+                    id="id-1",
+                    payload={"defines_fqn": "org.test.MyClass"}
+                )
+            ],
+            None
+        ),
+        (
+            [
+                SimpleNamespace(
+                    id="id-2",
+                    payload={
+                        "file_path": "Caller.kt",
+                        "start_line": 5,
+                        "end_line": 8,
+                        "content": "class Caller : MyClass()",
+                        "name": "Caller",
+                        "chunk_type": "class",
+                        "language": "kotlin",
+                        "inherits_from": ["org.test.MyClass"]
+                    }
+                )
+            ],
+            None
+        )
+    ]
+
+    import rag.core.ast_index as _ast_index
+    monkeypatch.setattr(
+        _ast_index,
+        "resolve_symbols",
+        lambda repo_path, symbols, definitions_limit=20, usages_limit=20: {
+            "definitions": [],
+            "usages": []
+        },
+        raising=True,
+    )
+
+    vectorstore = _server.get_vectorstore()
+    monkeypatch.setattr(vectorstore, "_get_client", AsyncMock(return_value=SimpleNamespace(scroll=mock_scroll)))
+
+    r = client.post(
+        "/resolve",
+        json={"repo": "demo", "symbols": ["MyClass"], "definitions_limit": 1, "usages_limit": 5},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["total_usages"] >= 1
+    assert body["usages"][0]["file_path"] == "Caller.kt"
+    assert body["usages"][0]["why_included"] == "inherits_from_relationship"
 
 
 def test_call_tree_returns_ast_nodes(app_ctx, monkeypatch):

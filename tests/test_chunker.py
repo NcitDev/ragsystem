@@ -180,3 +180,38 @@ def test_to_index_metadata_is_a_chunk_method():
     # extra metadata is spread in
     assert meta["complexity"] == 1
     assert meta["is_test"] == "false"
+
+
+def test_enrich_chunks_with_fqn_java():
+    from rag.core.chunker import chunk_code, ChunkType
+    source = """package org.test;
+import org.external.OtherClass;
+import org.another.*;
+
+class MyClass extends BaseClass {
+    void doSomething() {
+        OtherClass other = new OtherClass();
+        WildcardClass wc = new WildcardClass();
+    }
+}
+"""
+    chunks = chunk_code(source, "MyClass.java", "java")
+    for c in chunks:
+        c.enrich_metadata()
+    
+    # 1. Verify class chunk
+    class_chunks = [c for c in chunks if c.chunk_type == ChunkType.CLASS_DECLARATION]
+    assert len(class_chunks) == 1
+    c_class = class_chunks[0]
+    meta_class = c_class.to_index_metadata()
+    assert meta_class.get("defines_fqn") == "org.test.MyClass"
+    assert "org.test.BaseClass" in meta_class.get("inherits_from", [])
+
+    # 2. Verify method chunk
+    method_chunks = [c for c in chunks if c.chunk_type == ChunkType.METHOD]
+    assert len(method_chunks) == 1
+    c_method = method_chunks[0]
+    meta_method = c_method.to_index_metadata()
+    assert "org.external.OtherClass" in meta_method.get("references_fqn", [])
+    assert "org.another.WildcardClass" in meta_method.get("references_fqn", [])
+

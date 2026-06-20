@@ -1560,6 +1560,44 @@ def create_app() -> FastAPI:
                 except Exception as e:
                     logger.debug("lexical_search_failed", query=req.query, error=str(e))
 
+            # Apply AST / symbol sanity verification filter for semantic results
+            if plan.strategy != "global":
+                import re
+                # Find CamelCase symbols of length >= 4 in the query
+                query_symbols = set(re.findall(r"\b([A-Z][a-zA-Z0-9_]{3,})\b", req.query))
+                if query_symbols:
+                    filtered_results = []
+                    for r in results:
+                        payload = r.payload or {}
+                        code = r.content or ""
+                        # Extract all names/references to check
+                        names_to_check = {
+                            str(payload.get("name", "")),
+                            str(payload.get("parent_name", "")),
+                            str(payload.get("file_path", ""))
+                        }
+                        # Check references/inherits lists
+                        for ref_list in ("references_fqn", "inherits_from"):
+                            for ref in payload.get(ref_list) or []:
+                                names_to_check.add(ref)
+
+                        # Check if any query symbol is present in the names or code
+                        matched = False
+                        for sym in query_symbols:
+                            sym_lower = sym.lower()
+                            # Check exact word match in code
+                            if re.search(r"\b" + re.escape(sym) + r"\b", code):
+                                matched = True
+                                break
+                            # Check exact word/substring match in payload names
+                            if any(sym_lower in n.lower() for n in names_to_check):
+                                matched = True
+                                break
+
+                        if matched:
+                            filtered_results.append(r)
+                    results = filtered_results
+
             from rag.core.scoring import score_results
             results = score_results(results, req.query, reranked=did_rerank)
             results = results[: req.top_k or plan.top_k]
@@ -1643,14 +1681,40 @@ def create_app() -> FastAPI:
         vectorstore = get_vectorstore()
         client = await vectorstore._get_client()
         hits = []
+
+        # Resolve FQNs for the symbols
+        fqns = []
         for symbol in symbols:
+            fqns.append(symbol)
             try:
                 qfilter = models.Filter(
                     must=[
-                        models.FieldCondition(
-                            key="inherits_from",
-                            match=models.MatchValue(value=symbol)
-                        )
+                        models.FieldCondition(key="name", match=models.MatchValue(value=symbol)),
+                        models.FieldCondition(key="chunk_type", match=models.MatchValue(value="class_declaration"))
+                    ]
+                )
+                res = await client.scroll(
+                    collection_name=collection,
+                    scroll_filter=qfilter,
+                    limit=2,
+                    with_payload=True
+                )
+                if res and res[0]:
+                    for pt in res[0]:
+                        payload = pt.payload or {}
+                        defines_fqn = payload.get("defines_fqn")
+                        if defines_fqn:
+                            fqns.append(defines_fqn)
+            except Exception:
+                pass
+
+        for fqn in set(fqns):
+            try:
+                # Scroll matching inherits_from or references_fqn
+                qfilter = models.Filter(
+                    should=[
+                        models.FieldCondition(key="inherits_from", match=models.MatchValue(value=fqn)),
+                        models.FieldCondition(key="references_fqn", match=models.MatchValue(value=fqn))
                     ]
                 )
                 res = await client.scroll(
@@ -1666,16 +1730,27 @@ def create_app() -> FastAPI:
                     file_path = payload.get("file_path", "")
                     if not file_path:
                         continue
+
+                    # Deduplicate points by chunk_id
                     start_line = payload.get("start_line", 1)
                     end_line = payload.get("end_line", 1)
-                    code = payload.get("content", "")
                     label = payload.get("name", "") or Path(file_path).name
+                    chunk_id = f"graph:{file_path}:{start_line}:{label}"
+                    if any(h["chunk_id"] == chunk_id for h in hits):
+                        continue
+
+                    code = payload.get("content", "")
+
+                    # Determine structural explanation
+                    is_inherits = fqn in payload.get("inherits_from", [])
+                    why_included = "inherits_from_relationship" if is_inherits else "implements_or_references_relationship"
+
                     hits.append({
-                        "chunk_id": f"graph:{file_path}:{start_line}:{label}",
+                        "chunk_id": chunk_id,
                         "file_path": file_path,
                         "name": label,
                         "parent_name": "",
-                        "chunk_type": "class",
+                        "chunk_type": payload.get("chunk_type", "class"),
                         "language": payload.get("language", ""),
                         "start_line": start_line,
                         "end_line": end_line,
@@ -1684,10 +1759,10 @@ def create_app() -> FastAPI:
                         "token_estimate": max(1, (len(code) + 3) // 4),
                         "score": 15.0,
                         "citation": f"{file_path}:{start_line}-{end_line} ({label})",
-                        "why_included": "inherits_from_relationship",
+                        "why_included": why_included,
                     })
             except Exception as e:
-                logger.warning("structural_usages_qdrant_error", symbol=symbol, error=str(e))
+                logger.warning("structural_usages_qdrant_error", symbol=fqn, error=str(e))
         return hits
 
     @app.post("/resolve", response_model=ResolveResponse, dependencies=[Depends(require_auth)])

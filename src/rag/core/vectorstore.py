@@ -65,6 +65,8 @@ PAYLOAD_INDEXES = [
     # Dependencies
     ("external_deps", models.PayloadSchemaType.KEYWORD),
     ("inherits_from", models.PayloadSchemaType.KEYWORD),
+    ("defines_fqn", models.PayloadSchemaType.KEYWORD),
+    ("references_fqn", models.PayloadSchemaType.KEYWORD),
     ("decorator_tags", models.PayloadSchemaType.KEYWORD),
     ("concurrency_patterns", models.PayloadSchemaType.KEYWORD),
     # LOD (hierarchical drill-down)

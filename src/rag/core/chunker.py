@@ -65,7 +65,10 @@ class Chunk:
             )
             self.metadata.update(rich_meta)
         elif self.language in ("kotlin", "java") and self.content:
-            self.metadata.update(_detect_kotlin_java_coroutines(self.content, self.language))
+            enriched = _detect_kotlin_java_coroutines(self.content, self.language)
+            if "inherits_from" in enriched and "inherits_from" in self.metadata:
+                enriched["inherits_from"] = list(set(self.metadata["inherits_from"] + enriched["inherits_from"]))
+            self.metadata.update(enriched)
 
     def to_index_metadata(self) -> dict[str, Any]:
         return {
@@ -525,6 +528,7 @@ def chunk_code(source: str, file_path: str, language: str | None = None) -> list
     if not chunks:
         return _chunk_sliding_window(source, file_path, language)
 
+    _enrich_chunks_with_fqn(chunks, source)
     return chunks
 
 
@@ -696,6 +700,76 @@ def _chunk_sliding_window(
         i += window_lines - overlap_lines
 
     return chunks
+
+
+def _enrich_chunks_with_fqn(chunks: list[Chunk], source: str) -> None:
+    import re
+    # Determine package
+    package_match = re.search(r"\bpackage\s+([a-zA-Z0-9_\.]+)", source)
+    package_name = package_match.group(1) if package_match else ""
+
+    # Determine imports
+    imports = re.findall(r"\bimport\s+(?:static\s+)?([a-zA-Z0-9_\.\*]+)", source)
+
+    for chunk in chunks:
+        if chunk.language not in ("java", "kotlin"):
+            continue
+
+        # If it's a class or interface declaration, compute defines_fqn
+        if chunk.chunk_type in (ChunkType.CLASS_DECLARATION, ChunkType.INTERFACE_DECLARATION) and chunk.name:
+            defines_fqn = f"{package_name}.{chunk.name}" if package_name else chunk.name
+            chunk.metadata["defines_fqn"] = defines_fqn
+
+            # Extract raw inherits_from statically and resolve to FQNs
+            raw_inherits = []
+            cleaned = _strip_line_comments(chunk.content)
+            head = cleaned[:300]
+            if chunk.language == "kotlin":
+                raw_inherits = _extract_kotlin_inherits_from(head)
+            elif chunk.language == "java":
+                raw_inherits = _extract_java_inherits_from(head)
+
+            if raw_inherits:
+                resolved_inherits = list(raw_inherits)
+                for parent in raw_inherits:
+                    matched_import = False
+                    for imp in imports:
+                        if imp.endswith(f".{parent}"):
+                            resolved_inherits.append(imp)
+                            matched_import = True
+                            break
+                    if not matched_import:
+                        for imp in imports:
+                            if imp.endswith(".*"):
+                                resolved_inherits.append(imp[:-1] + parent)
+                        if package_name:
+                            resolved_inherits.append(f"{package_name}.{parent}")
+                chunk.metadata["inherits_from"] = list(set(resolved_inherits))
+
+        # Scan for referenced classes in this chunk
+        words = set(re.findall(r"\b([A-Z][a-zA-Z0-9_]+)\b", chunk.content))
+        referenced_fqns = []
+        for word in words:
+            if word == chunk.name:
+                continue
+            # Check explicit import
+            matched_import = False
+            for imp in imports:
+                if imp.endswith(f".{word}"):
+                    referenced_fqns.append(imp)
+                    matched_import = True
+                    break
+            if not matched_import:
+                # Check wildcard imports
+                for imp in imports:
+                    if imp.endswith(".*"):
+                        referenced_fqns.append(imp[:-1] + word)
+                # Fallback to same package
+                if package_name:
+                    referenced_fqns.append(f"{package_name}.{word}")
+
+        if referenced_fqns:
+            chunk.metadata["references_fqn"] = list(set(referenced_fqns))
 
 
 def supported_languages() -> list[str]:
