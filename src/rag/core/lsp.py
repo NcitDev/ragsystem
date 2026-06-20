@@ -401,3 +401,50 @@ async def enrich_chunks_with_lsp(
 
     logger.info("lsp_enrichment_complete", enriched=enriched, total=total)
     return chunks
+
+
+async def enrich_chunks_with_running_clients(
+    chunks: list[dict],
+    clients: dict[str, LSPClient],
+) -> list[dict]:
+    """Enrich chunks using pre-started persistent LSP clients."""
+    enriched = 0
+    for chunk in chunks:
+        lang = chunk.get("language", "")
+        if lang not in clients:
+            continue
+
+        client = clients[lang]
+        file_path = chunk.get("file_path", "")
+        start_line = chunk.get("start_line", 0)
+        name = chunk.get("name", "")
+
+        if not file_path or not name:
+            continue
+
+        try:
+            lsp_timeout = get_settings().lsp.timeout / 1000
+            refs = await asyncio.wait_for(
+                client.get_references(file_path, start_line, 4),
+                timeout=lsp_timeout,
+            )
+            chunk["fan_in"] = len(refs)
+            chunk["called_by"] = [
+                f"{r.get('uri', '').replace('file://', '')}:{r.get('range', {}).get('start', {}).get('line', 0)}"
+                for r in refs[:10]
+            ]
+
+            chunk_type = chunk.get("chunk_type", "")
+            is_public = chunk.get("is_public", True)
+            if len(refs) == 0 and is_public and chunk_type in ("function", "method"):
+                chunk["dead_code_candidate"] = True
+
+            enriched += 1
+
+        except asyncio.TimeoutError:
+            logger.warning("lsp_enrich_timeout", file=file_path, name=name)
+        except Exception as e:
+            logger.debug("lsp_enrich_error", file=file_path, name=name, error=str(e))
+
+    return chunks
+

@@ -376,176 +376,209 @@ async def _index_repository_locked(
     from rag.core.cache import EmbeddingCache
     embed_cache = EmbeddingCache()
 
-    async def _flush_batch(docs: list[ChunkDocument]) -> int:
+    active_lsp_clients: dict[str, Any] = {}
+
+    try:
+        # Start persistent LSP clients once for the entire indexing run
         if settings.lsp.enabled:
-            t_lsp = perf_counter()
-            await _lsp_enrich_batch(docs, str(path), list(detected_langs))
-            _add_timing("lsp_ms", t_lsp)
-        # Upsert overwrites matching point IDs but does not remove points for
-        # chunks that disappeared or shifted line ranges. Clear each changed
-        # file first so the collection mirrors the current file contents.
-        file_paths = sorted({
-            doc.metadata.get("file_path", "")
-            for doc in docs
-            if doc.metadata.get("file_path")
-        })
-        if not full:
-            t_delete = perf_counter()
-            for file_path in file_paths:
-                await vectorstore.delete_by_filter(collection, "file_path", file_path)
-                try:
-                    from rag.storage import db as _db
-                    _db.delete_code_chunks_by_file(collection, file_path)
-                except Exception as e:  # pragma: no cover - non-critical
-                    logger.warning("code_index_file_delete_failed", file=file_path, error=str(e))
-            _add_timing("delete_old_chunks_ms", t_delete)
-        t_upsert = perf_counter()
-        upsert_kwargs: dict[str, object] = {"cache": embed_cache}
-        try:
-            upsert_params = inspect.signature(vectorstore.upsert).parameters
-            if "timings_ms" in upsert_params:
+            from rag.core.lsp import detect_lsp_servers, LSPClient
+            langs_to_start = set(languages or [])
+            if not langs_to_start:
+                for f in files_to_process:
+                    lang = detect_language(str(f))
+                    if lang:
+                        langs_to_start.add(lang)
+            available = detect_lsp_servers(list(langs_to_start))
+            for server in available:
+                if server.found:
+                    client = LSPClient(server.language, str(path))
+                    if await client.start():
+                        active_lsp_clients[server.language] = client
+            if active_lsp_clients:
+                await asyncio.sleep(2)
+
+        async def _flush_batch(docs: list[ChunkDocument]) -> int:
+            if settings.lsp.enabled and active_lsp_clients:
+                t_lsp = perf_counter()
+                await _lsp_enrich_batch_with_clients(docs, active_lsp_clients)
+                _add_timing("lsp_ms", t_lsp)
+            elif settings.lsp.enabled:
+                t_lsp = perf_counter()
+                await _lsp_enrich_batch(docs, str(path), list(detected_langs))
+                _add_timing("lsp_ms", t_lsp)
+            # Upsert overwrites matching point IDs but does not remove points for
+            # chunks that disappeared or shifted line ranges. Clear each changed
+            # file first so the collection mirrors the current file contents.
+            file_paths = sorted({
+                doc.metadata.get("file_path", "")
+                for doc in docs
+                if doc.metadata.get("file_path")
+            })
+            if not full:
+                t_delete = perf_counter()
+                for file_path in file_paths:
+                    await vectorstore.delete_by_filter(collection, "file_path", file_path)
+                    try:
+                        from rag.storage import db as _db
+                        _db.delete_code_chunks_by_file(collection, file_path)
+                    except Exception as e:  # pragma: no cover - non-critical
+                        logger.warning("code_index_file_delete_failed", file=file_path, error=str(e))
+                _add_timing("delete_old_chunks_ms", t_delete)
+            t_upsert = perf_counter()
+            upsert_kwargs: dict[str, object] = {"cache": embed_cache}
+            try:
+                upsert_params = inspect.signature(vectorstore.upsert).parameters
+                if "timings_ms" in upsert_params:
+                    upsert_kwargs["timings_ms"] = result.timings_ms
+            except (TypeError, ValueError):  # pragma: no cover - defensive
                 upsert_kwargs["timings_ms"] = result.timings_ms
-        except (TypeError, ValueError):  # pragma: no cover - defensive
-            upsert_kwargs["timings_ms"] = result.timings_ms
-        count = await vectorstore.upsert(collection, docs, **upsert_kwargs)
-        _add_timing("flush_total_ms", t_upsert)
-        t_code_index = perf_counter()
-        try:
-            from rag.storage import db as _db
-            _db.upsert_code_chunks(collection, docs)
-        except Exception as e:  # pragma: no cover - non-critical
-            logger.warning("code_index_upsert_failed", collection=collection, error=str(e))
-        _add_timing("code_index_ms", t_code_index)
-        t_overview_update = perf_counter()
-        _update_overview_stats(docs)
-        _add_timing("overview_update_ms", t_overview_update)
-        return count
+            count = await vectorstore.upsert(collection, docs, **upsert_kwargs)
+            _add_timing("flush_total_ms", t_upsert)
+            t_code_index = perf_counter()
+            try:
+                from rag.storage import db as _db
+                _db.upsert_code_chunks(collection, docs)
+            except Exception as e:  # pragma: no cover - non-critical
+                logger.warning("code_index_upsert_failed", collection=collection, error=str(e))
+            _add_timing("code_index_ms", t_code_index)
+            t_overview_update = perf_counter()
+            _update_overview_stats(docs)
+            _add_timing("overview_update_ms", t_overview_update)
+            return count
 
-    def _process_file(fp: Path, rel: str) -> list[ChunkDocument]:
-        """CPU-bound: chunk + enrich a single file. Runs in thread pool."""
-        content = fp.read_text(encoding="utf-8", errors="replace")
-        language = detect_language(rel)
-        if language:
-            detected_langs.add(language)
-        chunks = chunk_code(content, rel, language)
-        for chunk in chunks:
-            chunk.enrich_metadata(test_files=test_files if language == "python" else None)
-        return [
-            ChunkDocument(content=c.content, metadata=c.to_index_metadata(), chunk_id=c.chunk_id)
-            for c in chunks
-        ]
+        def _process_file(fp: Path, rel: str) -> list[ChunkDocument]:
+            """CPU-bound: chunk + enrich a single file. Runs in thread pool."""
+            content = fp.read_text(encoding="utf-8", errors="replace")
+            language = detect_language(rel)
+            if language:
+                detected_langs.add(language)
+            chunks = chunk_code(content, rel, language)
+            for chunk in chunks:
+                chunk.enrich_metadata(test_files=test_files if language == "python" else None)
+            return [
+                ChunkDocument(content=c.content, metadata=c.to_index_metadata(), chunk_id=c.chunk_id)
+                for c in chunks
+            ]
 
-    for idx, file_path in enumerate(files_to_process):
-        rel_path = str(file_path.relative_to(path))
-        try:
-            # Run CPU-bound chunking in thread pool to avoid blocking event loop
-            t_chunk = perf_counter()
-            docs = await asyncio.to_thread(_process_file, file_path, rel_path)
-            _add_timing("chunk_ms", t_chunk)
-            batch.extend(docs)
-            chunks_seen += len(docs)
+        for idx, file_path in enumerate(files_to_process):
+            rel_path = str(file_path.relative_to(path))
+            try:
+                # Run CPU-bound chunking in thread pool to avoid blocking event loop
+                t_chunk = perf_counter()
+                docs = await asyncio.to_thread(_process_file, file_path, rel_path)
+                _add_timing("chunk_ms", t_chunk)
+                batch.extend(docs)
+                chunks_seen += len(docs)
 
-            # Stage this file's hash; it is only promoted to new_hashes once the
-            # batch carrying its chunks is confirmed flushed.
-            staged_hashes[rel_path] = _file_hash(file_path)
-            processed_files.add(rel_path)
-            result.files_processed += 1
-            current_file_for_progress = rel_path
-            chunks_total_estimate = (
-                int((chunks_seen / result.files_processed) * total_files)
-                if result.files_processed
-                else 0
-            )
+                # Stage this file's hash; it is only promoted to new_hashes once the
+                # batch carrying its chunks is confirmed flushed.
+                staged_hashes[rel_path] = _file_hash(file_path)
+                processed_files.add(rel_path)
+                result.files_processed += 1
+                current_file_for_progress = rel_path
+                chunks_total_estimate = (
+                    int((chunks_seen / result.files_processed) * total_files)
+                    if result.files_processed
+                    else 0
+                )
 
-            # Pipeline: await previous upsert (committing its hashes), start new one
-            if len(batch) >= batch_size:
-                if pending_upsert is not None:
-                    result.chunks_indexed += await pending_upsert
-                    new_hashes.update(pending_hashes)
-                    _emit_progress()
-                pending_upsert = asyncio.create_task(_flush_batch(list(batch)))
-                pending_hashes = staged_hashes
-                staged_hashes = {}
-                batch = []
+                # Pipeline: await previous upsert (committing its hashes), start new one
+                if len(batch) >= batch_size:
+                    if pending_upsert is not None:
+                        result.chunks_indexed += await pending_upsert
+                        new_hashes.update(pending_hashes)
+                        _emit_progress()
+                    pending_upsert = asyncio.create_task(_flush_batch(list(batch)))
+                    pending_hashes = staged_hashes
+                    staged_hashes = {}
+                    batch = []
 
+                _emit_progress()
+
+            except Exception as e:
+                logger.warning("file_index_error", file=rel_path, error=str(e))
+                result.errors.append(f"{rel_path}: {e}")
+
+        # Await pending + flush remaining. Each confirmed upsert promotes its
+        # staged hashes; the trailing partial batch (still in ``staged_hashes``)
+        # is committed only after its own upsert returns.
+        if pending_upsert is not None:
+            result.chunks_indexed += await pending_upsert
+            new_hashes.update(pending_hashes)
             _emit_progress()
+        if batch:
+            result.chunks_indexed += await _flush_batch(batch)
+            _emit_progress()
+        new_hashes.update(staged_hashes)
 
-        except Exception as e:
-            logger.warning("file_index_error", file=rel_path, error=str(e))
-            result.errors.append(f"{rel_path}: {e}")
+        # Delete chunks for removed files. Delete the vectors BEFORE dropping the
+        # file from new_hashes so a crash between the two leaves the file still
+        # tracked (next run retries the delete) rather than orphaning its chunks.
+        indexed_files = set(previous_state.file_hashes.keys()) if full else set(new_hashes.keys())
+        current_files = {str(f.relative_to(path)) for f in all_files}
+        removed = indexed_files - current_files
+        t_removed = perf_counter()
+        for removed_file in removed:
+            await vectorstore.delete_by_filter(collection, "file_path", removed_file)
+            try:
+                from rag.storage import db as _db
+                _db.delete_code_chunks_by_file(collection, removed_file)
+            except Exception as e:  # pragma: no cover - non-critical
+                logger.warning("code_index_removed_delete_failed", file=removed_file, error=str(e))
+            new_hashes.pop(removed_file, None)
+            result.files_deleted += 1
+        _add_timing("delete_removed_ms", t_removed)
 
-    # Await pending + flush remaining. Each confirmed upsert promotes its
-    # staged hashes; the trailing partial batch (still in ``staged_hashes``)
-    # is committed only after its own upsert returns.
-    if pending_upsert is not None:
-        result.chunks_indexed += await pending_upsert
-        new_hashes.update(pending_hashes)
-        _emit_progress()
-    if batch:
-        result.chunks_indexed += await _flush_batch(batch)
-        _emit_progress()
-    new_hashes.update(staged_hashes)
+        # Incremental runs replace changed files in-place. Rebuild materialized
+        # counters after deletes/upserts so /overview does not double-count old
+        # chunks. Full runs already reset at the start and rebuild while upserting.
+        if not full and (processed_files or removed):
+            t_overview = perf_counter()
+            await _rebuild_overview_stats(vectorstore, collection)
+            _add_timing("overview_rebuild_ms", t_overview)
 
-    # Delete chunks for removed files. Delete the vectors BEFORE dropping the
-    # file from new_hashes so a crash between the two leaves the file still
-    # tracked (next run retries the delete) rather than orphaning its chunks.
-    indexed_files = set(previous_state.file_hashes.keys()) if full else set(new_hashes.keys())
-    current_files = {str(f.relative_to(path)) for f in all_files}
-    removed = indexed_files - current_files
-    t_removed = perf_counter()
-    for removed_file in removed:
-        await vectorstore.delete_by_filter(collection, "file_path", removed_file)
-        try:
-            from rag.storage import db as _db
-            _db.delete_code_chunks_by_file(collection, removed_file)
-        except Exception as e:  # pragma: no cover - non-critical
-            logger.warning("code_index_removed_delete_failed", file=removed_file, error=str(e))
-        new_hashes.pop(removed_file, None)
-        result.files_deleted += 1
-    _add_timing("delete_removed_ms", t_removed)
+        # Build code graph + communities + optional summaries.
+        # No-change incremental runs do not need post-index maintenance. This keeps
+        # "is my repo current?" checks fast and predictable.
+        import os
+        if not full and not processed_files and not removed:
+            logger.info("post_index_maintenance_skipped", reason="no_changes")
+        elif os.environ.get("RAG_SKIP_GRAPH") == "1":
+            logger.info("graph_build_skipped", reason="RAG_SKIP_GRAPH=1")
+        else:
+            try:
+                # Pass changed-file set so LOD regen scopes to affected dirs/files.
+                # On --full runs we pass None to force a full rebuild.
+                lod_scope = None if full else processed_files
+                t_graph = perf_counter()
+                await _build_graph_and_summaries(vectorstore, collection, lod_scope)
+                _add_timing("graph_summary_ms", t_graph)
+            except Exception as e:
+                logger.warning("graph_build_error", error=str(e))
 
-    # Incremental runs replace changed files in-place. Rebuild materialized
-    # counters after deletes/upserts so /overview does not double-count old
-    # chunks. Full runs already reset at the start and rebuild while upserting.
-    if not full and (processed_files or removed):
-        t_overview = perf_counter()
-        await _rebuild_overview_stats(vectorstore, collection)
-        _add_timing("overview_rebuild_ms", t_overview)
+        # Save state
+        t_save = perf_counter()
+        state = IndexState(last_commit=current_commit, file_hashes=new_hashes)
+        state.save(path)
+        _add_timing("state_save_ms", t_save)
 
-    # Build code graph + communities + optional summaries.
-    # No-change incremental runs do not need post-index maintenance. This keeps
-    # "is my repo current?" checks fast and predictable.
-    import os
-    if not full and not processed_files and not removed:
-        logger.info("post_index_maintenance_skipped", reason="no_changes")
-    elif os.environ.get("RAG_SKIP_GRAPH") == "1":
-        logger.info("graph_build_skipped", reason="RAG_SKIP_GRAPH=1")
-    else:
-        try:
-            # Pass changed-file set so LOD regen scopes to affected dirs/files.
-            # On --full runs we pass None to force a full rebuild.
-            lod_scope = None if full else processed_files
-            t_graph = perf_counter()
-            await _build_graph_and_summaries(vectorstore, collection, lod_scope)
-            _add_timing("graph_summary_ms", t_graph)
-        except Exception as e:
-            logger.warning("graph_build_error", error=str(e))
+        result.files_skipped = len(all_files) - total_files
 
-    # Save state
-    t_save = perf_counter()
-    state = IndexState(last_commit=current_commit, file_hashes=new_hashes)
-    state.save(path)
-    _add_timing("state_save_ms", t_save)
+        logger.info(
+            "indexing_complete",
+            files_processed=result.files_processed,
+            chunks_indexed=result.chunks_indexed,
+            files_skipped=result.files_skipped,
+            files_deleted=result.files_deleted,
+        )
 
-    result.files_skipped = len(all_files) - total_files
-
-    logger.info(
-        "indexing_complete",
-        files_processed=result.files_processed,
-        chunks_indexed=result.chunks_indexed,
-        files_skipped=result.files_skipped,
-        files_deleted=result.files_deleted,
-    )
+    finally:
+        # Shut down all active LSP servers
+        for client in active_lsp_clients.values():
+            try:
+                await client.stop()
+            except Exception:
+                pass
 
     return result
 
@@ -674,6 +707,19 @@ async def _lsp_enrich_batch(batch: list[ChunkDocument], repo_path: str, language
             doc.metadata = meta
     except Exception as e:
         logger.warning("lsp_enrich_batch_error", error=str(e))
+
+
+async def _lsp_enrich_batch_with_clients(batch: list[ChunkDocument], clients: dict[str, Any]) -> None:
+    """Run LSP enrichment on a batch of documents using pre-started clients."""
+    try:
+        from rag.core.lsp import enrich_chunks_with_running_clients
+
+        chunk_metas = [doc.metadata for doc in batch]
+        await enrich_chunks_with_running_clients(chunk_metas, clients)
+        for doc, meta in zip(batch, chunk_metas):
+            doc.metadata = meta
+    except Exception as e:
+        logger.warning("lsp_enrich_batch_with_clients_error", error=str(e))
 
 
 async def index_documents(

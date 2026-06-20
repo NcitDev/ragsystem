@@ -77,33 +77,24 @@ This runs 10 developer scenarios comparing the Smart Agent (RAG), AST-Index, Gra
 
 ---
 
-## 5. Design Blueprint: Index-Time LSP Type Enrichment
+## 5. Natively Supported Persistent Index-Time LSP Type Enrichment
 
-To achieve compiler-level **100% precision** on cross-file usage lookups without running a slow language server at query time, you can implement an **Index-Time LSP Type Enrichment Runner** on the new GPU PC.
+To achieve compiler-level precision on cross-file usage lookups without running a slow language server at query time, the system includes an **Index-Time LSP Type Enrichment** system.
 
-### Implementation Blueprint:
-1. **LSP Lifecycle during Indexing:**
-   In `src/rag/core/indexer.py`, within `_index_repository_locked`:
-   * Start a background Kotlin/Java LSP language server connection using our `lsp.py` adapter.
-   * Wait for the language server to complete compilation/indexing.
-2. **FQN Extraction:**
-   When iterating over class declarations and usages:
-   * Query the LSP for the **Fully-Qualified Name (FQN)** of classes, interfaces, and methods (e.g. `org.thoughtcrime.securesms.database.helpers.migration.SignalDatabaseMigration`).
-3. **Payload Construction:**
-   Add these FQNs into Qdrant point payloads:
-   ```json
-   {
-     "file_path": "app/.../SignalDatabaseMigrations.kt",
-     "name": "SignalDatabaseMigrations",
-     "inherits_from": ["org.thoughtcrime.securesms.database.helpers.migration.SignalDatabaseMigration"],
-     "defines_fqn": ["org.thoughtcrime.securesms.database.helpers.SignalDatabaseMigrations"],
-     "references_fqn": [
-       "org.thoughtcrime.securesms.database.helpers.migration.SignalDatabaseMigration",
-       "org.thoughtcrime.securesms.jobmanager.Job"
-     ]
-   }
-   ```
-4. **Resolution via Qdrant FQN Search:**
-   In `/resolve` (`src/rag/server.py`), when resolving usages of `SignalDatabaseMigration`:
-   * Execute a Qdrant keyword scroll where `references_fqn` contains `org.thoughtcrime.securesms.database.helpers.migration.SignalDatabaseMigration`.
-   * This completely bypasses substring matching issues, providing compiler-accurate results in under **10ms**.
+### How it works:
+1. **Persistent O(1) LSP Client Pool:**
+   During a repository indexing run (`uv run rag index`), the system detects and starts the appropriate language server (e.g., Kotlin/Java language server for Signal-Android, Pyright for Python, etc.) exactly once.
+   * *Optimization:* The language server is kept alive across the entire indexing run instead of starting/stopping on every document batch. This avoids launcher overhead (which could otherwise run a compiler startup hundreds of times for large repos).
+2. **Metadata Enrichment:**
+   As chunks are parsed, they are routed through the active language server client to query cross-file symbol references (`fan_in` / `called_by` / `dead_code_candidate`).
+3. **FQN/Keyword-accurate Resolution:**
+   Enriched metadata is stored directly in Qdrant/SQLite. When calling `/resolve` or performing symbol usage queries, the retrieval agent has immediate access to compile-accurate call-graphs and relationships in under **10ms** (without any query-time compilation overhead).
+
+### Configuration:
+In `~/.rag/config.toml` (or `config/default.toml`), ensure the LSP section is enabled:
+```toml
+[lsp]
+enabled = true          # Set to false to disable LSP indexing completely
+timeout = 5000          # LSP request timeout in milliseconds
+```
+
