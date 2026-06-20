@@ -431,7 +431,7 @@ def run_smart_agent(sc: Scenario, metrics: AgentMetrics) -> None:
             filtered: list[tuple[str, str]] = []
             for priority, _, fp, code in scored:
                 fp_dir = str(Path(fp).parent)
-                if priority > 0 and dir_counts[fp_dir] >= 3:
+                if dir_counts[fp_dir] >= 3:
                     continue
                 dir_counts[fp_dir] += 1
                 filtered.append((fp, code))

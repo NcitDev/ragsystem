@@ -1743,7 +1743,7 @@ def create_app() -> FastAPI:
 
                     # Determine structural explanation
                     is_inherits = fqn in payload.get("inherits_from", [])
-                    why_included = "inherits_from_relationship" if is_inherits else "implements_or_references_relationship"
+                    why_included = "inherits_from_relationship" if is_inherits else "references_relationship"
 
                     hits.append({
                         "chunk_id": chunk_id,

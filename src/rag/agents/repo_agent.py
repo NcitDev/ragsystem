@@ -270,8 +270,8 @@ def filter_resolve_usages(
     for priority, _, item in scored:
         fp = item.get("file_path", "")
         fp_dir = str(Path(fp).parent)
-        # Structural hits bypass the directory cap — they are always relevant.
-        if priority > 0 and dir_counts[fp_dir] >= 3:
+        # Apply the directory cap of 3 to all usages to ensure architectural diversity
+        if dir_counts[fp_dir] >= 3:
             continue
         dir_counts[fp_dir] += 1
         kept.append(item)
