@@ -17,65 +17,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 58.5,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 13,
-          "tokens": 15537,
-          "tool_calls": {
-            "ast-index:symbol": 2,
-            "ast-index:usages": 2,
-            "ast-index:search": 1,
-            "read_file": 8
-          },
-          "files_read": 8,
-          "precision_pct": 37.5,
-          "signal_pct": 62.5,
-          "coverage_pct": 100.0,
-          "latency_ms": 358.9,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 9729,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 30.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 3591.8,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 12,
-          "tokens": 32985,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 30.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 425.3,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 4,
-          "tokens": 1726,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 2
-          },
-          "files_read": 2,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 32026.0,
+          "latency_ms": 59.8,
           "error": ""
         }
       }
@@ -97,65 +39,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 53.4,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 15,
-          "tokens": 7647,
-          "tool_calls": {
-            "ast-index:symbol": 2,
-            "ast-index:usages": 2,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 77.9,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 7043,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 4097.4,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 12,
-          "tokens": 21486,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 0.0,
-          "signal_pct": 50.0,
-          "coverage_pct": 0.0,
-          "latency_ms": 204.6,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 4,
-          "tokens": 2652,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 2
-          },
-          "files_read": 2,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 3947.0,
+          "latency_ms": 58.7,
           "error": ""
         }
       }
@@ -177,65 +61,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 78.4,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 17,
-          "tokens": 14523,
-          "tool_calls": {
-            "ast-index:symbol": 3,
-            "ast-index:usages": 3,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 30.0,
-          "signal_pct": 60.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 151.2,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 21188,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 30.0,
-          "signal_pct": 30.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 3633.2,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 12,
-          "tokens": 19613,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 159.5,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 6,
-          "tokens": 2828,
-          "tool_calls": {
-            "serena:find_symbol": 3,
-            "read_file": 3
-          },
-          "files_read": 3,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 5838.7,
+          "latency_ms": 78.3,
           "error": ""
         }
       }
@@ -257,65 +83,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 57.2,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 15,
-          "tokens": 18001,
-          "tool_calls": {
-            "ast-index:symbol": 2,
-            "ast-index:usages": 2,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 70.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 136.4,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 25026,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 20.0,
-          "coverage_pct": 50.0,
-          "latency_ms": 3848.8,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 12,
-          "tokens": 19025,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 50.0,
-          "coverage_pct": 50.0,
-          "latency_ms": 174.9,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 4,
-          "tokens": 5256,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 2
-          },
-          "files_read": 2,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 3933.4,
+          "latency_ms": 80.8,
           "error": ""
         }
       }
@@ -337,65 +105,7 @@
           "precision_pct": 66.7,
           "signal_pct": 100.0,
           "coverage_pct": 66.66666666666666,
-          "latency_ms": 46.5,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 8,
-          "tokens": 5305,
-          "tool_calls": {
-            "ast-index:symbol": 2,
-            "ast-index:usages": 2,
-            "ast-index:search": 1,
-            "read_file": 3
-          },
-          "files_read": 3,
-          "precision_pct": 33.3,
-          "signal_pct": 66.7,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 135.5,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 19825,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 20.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 3325.8,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 4,
-          "tokens": 5106,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 2
-          },
-          "files_read": 2,
-          "precision_pct": 50.0,
-          "signal_pct": 50.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 143.8,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 4,
-          "tokens": 256,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 2
-          },
-          "files_read": 2,
-          "precision_pct": 50.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 3950.3,
+          "latency_ms": 58.8,
           "error": ""
         }
       }
@@ -407,75 +117,17 @@
       "tool_path": "resolve_usages",
       "agents": {
         "Smart Agent": {
-          "turns": 13,
-          "tokens": 5655,
+          "turns": 17,
+          "tokens": 10702,
           "tool_calls": {
             "resolve": 1,
-            "read_file": 12
+            "read_file": 16
           },
-          "files_read": 12,
-          "precision_pct": 25.0,
-          "signal_pct": 100.0,
+          "files_read": 16,
+          "precision_pct": 18.8,
+          "signal_pct": 93.8,
           "coverage_pct": 75.0,
-          "latency_ms": 57.8,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 13,
-          "tokens": 24559,
-          "tool_calls": {
-            "ast-index:symbol": 1,
-            "ast-index:usages": 1,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 70.0,
-          "coverage_pct": 25.0,
-          "latency_ms": 52.2,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 29498,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 0.0,
-          "signal_pct": 60.0,
-          "coverage_pct": 0.0,
-          "latency_ms": 3521.8,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 12,
-          "tokens": 18563,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 50.0,
-          "latency_ms": 264.7,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 3,
-          "tokens": 5000,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 1
-          },
-          "files_read": 1,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 25.0,
-          "latency_ms": 4059.7,
+          "latency_ms": 53.1,
           "error": ""
         }
       }
@@ -497,66 +149,7 @@
           "precision_pct": 50.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 42.7,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 13,
-          "tokens": 7647,
-          "tool_calls": {
-            "ast-index:symbol": 1,
-            "ast-index:usages": 1,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 130.2,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 7043,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 3279.8,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 12,
-          "tokens": 21486,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 0.0,
-          "signal_pct": 50.0,
-          "coverage_pct": 0.0,
-          "latency_ms": 245.1,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 4,
-          "tokens": 113,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 1,
-            "serena:find_referencing_symbols": 1
-          },
-          "files_read": 1,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 7500.6,
+          "latency_ms": 46.4,
           "error": ""
         }
       }
@@ -578,66 +171,7 @@
           "precision_pct": 20.0,
           "signal_pct": 33.3,
           "coverage_pct": 100.0,
-          "latency_ms": 51.6,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 13,
-          "tokens": 32070,
-          "tool_calls": {
-            "ast-index:symbol": 1,
-            "ast-index:usages": 1,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 30.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 53.0,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 30168,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 0.0,
-          "signal_pct": 40.0,
-          "coverage_pct": 0.0,
-          "latency_ms": 3982.7,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 12,
-          "tokens": 27695,
-          "tool_calls": {
-            "rg": 2,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 0.0,
-          "signal_pct": 10.0,
-          "coverage_pct": 0.0,
-          "latency_ms": 188.0,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 5,
-          "tokens": 11232,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 1,
-            "serena:find_referencing_symbols": 2
-          },
-          "files_read": 1,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 41201.7,
+          "latency_ms": 46.6,
           "error": ""
         }
       }
@@ -660,65 +194,7 @@
           "precision_pct": 100.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 969.5,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 15,
-          "tokens": 22340,
-          "tool_calls": {
-            "ast-index:symbol": 2,
-            "ast-index:usages": 2,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 20.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 126.1,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 15906,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 10.0,
-          "signal_pct": 10.0,
-          "coverage_pct": 33.33333333333333,
-          "latency_ms": 5202.8,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 13,
-          "tokens": 25622,
-          "tool_calls": {
-            "rg": 3,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 20.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 466.4,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 4,
-          "tokens": 2794,
-          "tool_calls": {
-            "serena:find_symbol": 2,
-            "read_file": 2
-          },
-          "files_read": 2,
-          "precision_pct": 100.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 3973.5,
+          "latency_ms": 824.1,
           "error": ""
         }
       }
@@ -741,65 +217,7 @@
           "precision_pct": 75.0,
           "signal_pct": 100.0,
           "coverage_pct": 100.0,
-          "latency_ms": 697.0,
-          "error": ""
-        },
-        "AST-Index": {
-          "turns": 17,
-          "tokens": 16539,
-          "tool_calls": {
-            "ast-index:symbol": 3,
-            "ast-index:usages": 3,
-            "ast-index:search": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 30.0,
-          "signal_pct": 70.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 252.5,
-          "error": ""
-        },
-        "Graphify": {
-          "turns": 11,
-          "tokens": 19480,
-          "tool_calls": {
-            "graphify:parse": 1,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 60.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 3865.0,
-          "error": ""
-        },
-        "Vanilla (rg)": {
-          "turns": 13,
-          "tokens": 26831,
-          "tool_calls": {
-            "rg": 3,
-            "read_file": 10
-          },
-          "files_read": 10,
-          "precision_pct": 20.0,
-          "signal_pct": 40.0,
-          "coverage_pct": 66.66666666666666,
-          "latency_ms": 289.0,
-          "error": ""
-        },
-        "Serena": {
-          "turns": 7,
-          "tokens": 2508,
-          "tool_calls": {
-            "serena:find_symbol": 3,
-            "read_file": 4
-          },
-          "files_read": 4,
-          "precision_pct": 75.0,
-          "signal_pct": 100.0,
-          "coverage_pct": 100.0,
-          "latency_ms": 5849.5,
+          "latency_ms": 473.5,
           "error": ""
         }
       }
