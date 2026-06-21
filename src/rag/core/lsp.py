@@ -73,6 +73,12 @@ LSP_SERVERS: dict[str, dict[str, str]] = {
         "install": "Install Dart SDK: https://dart.dev/get-dart",
         "args": "language-server --protocol=lsp",
     },
+    "kotlin": {
+        "binary": "kotlin-language-server",
+        "name": "kotlin-language-server",
+        "install": "brew install kotlin-language-server",
+        "args": "",
+    },
 }
 
 
@@ -130,13 +136,40 @@ class LSPClient:
 
     async def start(self) -> bool:
         """Start the LSP server process."""
+        import os
+        for openjdk_path in (
+            "/opt/homebrew/opt/openjdk@21",
+            "/usr/local/opt/openjdk@21",
+            "/opt/homebrew/opt/openjdk",
+            "/usr/local/opt/openjdk",
+        ):
+            openjdk_bin = f"{openjdk_path}/bin"
+            if os.path.exists(openjdk_bin):
+                paths = os.environ.get("PATH", "").split(os.pathsep)
+                if openjdk_bin not in paths:
+                    paths.insert(0, openjdk_bin)
+                    os.environ["PATH"] = os.pathsep.join(paths)
+                os.environ["JAVA_HOME"] = openjdk_path
+                break
+
         if self._language not in LSP_SERVERS:
             return False
 
         server = LSP_SERVERS[self._language]
         binary = shutil.which(server["binary"])
         if not binary:
-            return False
+            install_cmd = server.get("install", "")
+            if install_cmd and not install_cmd.startswith("Install "):
+                logger.info("lsp_auto_installing", language=self._language, command=install_cmd)
+                try:
+                    import subprocess
+                    # Run auto-install command synchronously
+                    subprocess.run(install_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    binary = shutil.which(server["binary"])
+                except Exception as e:
+                    logger.warning("lsp_auto_install_failed", language=self._language, error=str(e))
+            if not binary:
+                return False
 
         cmd = [binary]
         if server["args"]:
@@ -331,7 +364,7 @@ async def enrich_chunks_with_lsp(
         The enriched chunks
     """
     available = detect_lsp_servers(languages)
-    servers_to_start = [s for s in available if s.found]
+    servers_to_start = available
 
     if not servers_to_start:
         logger.info("lsp_enrichment_skipped", reason="no LSP servers available")
@@ -356,6 +389,11 @@ async def enrich_chunks_with_lsp(
     for i, chunk in enumerate(chunks):
         lang = chunk.get("language", "")
         if lang not in clients:
+            continue
+
+        chunk_type = chunk.get("chunk_type", "")
+        # Only query LSP references for structural symbol declarations
+        if chunk_type not in ("class_declaration", "interface_declaration", "method", "function", "class", "interface"):
             continue
 
         client = clients[lang]
@@ -412,6 +450,11 @@ async def enrich_chunks_with_running_clients(
     for chunk in chunks:
         lang = chunk.get("language", "")
         if lang not in clients:
+            continue
+
+        chunk_type = chunk.get("chunk_type", "")
+        # Only query LSP references for structural symbol declarations
+        if chunk_type not in ("class_declaration", "interface_declaration", "method", "function", "class", "interface"):
             continue
 
         client = clients[lang]

@@ -230,7 +230,7 @@ def filter_resolve_usages(
             def_dirs.add(str(Path(fp).parent))
 
     syms_lower = {s.lower() for s in symbols}
-    _STRUCTURAL_SIGNALS = frozenset({"extends", "implements", "subclass", "inherits"})
+    _STRUCTURAL_SIGNALS = frozenset({"extends", "implements", "subclass", "inherits", "references"})
 
     # Score each usage.
     scored: list[tuple[int, int, dict[str, Any]]] = []  # (priority, idx, item)

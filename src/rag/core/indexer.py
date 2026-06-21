@@ -390,10 +390,9 @@ async def _index_repository_locked(
                         langs_to_start.add(lang)
             available = detect_lsp_servers(list(langs_to_start))
             for server in available:
-                if server.found:
-                    client = LSPClient(server.language, str(path))
-                    if await client.start():
-                        active_lsp_clients[server.language] = client
+                client = LSPClient(server.language, str(path))
+                if await client.start():
+                    active_lsp_clients[server.language] = client
             if active_lsp_clients:
                 await asyncio.sleep(2)
 

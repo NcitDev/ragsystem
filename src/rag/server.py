@@ -1675,38 +1675,115 @@ def create_app() -> FastAPI:
 
     # --- Resolve (exact AST definitions/usages for named repos) ---
 
-    async def _query_structural_usages_from_qdrant(collection: str, symbols: list[str]) -> list[dict[str, Any]]:
+    async def _query_structural_usages_from_qdrant(collection: str, symbols: list[str], repo: str) -> list[dict[str, Any]]:
         from pathlib import Path
         from qdrant_client import models
         vectorstore = get_vectorstore()
         client = await vectorstore._get_client()
         hits = []
 
-        # Resolve FQNs for the symbols
+        # Resolve FQNs and called_by for the symbols in one scroll query per symbol
         fqns = []
+        called_by_locations = []
         for symbol in symbols:
-            fqns.append(symbol)
             try:
                 qfilter = models.Filter(
                     must=[
                         models.FieldCondition(key="name", match=models.MatchValue(value=symbol)),
-                        models.FieldCondition(key="chunk_type", match=models.MatchValue(value="class_declaration"))
+                        models.FieldCondition(
+                            key="chunk_type",
+                            match=models.MatchAny(any=["class_declaration", "interface_declaration", "method", "function", "class", "interface"])
+                        )
                     ]
                 )
                 res = await client.scroll(
                     collection_name=collection,
                     scroll_filter=qfilter,
-                    limit=2,
+                    limit=5,
                     with_payload=True
                 )
+                has_fqn = False
                 if res and res[0]:
                     for pt in res[0]:
                         payload = pt.payload or {}
                         defines_fqn = payload.get("defines_fqn")
                         if defines_fqn:
                             fqns.append(defines_fqn)
+                            has_fqn = True
+                        cb = payload.get("called_by")
+                        if cb:
+                            if isinstance(cb, list):
+                                called_by_locations.extend(cb)
+                            elif isinstance(cb, str):
+                                called_by_locations.append(cb)
+                if not has_fqn:
+                    fqns.append(symbol)
             except Exception:
-                pass
+                fqns.append(symbol)
+
+        # Convert absolute paths to relative paths and retrieve those chunks
+        if called_by_locations:
+            try:
+                repo_info = _repo_info_for_name(repo)
+                repo_path = Path(repo_info.path).resolve()
+                
+                for loc in called_by_locations:
+                    if ":" not in loc:
+                        continue
+                    path_part, line_part = loc.rsplit(":", 1)
+                    try:
+                        line_num = int(line_part)
+                    except ValueError:
+                        continue
+                    path_obj = Path(path_part).resolve()
+                    try:
+                        rel_path = str(path_obj.relative_to(repo_path))
+                    except ValueError:
+                        continue
+
+                    # Query Qdrant for a chunk covering this line in this file
+                    qfilter = models.Filter(
+                        must=[
+                            models.FieldCondition(key="file_path", match=models.MatchValue(value=rel_path)),
+                            models.FieldCondition(key="start_line", range=models.Range(lte=line_num)),
+                            models.FieldCondition(key="end_line", range=models.Range(gte=line_num))
+                        ]
+                    )
+                    res = await client.scroll(
+                        collection_name=collection,
+                        scroll_filter=qfilter,
+                        limit=5,
+                        with_payload=True
+                    )
+                    if res and res[0]:
+                        for pt in res[0]:
+                            payload = pt.payload or {}
+                            start_line = payload.get("start_line", 1)
+                            end_line = payload.get("end_line", 1)
+                            label = payload.get("name", "") or Path(rel_path).name
+                            chunk_id = f"graph:{rel_path}:{start_line}:{label}"
+                            if any(h["chunk_id"] == chunk_id for h in hits):
+                                continue
+                            
+                            code = payload.get("content", "")
+                            hits.append({
+                                "chunk_id": chunk_id,
+                                "file_path": rel_path,
+                                "name": label,
+                                "parent_name": "",
+                                "chunk_type": payload.get("chunk_type", "class"),
+                                "language": payload.get("language", ""),
+                                "start_line": start_line,
+                                "end_line": end_line,
+                                "lines": f"{start_line}-{end_line}",
+                                "code": code,
+                                "token_estimate": max(1, (len(code) + 3) // 4),
+                                "score": 20.0,
+                                "citation": f"{rel_path}:{start_line}-{end_line} ({label})",
+                                "why_included": "references_relationship",
+                            })
+            except Exception as e:
+                logger.warning("called_by_resolution_failed", error=str(e))
 
         for fqn in set(fqns):
             try:
@@ -1794,7 +1871,7 @@ def create_app() -> FastAPI:
             # Query Qdrant for structural usages
             try:
                 coll = _collection_for_repo(req.repo)
-                structural_usages = await _query_structural_usages_from_qdrant(coll, symbols)
+                structural_usages = await _query_structural_usages_from_qdrant(coll, symbols, req.repo)
                 usages.extend(structural_usages)
             except Exception as e:
                 logger.warning("resolve_structural_usages_failed", error=str(e))

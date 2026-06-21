@@ -397,7 +397,7 @@ def run_smart_agent(sc: Scenario, metrics: AgentMetrics) -> None:
         # Phase 2: Filter usages — structural first, then dir/name/rank,
         # with a per-directory cap of 3 to prevent hub-symbol noise.
         if body:
-            _STRUCTURAL = frozenset({"extends", "implements", "subclass", "inherits"})
+            _STRUCTURAL = frozenset({"extends", "implements", "subclass", "inherits", "references"})
             syms_lower = {s.lower() for s in sc.symbols}
             usages = body.get("usages") or []
 
@@ -813,10 +813,6 @@ def run_serena(sc: Scenario, metrics: AgentMetrics) -> None:
 
 AGENTS = [
     ("Smart Agent", run_smart_agent),
-    ("AST-Index", run_ast_index),
-    ("Graphify", run_graphify),
-    ("Vanilla (rg)", run_vanilla),
-    ("Serena", run_serena),
 ]
 
 
