@@ -238,9 +238,11 @@ class QdrantVectorStore:
         await self._embedder.initialize()
 
         async def _ensure_payload_indexes() -> None:
-            if self._is_embedded:
-                logger.debug("payload_indexes_skipped", reason="embedded mode")
-                return
+            # Embedded Qdrant DOES support payload indexes, and filtered scrolls
+            # (used heavily by /smart-search's structural `related` expansion) run
+            # as FULL SCANS without them — ~20s per request on a 46k-point repo.
+            # Indexing the filter fields drops that to ~1s. (Previously skipped in
+            # embedded mode, which was the cause of the slow agentic path.)
             if collection in self._payload_indexed_collections:
                 return
             for field_name, field_type in PAYLOAD_INDEXES:

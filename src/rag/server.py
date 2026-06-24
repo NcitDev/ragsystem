@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import secrets
 import time
@@ -135,6 +136,10 @@ class SmartSearchRequest(BaseModel):
     # for the files it actually wants.
     candidate_offset: int = Field(0, ge=0)
     candidate_limit: int = Field(25, ge=0, le=200)
+    # Lazy mode: when False, strip full `code` from definitions/usages/semantic
+    # so the response is links-only (~75% fewer tokens). The caller reads bodies
+    # on demand for the files it picks from `candidates`.
+    include_bodies: bool = True
 
 
 class RelatedLink(BaseModel):
@@ -2035,6 +2040,9 @@ def create_app() -> FastAPI:
             logger.error("resolve_error", repo=req.repo, error=str(e))
             raise HTTPException(status_code=500, detail=f"Resolve failed ({type(e).__name__})")
 
+    async def _noop_related() -> list[RelatedLink]:
+        return []
+
     async def _related_files(
         collection: str, symbols: list[str], prime_paths: set[str],
         anchor_files: set[str] | None = None, limit: int = 25,
@@ -2100,28 +2108,39 @@ def create_app() -> FastAPI:
                 seen_anchor.add(key)
                 anchors.append(payload)
 
-        for symbol in symbols:
-            for prime in (await _scroll("name", symbol, lim=3)):
+        # Anchor collection — parallelized. (Was sequential; embedded Qdrant's
+        # per-scroll cost dominated the agentic latency.)
+        name_res, file_res = await asyncio.gather(
+            asyncio.gather(*[_scroll("name", s, lim=3) for s in symbols]),
+            asyncio.gather(*[_scroll("file_path", pf, lim=6)
+                            for pf in (set(prime_paths) | set(anchor_files or []))]),
+        )
+        for batch in name_res:
+            for prime in batch:
                 await _collect_anchor(prime)
-        # Anchor on resolved definitions AND the top semantic files — many golden
-        # collaborators are siblings of a semantic hit that never resolved to a
-        # definition (e.g. preview-package siblings, gcm siblings).
-        for pf in (set(prime_paths) | set(anchor_files or [])):
-            for prime in (await _scroll("file_path", pf, lim=6)):
+        for batch in file_res:
+            for prime in batch:
                 if prime.get("defines_fqn") or prime.get("chunk_type", "") in (
                     "class_declaration", "interface_declaration", "class", "interface",
                 ):
                     await _collect_anchor(prime)
 
-        for prime in anchors:
+        async def _edges_for(prime: dict) -> list[tuple[dict, str]]:
+            """All structural edges for one anchor, as (payload, relation) in
+            priority order. The 4 scroll types run concurrently; the per-ref
+            collaborator lookups are batched into ONE MatchAny scroll (was up to
+            12 sequential scrolls — the main latency sink)."""
             symbol = prime.get("name", "")
             fqn = prime.get("defines_fqn")
             fp = prime.get("file_path", "")
             pkg = str(Path(fp).parent) if fp else ""
-            if True:
-                # true subclasses — chunks whose AST inherits_from names this
-                # symbol (by simple name or FQN). The most precise edge.
-                inh_keys = ([symbol] if symbol else []) + ([fqn] if fqn else [])
+            inh_keys = ([symbol] if symbol else []) + ([fqn] if fqn else [])
+            refs = [r for r in (prime.get("references_fqn") or [])[:12]
+                    if isinstance(r, str) and r.startswith(internal_prefix)]
+
+            async def _subclasses():
+                if not inh_keys:
+                    return []
                 try:
                     sub = await client.scroll(
                         collection_name=collection,
@@ -2129,27 +2148,47 @@ def create_app() -> FastAPI:
                             key="inherits_from", match=models.MatchAny(any=inh_keys))]),
                         limit=40, with_payload=True,
                     )
-                    for pt in (sub[0] or []):
-                        _add(pt.payload or {}, "subclass")
+                    return [((pt.payload or {}), "subclass") for pt in (sub[0] or [])]
                 except Exception:
-                    pass
-                # callers — chunks referencing the prime's fqn
-                if fqn:
-                    for vp in (await _scroll("references_fqn", fqn, lim=40)):
-                        _add(vp, "subclass_or_caller")
-                # collaborators — internal types the prime references
-                for ref in (prime.get("references_fqn") or [])[:12]:
-                    if isinstance(ref, str) and ref.startswith(internal_prefix):
-                        for rp in (await _scroll("defines_fqn", ref, lim=1)):
-                            _add(rp, "collaborator")
-                # siblings — same package. Kept broadly (they're cheap links and
-                # the golden collaborators often live in the prime's package);
-                # name-related ones are prioritized first, then the rest.
-                if pkg:
-                    sibs_here = [sp for sp in (await _scroll("file_path", pkg, match_text=True, lim=80))
-                                 if str(Path(sp.get("file_path", "")).parent) == pkg]
-                    for sp in sorted(sibs_here, key=lambda s: not _name_related(s.get("file_path", ""))):
-                        _add(sp, "sibling")
+                    return []
+
+            async def _callers():
+                if not fqn:
+                    return []
+                return [(vp, "subclass_or_caller")
+                        for vp in await _scroll("references_fqn", fqn, lim=40)]
+
+            async def _collaborators():
+                if not refs:
+                    return []
+                try:
+                    res = await client.scroll(
+                        collection_name=collection,
+                        scroll_filter=models.Filter(must=[models.FieldCondition(
+                            key="defines_fqn", match=models.MatchAny(any=refs))]),
+                        limit=40, with_payload=True,
+                    )
+                    return [((pt.payload or {}), "collaborator") for pt in (res[0] or [])]
+                except Exception:
+                    return []
+
+            async def _siblings():
+                if not pkg:
+                    return []
+                sibs = [sp for sp in (await _scroll("file_path", pkg, match_text=True, lim=80))
+                        if str(Path(sp.get("file_path", "")).parent) == pkg]
+                sibs.sort(key=lambda s: not _name_related(s.get("file_path", "")))
+                return [(sp, "sibling") for sp in sibs]
+
+            parts = await asyncio.gather(
+                _subclasses(), _callers(), _collaborators(), _siblings())
+            return [edge for part in parts for edge in part]
+
+        # Process all anchors concurrently, then apply _add in deterministic
+        # order (preserves the original first-seen priority semantics).
+        for edges in await asyncio.gather(*[_edges_for(p) for p in anchors]):
+            for payload, relation in edges:
+                _add(payload, relation)
 
         ordered = sorted(ranked.values(), key=lambda t: t[0])
         return [link for _, link in ordered][:limit]
@@ -2186,10 +2225,20 @@ def create_app() -> FastAPI:
                 lines=f"{line}-{line}", relation=relation,
             ))
 
-        for sym in symbols[:5]:
-            for it in (await _run(["implementations", "--format", "json", "--limit", "25", sym]) or []):
+        # Run all ast-index subprocesses concurrently (was 2×N sequential calls
+        # — the dominant cost of the ast-index channel). Separate processes, so
+        # they genuinely parallelize.
+        syms = symbols[:5]
+        impl_results, refs_results = await asyncio.gather(
+            asyncio.gather(*[_run(["implementations", "--format", "json", "--limit", "25", s])
+                            for s in syms]),
+            asyncio.gather(*[_run(["refs", "--format", "json", "--limit", "25", s])
+                            for s in syms]),
+        )
+        for res in impl_results:
+            for it in (res or []):
                 _add(it, "implementor", 0)
-            refs = await _run(["refs", "--format", "json", "--limit", "25", sym])
+        for refs in refs_results:
             if isinstance(refs, dict):
                 for it in refs.get("usages", []):
                     _add(it, "usage", 1)
@@ -2332,12 +2381,18 @@ def create_app() -> FastAPI:
                 if (nm and nm[0].isupper() and len(nm) >= 4
                         and "." not in nm and nm not in sem_names):
                     sem_names.append(nm)
-            # Grounding stays BASELINE-only (inferred ∩ index + semantic names).
-            # Vocab anchors are deliberately NOT injected here: doing so drifted
-            # the resolve/related expansion off the exact named symbol and cost
-            # ~5% coverage on precise questions (benchmarked). Vocab is returned
-            # separately as `vocab_files`/`vocab_anchors` — purely additive.
-            grounded = list(dict.fromkeys(verified + sem_names))[:8]
+            # Grounding is BASELINE-first (inferred ∩ index + semantic names).
+            # Injecting vocab anchors unconditionally drifted resolve/related off
+            # the exact named symbol and cost ~5% on precise questions. So vocab
+            # anchors are a GATED FALLBACK: used for grounding only when the
+            # baseline produced little/nothing (e.g. no LLM symbol inference
+            # available), where they can't displace a stronger signal — they just
+            # give exact resolve (ast-index) something real to resolve.
+            grounded = list(dict.fromkeys(verified + sem_names))
+            if len(grounded) < 2 and vocab_anchors:
+                vocab_grounded = [s for s in vocab_anchors if await _symbol_exists(coll, s)]
+                grounded = list(dict.fromkeys(grounded + vocab_grounded))
+            grounded = grounded[:8]
 
             # 4. Exact resolve on the grounded symbols.
             definitions: list[ContextSlice] = []
@@ -2400,14 +2455,20 @@ def create_app() -> FastAPI:
                     prime_paths = {s.file_path for s in definitions}
                     anchor_files = {r.payload.get("file_path") for r in sresults[:5]
                                     if (r.payload or {}).get("file_path")}
-                    qdrant_rel = await _related_files(
-                        coll, grounded, prime_paths, anchor_files=anchor_files, limit=80,
-                    )
-                    # ast-index structural channel: implementors + cross-refs
-                    # (catches interface implementors and cross-package collaborators
-                    # the Qdrant payload misses — no LSP/graphify needed).
+                    # Run the Qdrant and ast-index channels concurrently — they're
+                    # independent; serial execution doubled the expansion latency.
+                    # The Qdrant payload channel does ~45 filtered scrolls that run
+                    # as full scans in embedded mode (~14s); now that ast-index is
+                    # available it covers the same structural edges far faster, so
+                    # the Qdrant channel is opt-in via RAG_QDRANT_RELATED=1.
                     repo_info = _repo_info_for_name(req.repo)
-                    ast_rel = await _ast_index_related(repo_info.path, grounded, prime_paths, limit=80)
+                    _use_qdrant_rel = os.environ.get("RAG_QDRANT_RELATED", "0") == "1"
+                    qdrant_rel, ast_rel = await asyncio.gather(
+                        _related_files(coll, grounded, prime_paths,
+                                       anchor_files=anchor_files, limit=80)
+                        if _use_qdrant_rel else _noop_related(),
+                        _ast_index_related(repo_info.path, grounded, prime_paths, limit=80),
+                    )
                     # Merge by file, keeping the strongest relation, and rank so
                     # structural edges (implementor/subclass/usage) survive the cap
                     # over generic same-package siblings.
@@ -2475,6 +2536,16 @@ def create_app() -> FastAPI:
 
             candidates_total = len(pool)
             page = pool[req.candidate_offset: req.candidate_offset + req.candidate_limit]
+
+            # Lazy mode: drop full code bodies — candidates/links carry path+lines
+            # so the caller fetches bodies on demand. Cuts response tokens ~75%.
+            if not req.include_bodies:
+                for s in definitions:
+                    s.code = ""
+                for s in usages:
+                    s.code = ""
+                for it in semantic_items:
+                    it.code = ""
 
             return SmartSearchResponse(
                 question=req.question, inferred_symbols=inferred, grounded_symbols=grounded,

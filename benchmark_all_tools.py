@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import time
@@ -42,7 +43,8 @@ from typing import Any, Callable
 # Configuration
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path("/Users/nikitaf/.gemini/tmp/ragsystem/Signal-Android")
+PROJECT_ROOT = Path(os.environ.get(
+    "RAG_BENCH_ROOT", "/Users/nikitaf/.gemini/tmp/ragsystem/Signal-Android"))
 RAG_URL = "http://127.0.0.1:7890"
 REPO_NAME = "signal"
 PKG = "app/src/main/java/org/thoughtcrime/securesms"
@@ -261,18 +263,33 @@ def run_rag_agentic(sc: Scenario, token: str) -> ToolResult:
     try:
         data = _post("/smart-search", {
             "question": sc.question, "repo": REPO_NAME, "top_k": TOP_K,
+            "candidate_offset": 0, "candidate_limit": 200,
         }, token)
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         return ToolResult(error=str(e), latency_ms=(time.time() - t0) * 1000)
-    files: list[str] = []
-    for bucket in ("definitions", "usages", "related", "semantic"):
-        for item in (data or {}).get(bucket, []):
-            fp = item.get("file_path", "")
-            if fp:
-                files.append(fp)
-    syms = (data or {}).get("inferred_symbols", [])
+    # The candidate pool is the unified, deduped, precision-first link list
+    # (definitions+vocab+usages+related+semantic). Top-k = the first page.
+    files = [c.get("file_path", "") for c in (data or {}).get("candidates", []) if c.get("file_path")]
+    anchors = (data or {}).get("vocab_anchors", [])
     return ToolResult(files=_cap(files), latency_ms=(time.time() - t0) * 1000,
-                      detail=f"agy_symbols={syms[:3]}")
+                      detail=f"vocab_anchors={anchors[:3]}")
+
+
+def run_rag_agentic_pool(sc: Scenario, token: str) -> ToolResult:
+    """Same /smart-search call, but score the FULL candidate pool (all pages the
+    LLM can reach by paging candidate_offset), not just the top-k first page."""
+    t0 = time.time()
+    try:
+        data = _post("/smart-search", {
+            "question": sc.question, "repo": REPO_NAME, "top_k": TOP_K,
+            "candidate_offset": 0, "candidate_limit": 200,
+        }, token)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return ToolResult(error=str(e), latency_ms=(time.time() - t0) * 1000)
+    files = [c.get("file_path", "") for c in (data or {}).get("candidates", []) if c.get("file_path")]
+    total = (data or {}).get("candidates_total", len(files))
+    return ToolResult(files=files, latency_ms=(time.time() - t0) * 1000,
+                      detail=f"pool={total}")
 
 
 def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
@@ -545,6 +562,7 @@ def run_serena(sc: Scenario, token: str) -> ToolResult:
 
 DRIVERS: dict[str, Callable[[Scenario, str], ToolResult]] = {
     "rag-agentic": run_rag_agentic,
+    "rag-agentic-pool": run_rag_agentic_pool,
     "rag-smart": run_rag_smart,
     "rag-search": run_rag_search,
     "rag-resolve": run_rag_resolve,
