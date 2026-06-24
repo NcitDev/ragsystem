@@ -283,6 +283,55 @@ async def _run_agy_planner(query: str, cfg: RetrievalAgentSettings) -> SearchPla
     return _plan_from_data(data, query)
 
 
+_SYMBOL_PROMPT = (
+    "Output a JSON array of up to 5 likely PascalCase class/interface names that "
+    "would DEFINE what this question is about (infer them even if not literally "
+    "present in the question). Array only, no prose: "
+)
+
+
+async def infer_symbols(question: str, timeout: float = 30.0) -> list[str]:
+    """LLM-infer candidate symbol names from a natural-language question.
+
+    This is what makes symbol routing work on vague questions: a regex can't
+    turn "sticker pack install event" into ``StickerPackInstallEvent``, but the
+    model can — and feeding that to ``/resolve`` finds the exact definition that
+    semantic search buries. agy-only (subscription auth, no API key); returns []
+    on a non-agy provider, timeout, or non-array output so callers degrade to
+    semantic search. Run from ``/tmp`` with a lean prompt — agy's agentic mode
+    (which hangs ``-p``) triggers on project-dir + verbose prompts.
+    """
+    cfg = get_settings().retrieval_agent
+    if cfg.provider != "agy" or shutil.which("agy") is None:
+        return []
+
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "agy", "-p", _SYMBOL_PROMPT + question, "--model", cfg.model,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd="/tmp",
+        )
+        out, _err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        logger.warning("infer_symbols_failed", error=str(exc), question=question)
+        return []
+
+    text = out.decode(errors="replace") if out else ""
+    m = re.search(r"\[.*\]", text, re.DOTALL)
+    if not m:
+        return []
+    try:
+        arr = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return []
+    return [s for s in arr if isinstance(s, str) and s][:5]
+
+
 async def plan_search(query: str) -> SearchPlan:
     """Use the configured LLM to decide search strategy.
 

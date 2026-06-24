@@ -48,7 +48,10 @@ REPO_NAME = "signal"
 PKG = "app/src/main/java/org/thoughtcrime/securesms"
 TOP_K = 15
 
-ALL_TOOLS = ["rag-smart", "rag-search", "rag-resolve", "vanilla-rg", "ast-index", "graphify", "serena"]
+ALL_TOOLS = ["rag-agentic", "rag-smart", "rag-search", "rag-resolve",
+             "vanilla-rg", "ast-index", "graphify", "serena"]
+
+AGY_MODEL = "Gemini 3.5 Flash (Low)"
 
 # Question phrasings that mean "blast radius" → use two-phase /resolve usages.
 _BLAST_SIGNALS = (
@@ -244,6 +247,90 @@ def _post(endpoint: str, payload: dict, token: str) -> dict | None:
     )
     with urllib.request.urlopen(req, timeout=150) as resp:
         return json.loads(resp.read().decode())
+
+
+def _agy_infer_symbols(question: str, timeout: float = 40.0) -> list[str]:
+    """Use agy (LLM) to INFER the exact class/interface names a question is about.
+
+    This is the missing piece: the regex extractor can't turn "sticker pack
+    install event" into `StickerPackInstallEvent`, but the LLM can. Run from
+    /tmp with a lean prompt (the agentic mode that hangs agy triggers on
+    project-dir + verbose prompts). Returns [] on timeout / parse failure so
+    the caller degrades to semantic.
+    """
+    prompt = (
+        "Output a JSON array of up to 5 likely PascalCase class/interface names "
+        "in the Signal-Android codebase that would DEFINE what this question is "
+        "about (infer them even if not literally present). Array only, no prose: "
+        + question
+    )
+    try:
+        proc = subprocess.run(
+            ["agy", "-p", prompt, "--model", AGY_MODEL],
+            capture_output=True, text=True, timeout=timeout, cwd="/tmp",
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    m = re.search(r"\[.*\]", proc.stdout, re.DOTALL)
+    if not m:
+        return []
+    try:
+        arr = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return []
+    return [s for s in arr if isinstance(s, str) and s][:5]
+
+
+def run_rag_agentic(sc: Scenario, token: str) -> ToolResult:
+    """The agentic retrieval loop = your design: agy infers symbols → /resolve
+    (exact) → semantic complement → return golden data.
+
+    Differs from rag-smart (which uses a regex symbol extractor) by using the
+    LLM to INFER symbol names from vague questions — the only thing shown to
+    move the 0%-everywhere scenarios.
+    """
+    t0 = time.time()
+    symbols = _agy_infer_symbols(sc.question)
+    q = sc.question.lower()
+    want_usages = any(sig in q for sig in _BLAST_SIGNALS)
+    files: list[str] = []
+    try:
+        if symbols:
+            data = _post("/resolve", {
+                "repo": REPO_NAME, "symbols": symbols,
+                "definitions_limit": 20, "usages_limit": 100 if want_usages else 0,
+            }, token)
+            def_dirs: set[str] = set()
+            for item in (data or {}).get("definitions", []):
+                fp = item.get("file_path", "")
+                if fp:
+                    files.append(fp)
+                    def_dirs.add(str(Path(fp).parent))
+            if want_usages:
+                syms_lower = {s.lower() for s in symbols}
+                picked: list[str] = []
+                for idx, item in enumerate((data or {}).get("usages", [])):
+                    fp = item.get("file_path", "")
+                    if not fp:
+                        continue
+                    if (str(Path(fp).parent) in def_dirs
+                            or any(s in Path(fp).stem.lower() for s in syms_lower) or idx < 10):
+                        picked.append(fp)
+                    if len(picked) >= 12:
+                        break
+                files.extend(picked)
+        # Semantic complement (fast deterministic planner) fills remaining slots.
+        sdata = _post("/search", {
+            "query": sc.question, "repo": REPO_NAME, "top_k": TOP_K, "planner": "fallback",
+        }, token)
+        for r in (sdata or {}).get("results", []):
+            fp = r.get("file_path", "")
+            if fp:
+                files.append(fp)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return ToolResult(error=str(e), latency_ms=(time.time() - t0) * 1000)
+    return ToolResult(files=_cap(files), latency_ms=(time.time() - t0) * 1000,
+                      detail=f"agy_symbols={symbols}")
 
 
 def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
@@ -515,6 +602,7 @@ def run_serena(sc: Scenario, token: str) -> ToolResult:
 
 
 DRIVERS: dict[str, Callable[[Scenario, str], ToolResult]] = {
+    "rag-agentic": run_rag_agentic,
     "rag-smart": run_rag_smart,
     "rag-search": run_rag_search,
     "rag-resolve": run_rag_resolve,
