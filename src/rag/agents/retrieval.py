@@ -6,17 +6,24 @@ Degrades gracefully to simple vector search if Gemini is unavailable.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
 import structlog
 
 from rag.config import get_settings, RetrievalAgentSettings
 from rag.core.chunker import ChunkType, supported_languages
+from rag.core.patterns import (
+    DECORATOR_PATTERNS,
+    DOMAIN_KEYWORDS,
+    LAYER_KEYWORDS,
+    NAME_PATTERNS,
+)
 
 logger = structlog.get_logger()
 
@@ -28,13 +35,23 @@ logger = structlog.get_logger()
 # zero payloads in Qdrant. We validate enum-like fields against known sets
 # and drop unknown values with a warning.
 #
-# Numeric fields (complexity_cyclomatic, nesting_depth, ...) and
-# free-form fields like "patterns" are too dynamic to whitelist and
-# pass through untouched.
+# The metadata fields (patterns / decorator_tags / domains / layers) are
+# CONTROLLED VOCABULARIES — the chunker only ever tags chunks with the keys
+# defined in core/patterns.py. The LLM planner, however, tends to invent
+# values (e.g. patterns="FullBackupExporter", patterns="event"). Passed as a
+# hard Qdrant filter, an invented value matches zero chunks and silently zeroes
+# out recall (measured: it was the main reason the LLM planner scored *below*
+# the heuristic fallback). So we validate these against the canonical keys and
+# drop anything else. Numeric fields (complexity_cyclomatic, nesting_depth, …)
+# stay free-form and pass through untouched.
 
 ALLOWED_FILTER_VALUES: dict[str, set[str]] = {
     "chunk_type": {ct.value for ct in ChunkType},
     "language": set(supported_languages()),
+    "patterns": set(NAME_PATTERNS),
+    "decorator_tags": set(DECORATOR_PATTERNS),
+    "domains": set(DOMAIN_KEYWORDS),
+    "layers": set(LAYER_KEYWORDS),
 }
 
 
@@ -154,6 +171,9 @@ async def _check_llm_ready() -> bool:
     if cfg.provider == "ollama":
         # Ollama is always "available" if configured — it's local.
         _llm_available = True
+    elif cfg.provider == "agy":
+        # Antigravity CLI: available iff the `agy` binary is on PATH.
+        _llm_available = shutil.which("agy") is not None
     else:
         _llm_available = bool(os.environ.get(cfg.api_key_env))
     return _llm_available
@@ -213,13 +233,67 @@ def _extract_json_object(text: str) -> dict | None:
     return None
 
 
-async def plan_search(query: str) -> SearchPlan:
-    """Use Agno agent to decide search strategy.
+_AGY_TIMEOUT_S = 90.0
 
-    Falls back to simple query expansion if LLM unavailable.
+
+def _plan_from_data(data: dict, query: str) -> SearchPlan:
+    """Build a SearchPlan from a parsed LLM JSON object."""
+    return SearchPlan(
+        queries=data.get("queries", [query]),
+        filters=_sanitize_filters(data.get("filters", {}) or {}),
+        strategy=data.get("strategy", "lod_drill"),
+        top_k=data.get("top_k", 20),
+    )
+
+
+async def _run_agy_planner(query: str, cfg: RetrievalAgentSettings) -> SearchPlan:
+    """Plan via the Antigravity ``agy`` CLI (subscription auth, no API key).
+
+    Spawns ``agy -p <prompt>`` as an *async* subprocess so the daemon's single
+    event loop is never blocked while the model thinks (~5-10s). Degrades to
+    ``_fallback_plan`` on timeout, a missing binary, or non-JSON output.
+    """
+    prompt = "\n".join(_RETRIEVAL_INSTRUCTIONS) + f"\n\nUser query: {query}\n\nJSON plan:"
+    args = ["agy", "-p", prompt]
+    if cfg.model:
+        args += ["--model", cfg.model]
+
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _err = await asyncio.wait_for(proc.communicate(), timeout=_AGY_TIMEOUT_S)
+    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        logger.warning("agy_planner_failed", error=str(exc), query=query)
+        return _fallback_plan(query)
+
+    text = out.decode(errors="replace") if out else ""
+    data = _extract_json_object(text)
+    if data is None:
+        logger.warning("agy_plan_unparseable", query=query, response_preview=text[:200])
+        return _fallback_plan(query)
+    return _plan_from_data(data, query)
+
+
+async def plan_search(query: str) -> SearchPlan:
+    """Use the configured LLM to decide search strategy.
+
+    Falls back to simple query expansion if the LLM is unavailable.
     """
     if not await _check_llm_ready():
         return _fallback_plan(query)
+
+    cfg = get_settings().retrieval_agent
+    if cfg.provider == "agy":
+        return await _run_agy_planner(query, cfg)
 
     try:
         agent = _get_agent()

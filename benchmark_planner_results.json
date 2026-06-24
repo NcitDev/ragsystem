@@ -1,0 +1,356 @@
+{
+  "top_k": 15,
+  "repeats": 1,
+  "scenarios": [
+    {
+      "id": 1,
+      "category": "feature",
+      "question": "Add a sticker pack install event. What's the existing pattern?",
+      "golden_count": 3,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 1,
+          "plan_filters": {},
+          "files_returned": 8.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 418.1,
+          "error": "",
+          "golden_found": []
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 5,
+          "plan_filters": {},
+          "files_returned": 8.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 10727.6,
+          "error": "",
+          "golden_found": []
+        }
+      }
+    },
+    {
+      "id": 2,
+      "category": "migration",
+      "question": "Find the database migration interface and show a concrete migration",
+      "golden_count": 2,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 2,
+          "plan_filters": {},
+          "files_returned": 8.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 507.6,
+          "error": "",
+          "golden_found": []
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 5,
+          "plan_filters": {},
+          "files_returned": 8.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 10434.3,
+          "error": "",
+          "golden_found": []
+        }
+      }
+    },
+    {
+      "id": 3,
+      "category": "arch",
+      "question": "Show me the main classes in the sticker pack management system",
+      "golden_count": 3,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 1,
+          "plan_filters": {},
+          "files_returned": 3.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 318.2,
+          "error": "",
+          "golden_found": []
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 5,
+          "plan_filters": {},
+          "files_returned": 3.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 9939.6,
+          "error": "",
+          "golden_found": []
+        }
+      }
+    },
+    {
+      "id": 4,
+      "category": "feature",
+      "question": "I need to add a new backup feature. Show me how FullBackupExporter works",
+      "golden_count": 2,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 1,
+          "plan_filters": {},
+          "files_returned": 4.0,
+          "golden_hits": 1,
+          "coverage_pct": 50.0,
+          "precision_pct": 25.0,
+          "latency_ms": 372.0,
+          "error": "",
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
+          ]
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 4,
+          "plan_filters": {},
+          "files_returned": 5.0,
+          "golden_hits": 1,
+          "coverage_pct": 50.0,
+          "precision_pct": 20.0,
+          "latency_ms": 9705.2,
+          "error": "",
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "category": "migration",
+      "question": "Find deprecated job migration code that should be cleaned up",
+      "golden_count": 3,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 1,
+          "plan_filters": {},
+          "files_returned": 12.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 238.1,
+          "error": "",
+          "golden_found": []
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 5,
+          "plan_filters": {},
+          "files_returned": 13.0,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 7.7,
+          "latency_ms": 9702.0,
+          "error": "",
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/migrations/DeprecatedJobMigration.kt"
+          ]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "category": "impact",
+      "question": "If I change the Job base class, what code breaks? Show all subclasses",
+      "golden_count": 4,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 1,
+          "plan_filters": {},
+          "files_returned": 9.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 326.6,
+          "error": "",
+          "golden_found": []
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 6,
+          "plan_filters": {},
+          "files_returned": 9.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 10454.0,
+          "error": "",
+          "golden_found": []
+        }
+      }
+    },
+    {
+      "id": 7,
+      "category": "refactor",
+      "question": "Rename SignalDatabaseMigration interface. Find all implementors and callers",
+      "golden_count": 3,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 2,
+          "plan_filters": {},
+          "files_returned": 5.0,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 40.0,
+          "latency_ms": 466.1,
+          "error": "",
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt"
+          ]
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 4,
+          "plan_filters": {},
+          "files_returned": 7.0,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 28.6,
+          "latency_ms": 10447.8,
+          "error": "",
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt"
+          ]
+        }
+      }
+    },
+    {
+      "id": 8,
+      "category": "impact",
+      "question": "Who calls Recipient? Show me the blast radius of changing the Recipient model",
+      "golden_count": 3,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 1,
+          "plan_filters": {},
+          "files_returned": 13.0,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 7.7,
+          "latency_ms": 371.0,
+          "error": "",
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt"
+          ]
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 4,
+          "plan_filters": {},
+          "files_returned": 13.0,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 7.7,
+          "latency_ms": 9573.2,
+          "error": "",
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt"
+          ]
+        }
+      }
+    },
+    {
+      "id": 9,
+      "category": "info",
+      "question": "How does the chat backup encryption and passphrase system work?",
+      "golden_count": 3,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 2,
+          "plan_filters": {},
+          "files_returned": 11.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 495.7,
+          "error": "",
+          "golden_found": []
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 5,
+          "plan_filters": {},
+          "files_returned": 12.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 9574.2,
+          "error": "",
+          "golden_found": []
+        }
+      }
+    },
+    {
+      "id": 10,
+      "category": "debug",
+      "question": "Trace how push notifications are received and processed by the app",
+      "golden_count": 3,
+      "planners": {
+        "fallback": {
+          "strategy": "hybrid",
+          "n_plan_queries": 2,
+          "plan_filters": {},
+          "files_returned": 10.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 618.8,
+          "error": "",
+          "golden_found": []
+        },
+        "llm": {
+          "strategy": "hybrid",
+          "n_plan_queries": 7,
+          "plan_filters": {},
+          "files_returned": 10.0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 10417.5,
+          "error": "",
+          "golden_found": []
+        }
+      }
+    }
+  ],
+  "summary": {
+    "fallback": {
+      "coverage": 15.0,
+      "precision": 7.2700000000000005,
+      "files": 8.3,
+      "latency": 413.21999999999997
+    },
+    "llm": {
+      "coverage": 18.330000000000002,
+      "precision": 6.4,
+      "files": 8.8,
+      "latency": 10097.539999999999
+    }
+  }
+}

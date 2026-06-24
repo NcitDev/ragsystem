@@ -23,6 +23,31 @@ else:
 RAG_HOME = Path.home() / ".rag"
 CONFIG_PATH = RAG_HOME / "config.toml"
 TOKEN_PATH = RAG_HOME / "token"
+
+
+def _load_env_files() -> None:
+    """Load API keys / secrets from ``.env`` into ``os.environ`` at import time.
+
+    The retrieval agent reads its provider key via ``os.environ`` (e.g.
+    ``GEMINI_API_KEY``), and the daemon process inherits whatever env is set
+    when ``rag start`` runs. To make ``rag`` work without manually exporting
+    keys, we load, in increasing priority:
+      1. ``~/.rag/.env`` (user-global secrets)
+      2. ``.env`` discovered from the current working dir upward (project-local)
+    Existing real env vars always win (``override=False``) so an explicitly
+    exported key is never clobbered by a stale file.
+    """
+    try:
+        from dotenv import find_dotenv, load_dotenv
+    except ImportError:
+        return
+    load_dotenv(RAG_HOME / ".env", override=False)
+    found = find_dotenv(usecwd=True)
+    if found:
+        load_dotenv(found, override=False)
+
+
+_load_env_files()
 _REPO_DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config" / "default.toml"
 _PACKAGE_DEFAULT_CONFIG = Path(__file__).with_name("default.toml")
 DEFAULT_CONFIG = (
@@ -116,13 +141,19 @@ class LSPSettings(BaseModel):
 
 
 class RetrievalAgentSettings(BaseModel):
-    """LLM provider for the Agno search-strategy planner."""
+    """LLM provider for the search-strategy planner.
+
+    Most providers (gemini/openai/anthropic/ollama) go through Agno. The
+    ``agy`` provider instead shells out to the Antigravity ``agy`` CLI —
+    subscription auth, no API key, and immune to Gemini API 503s.
+    """
 
     provider: str = Field(
-        default="gemini",
-        pattern=r"^(gemini|openai|anthropic|ollama)$",
+        default="agy",
+        pattern=r"^(gemini|openai|anthropic|ollama|agy)$",
     )
-    model: str = "gemini-3.5-flash"
+    # For agy, this is the CLI's display-name model (e.g. "Gemini 3.5 Flash (Low)").
+    model: str = "Gemini 3.5 Flash (Low)"
     api_key_env: str = "GEMINI_API_KEY"
     base_url: str = ""  # For ollama or custom endpoints
 

@@ -1,0 +1,282 @@
+{
+  "top_k": 15,
+  "tools": [
+    "serena"
+  ],
+  "scenarios": [
+    {
+      "id": 1,
+      "category": "feature",
+      "question": "Add a sticker pack install event. What's the existing pattern?",
+      "golden_count": 3,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/main/java/org/thoughtcrime/securesms/database/AttachmentTable.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker",
+            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/messages/SignalServiceDataMessage.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/BlessedPacks.kt"
+          ],
+          "n_files": 4,
+          "golden_hits": 0,
+          "golden_found": [],
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 4349.6,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 2,
+      "category": "migration",
+      "question": "Find the database migration interface and show a concrete migration",
+      "golden_count": 2,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/androidTest/java/org/thoughtcrime/securesms/database",
+            "app/src/benchmarkShared/java/org/thoughtcrime/securesms/database",
+            "app/src/test/java/org/thoughtcrime/securesms/database",
+            "app/src/test/java/org/thoughtcrime/securesms/testing/TestSignalSQLiteDatabase.kt",
+            "app/src/test/java/org/thoughtcrime/securesms/testutil/SignalDatabaseMigrationRule.kt",
+            "app/src/testShared/org/thoughtcrime/securesms/database",
+            "app/src/spinner/java/org/thoughtcrime/securesms/database",
+            "app/src/main/java/org/thoughtcrime/securesms/database",
+            "app/src/main/java/org/thoughtcrime/securesms/database/RecipientTable.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/PendingRetryReceiptCache.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/MegaphoneDatabase.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/megaphone/MegaphoneRepository.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/notifications/profiles/NotificationProfilesRepository.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/database",
+            "lib/spinner/src/main/java/org/signal/spinner/SpinnerServer.kt"
+          ],
+          "n_files": 15,
+          "golden_hits": 0,
+          "golden_found": [],
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 3852.3,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 3,
+      "category": "arch",
+      "question": "Show me the main classes in the sticker pack management system",
+      "golden_count": 3,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/main/java/org/thoughtcrime/securesms/database/AttachmentTable.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker",
+            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/messages/SignalServiceDataMessage.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/BlessedPacks.kt"
+          ],
+          "n_files": 4,
+          "golden_hits": 1,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/BlessedPacks.kt"
+          ],
+          "coverage_pct": 33.3,
+          "precision_pct": 25.0,
+          "latency_ms": 5718.8,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 4,
+      "category": "feature",
+      "question": "I need to add a new backup feature. Show me how FullBackupExporter works",
+      "golden_count": 2,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
+          ],
+          "n_files": 1,
+          "golden_hits": 1,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
+          ],
+          "coverage_pct": 50.0,
+          "precision_pct": 100.0,
+          "latency_ms": 1928.7,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 5,
+      "category": "migration",
+      "question": "Find deprecated job migration code that should be cleaned up",
+      "golden_count": 3,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/androidTest/java/org/thoughtcrime/securesms/database/AttachmentTableTest_deduping.kt",
+            "app/src/test/java/org/thoughtcrime/securesms/database/helpers/migration",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration",
+            "app/src/main/java/org/thoughtcrime/securesms/groups/ui/migration"
+          ],
+          "n_files": 4,
+          "golden_hits": 0,
+          "golden_found": [],
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 2093.2,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 6,
+      "category": "impact",
+      "question": "If I change the Job base class, what code breaks? Show all subclasses",
+      "golden_count": 4,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java"
+          ],
+          "n_files": 1,
+          "golden_hits": 1,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java"
+          ],
+          "coverage_pct": 25.0,
+          "precision_pct": 100.0,
+          "latency_ms": 2130.4,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 7,
+      "category": "refactor",
+      "question": "Rename SignalDatabaseMigration interface. Find all implementors and callers",
+      "golden_count": 3,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt"
+          ],
+          "n_files": 1,
+          "golden_hits": 1,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt"
+          ],
+          "coverage_pct": 33.3,
+          "precision_pct": 100.0,
+          "latency_ms": 1996.9,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 8,
+      "category": "impact",
+      "question": "Who calls Recipient? Show me the blast radius of changing the Recipient model",
+      "golden_count": 3,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt"
+          ],
+          "n_files": 1,
+          "golden_hits": 1,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt"
+          ],
+          "coverage_pct": 33.3,
+          "precision_pct": 100.0,
+          "latency_ms": 1934.4,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 9,
+      "category": "info",
+      "question": "How does the chat backup encryption and passphrase system work?",
+      "golden_count": 3,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/androidTest/java/org/thoughtcrime/securesms/backup/v2/ArchiveImportExportTests.kt",
+            "core/models-jvm/src/main/java/org/signal/core/models/backup",
+            "app/src/androidTest/java/org/thoughtcrime/securesms/backup",
+            "app/src/test/java/org/thoughtcrime/securesms/backup",
+            "app/src/test/java/org/thoughtcrime/securesms/backup/ArchiveUploadProgressTest.kt",
+            "app/src/test/java/org/thoughtcrime/securesms/testutil/MockSignalStoreRule.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/payments/backup",
+            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/internal/backup",
+            "app/src/main/java/org/thoughtcrime/securesms/keyvalue/SignalStore.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/backup",
+            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/internal/push/WhoAmIResponse.kt",
+            "feature/registration/src/main/java/org/signal/registration/screens/localbackuprestore/LocalBackupRestoreEvents.kt",
+            "feature/registration/src/main/java/org/signal/registration/NetworkController.kt",
+            "demo/registration/src/main/java/org/signal/registration/sample/dependencies/DemoDeviceTransferServerTask.kt"
+          ],
+          "n_files": 14,
+          "golden_hits": 0,
+          "golden_found": [],
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 8166.0,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    },
+    {
+      "id": 10,
+      "category": "debug",
+      "question": "Trace how push notifications are received and processed by the app",
+      "golden_count": 3,
+      "tools": {
+        "serena": {
+          "files": [
+            "app/src/main/java/org/thoughtcrime/securesms/groups/GroupId.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/push",
+            "lib/libsignal-service/src/test/java/org/whispersystems/signalservice/internal/push",
+            "lib/libsignal-service/src/test/java/org/whispersystems/signalservice/api/push",
+            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/internal/push",
+            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/push",
+            "app/src/test/java/org/thoughtcrime/securesms/notifications",
+            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/AppSettingsActivity.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/notifications",
+            "app/src/main/java/org/thoughtcrime/securesms/notifications"
+          ],
+          "n_files": 10,
+          "golden_hits": 0,
+          "golden_found": [],
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latency_ms": 4458.2,
+          "detail": "warm",
+          "error": ""
+        }
+      }
+    }
+  ],
+  "summary": {
+    "serena": {
+      "coverage": 17.49,
+      "precision": 42.5,
+      "files": 5.5,
+      "latency": 3662.85,
+      "errors": 0
+    }
+  }
+}

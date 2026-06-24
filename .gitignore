@@ -9,6 +9,14 @@ build/
 # RAG system data
 *.db
 
+# Secrets
+.env
+
+# Build artifacts / temp clones
+ragsystem_benchmarked.zip
+*.zip
+tmp_serena/
+
 # IDE
 .idea/
 .vscode/

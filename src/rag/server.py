@@ -38,6 +38,13 @@ class SearchRequest(BaseModel):
     # ``rerank`` is kept for back-compat with existing clients but is
     # ignored — the cross-encoder reranker was removed alongside FastEmbed.
     rerank: bool = True
+    # Which strategy planner to use:
+    #   "auto"     — LLM planner with heuristic fallback (default, production path)
+    #   "llm"      — same as auto (force the LLM planner path explicitly)
+    #   "fallback" — skip the LLM, use the deterministic heuristic planner
+    # Mainly for A/B benchmarking the planner; "fallback" is also a cheap,
+    # latency-free option for clients that don't want an LLM round-trip.
+    planner: str = Field("auto", pattern=r"^(auto|llm|fallback)$")
 
 
 class SearchResultItem(BaseModel):
@@ -1369,9 +1376,12 @@ def create_app() -> FastAPI:
             vectorstore = get_vectorstore()
             code_collection = _collection_for_repo(req.repo)
 
-            from rag.agents.retrieval import plan_search
+            from rag.agents.retrieval import _fallback_plan, plan_search
 
-            plan = await plan_search(req.query)
+            if req.planner == "fallback":
+                plan = _fallback_plan(req.query)
+            else:
+                plan = await plan_search(req.query)
             if req.repo and plan.strategy in ("lod_drill", "global", "graph_walk"):
                 # LOD summaries and the graph cache are shared process-wide,
                 # while named repos live in separate Qdrant collections.
@@ -1563,8 +1573,22 @@ def create_app() -> FastAPI:
             # Apply AST / symbol sanity verification filter for semantic results
             if plan.strategy != "global":
                 import re
-                # Find CamelCase symbols of length >= 4 in the query
-                query_symbols = set(re.findall(r"\b([A-Z][a-zA-Z0-9_]{3,})\b", req.query))
+                # Find CamelCase symbols of length >= 4 in the query. Drop common
+                # capitalized English words ("Show me...", "Find all...", "Rename
+                # X") — otherwise a natural-language question's leading verb is
+                # treated as a required symbol and wipes every result to zero.
+                _STOPWORD_SYMBOLS = {
+                    "show", "find", "rename", "trace", "list", "give", "tell",
+                    "what", "which", "where", "when", "who", "whom", "whose",
+                    "how", "why", "this", "that", "these", "those", "there",
+                    "here", "with", "from", "into", "your", "their", "have",
+                    "does", "code", "class", "base", "main", "should", "would",
+                    "could", "about", "into",
+                }
+                query_symbols = {
+                    s for s in re.findall(r"\b([A-Z][a-zA-Z0-9_]{3,})\b", req.query)
+                    if s.lower() not in _STOPWORD_SYMBOLS
+                }
                 if query_symbols:
                     filtered_results = []
                     for r in results:
@@ -1596,7 +1620,11 @@ def create_app() -> FastAPI:
 
                         if matched:
                             filtered_results.append(r)
-                    results = filtered_results
+                    # Safety net: a sanity filter must never delete *all*
+                    # evidence. If nothing matched (e.g. the symbol only appears
+                    # in code semantic search didn't rank, or it was a false
+                    # symbol), keep the unfiltered results rather than return 0.
+                    results = filtered_results or results
 
             from rag.core.scoring import score_results
             results = score_results(results, req.query, reranked=did_rerank)

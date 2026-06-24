@@ -41,10 +41,15 @@ timeout = 5000
 
 [retrieval_agent]
 # LLM provider for the search strategy planner.
-# Options: gemini, openai, anthropic, ollama
-provider = "gemini"
-model = "gemini-3.5-flash"
-# Environment variable that holds the API key (ignored for ollama).
+# Options: gemini, openai, anthropic, ollama, agy
+# `agy` shells out to the Antigravity CLI (subscription auth, no API key) and
+# avoids the Gemini public-API 503s. The direct `gemini` provider is kept as a
+# fallback option (set provider="gemini", model="gemini-2.5-flash" + GEMINI_API_KEY).
+provider = "agy"
+# For agy: a CLI display-name model (see `agy models`). "Low" reasoning is
+# fastest and plenty for emitting a JSON search plan.
+model = "Gemini 3.5 Flash (Low)"
+# Environment variable that holds the API key (used only by gemini/openai/anthropic).
 api_key_env = "GEMINI_API_KEY"
 # For ollama, set provider="ollama" and point base_url at your daemon:
 # provider = "ollama"
