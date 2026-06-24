@@ -2096,6 +2096,49 @@ def create_app() -> FastAPI:
         ordered = sorted(ranked.values(), key=lambda t: t[0])
         return [link for _, link in ordered][:limit]
 
+    async def _ast_index_related(
+        repo_path: str, symbols: list[str], prime_paths: set[str], limit: int = 25,
+    ) -> list[RelatedLink]:
+        """Structural relatives via the ast-index CLI — implementors + cross-refs.
+        AST-based (no LSP/graphify), returns paths not code. This is the channel
+        that catches interface implementors and cross-package collaborators."""
+        import asyncio
+        import json
+
+        async def _run(args: list[str]):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ast-index", *args, cwd=repo_path,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+                return json.loads(out.decode()) if out and out.strip() else None
+            except (asyncio.TimeoutError, FileNotFoundError, OSError, json.JSONDecodeError):
+                return None
+
+        ranked: dict[str, tuple[int, RelatedLink]] = {}
+
+        def _add(item: dict, relation: str, pr: int) -> None:
+            fp = item.get("path", "")
+            if not fp or fp in prime_paths or (fp in ranked and ranked[fp][0] <= pr):
+                return
+            line = item.get("line", "?")
+            ranked[fp] = (pr, RelatedLink(
+                file_path=fp, name=item.get("name", "") or Path(fp).stem,
+                lines=f"{line}-{line}", relation=relation,
+            ))
+
+        for sym in symbols[:5]:
+            for it in (await _run(["implementations", "--format", "json", "--limit", "25", sym]) or []):
+                _add(it, "implementor", 0)
+            refs = await _run(["refs", "--format", "json", "--limit", "25", sym])
+            if isinstance(refs, dict):
+                for it in refs.get("usages", []):
+                    _add(it, "usage", 1)
+                for it in refs.get("definitions", []):
+                    _add(it, "reference", 2)
+        return [link for _, link in sorted(ranked.values(), key=lambda t: t[0])][:limit]
+
     async def _symbol_exists(collection: str, name: str) -> bool:
         """True if any indexed chunk is named `name` — used to discard the LLM's
         hallucinated symbols before they reach resolve/expansion."""
@@ -2157,9 +2200,11 @@ def create_app() -> FastAPI:
             sem_names: list[str] = []
             for r in sresults[:10]:
                 nm = (r.payload or {}).get("name") or ""
-                # Only type-like names (PascalCase, >=4 chars) — skip generic
-                # method names like get/set that resolve to noise.
-                if nm and nm[0].isupper() and len(nm) >= 4 and nm not in sem_names:
+                # Only type-like names (PascalCase, >=4 chars, no dot) — skip
+                # generic method names (get/set) and file-level chunk names
+                # ("Foo.kt") that resolve to noise.
+                if (nm and nm[0].isupper() and len(nm) >= 4
+                        and "." not in nm and nm not in sem_names):
                     sem_names.append(nm)
             grounded = list(dict.fromkeys(verified + sem_names))[:8]
 
@@ -2224,10 +2269,38 @@ def create_app() -> FastAPI:
                     prime_paths = {s.file_path for s in definitions}
                     anchor_files = {r.payload.get("file_path") for r in sresults[:5]
                                     if (r.payload or {}).get("file_path")}
-                    related = await _related_files(
-                        coll, grounded, prime_paths,
-                        anchor_files=anchor_files, limit=req.related_limit,
+                    qdrant_rel = await _related_files(
+                        coll, grounded, prime_paths, anchor_files=anchor_files, limit=80,
                     )
+                    # ast-index structural channel: implementors + cross-refs
+                    # (catches interface implementors and cross-package collaborators
+                    # the Qdrant payload misses — no LSP/graphify needed).
+                    repo_info = _repo_info_for_name(req.repo)
+                    ast_rel = await _ast_index_related(repo_info.path, grounded, prime_paths, limit=80)
+                    # Merge by file, keeping the strongest relation, and rank so
+                    # structural edges (implementor/subclass/usage) survive the cap
+                    # over generic same-package siblings.
+                    _REL_PRI = {
+                        "implementor": 0, "subclass": 0, "subclass_or_caller": 1,
+                        "usage": 1, "collaborator": 2, "reference": 2, "sibling": 3,
+                    }
+                    merged: dict[str, RelatedLink] = {}
+                    for r in ast_rel + qdrant_rel:
+                        cur = merged.get(r.file_path)
+                        if cur is None or _REL_PRI.get(r.relation, 9) < _REL_PRI.get(cur.relation, 9):
+                            merged[r.file_path] = r
+                    # Per-relation cap so no single channel (e.g. 150 interface
+                    # implementors) floods the cap and crowds out siblings/usages.
+                    from collections import Counter as _Counter
+                    _rel_seen: _Counter = _Counter()
+                    related = []
+                    for r in sorted(merged.values(), key=lambda r: _REL_PRI.get(r.relation, 9)):
+                        if _rel_seen[r.relation] >= 12:
+                            continue
+                        _rel_seen[r.relation] += 1
+                        related.append(r)
+                        if len(related) >= req.related_limit:
+                            break
                 except Exception as e:
                     logger.warning("smart_search_related_failed", error=str(e))
 
