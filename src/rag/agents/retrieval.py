@@ -290,7 +290,7 @@ _SYMBOL_PROMPT = (
 )
 
 
-async def infer_symbols(question: str, timeout: float = 30.0) -> list[str]:
+async def infer_symbols(question: str, timeout: float = 20.0) -> list[str]:
     """LLM-infer candidate symbol names from a natural-language question.
 
     This is what makes symbol routing work on vague questions: a regex can't

@@ -9,10 +9,31 @@ metadata:
 
 Use this skill when you need to fetch code context from a RAG-indexed repo and want to minimize turns, tokens, and noise while maximizing precision.
 
+## Fastest path: `/smart-search` (let the agent route for you)
+
+If you have a **natural-language question and don't know the exact symbol
+names**, call `/smart-search` first. It runs the whole loop server-side: an LLM
+infers the likely class/interface names, resolves them to exact definitions
+(plus usages for blast-radius questions), and adds a semantic complement —
+returning the golden code context in one call.
+
+```
+POST /smart-search
+{ "question": "How does the chat backup encryption work?", "repo": "<repo>", "top_k": 15 }
+```
+
+Benchmarked: ~2x the file coverage of plain `/search` (36.7% vs 15-18%) because
+it cracks vague questions where embeddings bury the canonical file. Cost: a few
+seconds of LLM inference. Use the manual decision tree below when you already
+know the symbols (skip the LLM round-trip) or need fine control.
+
 ## The Decision Tree
 
 ```
 What are you looking for?
+│
+├── A natural-language question, symbols unknown
+│   → /smart-search (LLM infers symbols → resolve + semantic, one call)
 │
 ├── A class / function / interface (you know the name)
 │   → /resolve (definitions only, usages_limit=0)

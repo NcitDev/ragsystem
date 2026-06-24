@@ -125,13 +125,30 @@ class SmartSearchRequest(BaseModel):
     # blast-radius question ("what breaks", "who calls", "usages"...).
     usages_limit: int = Field(0, ge=0, le=200)
     include_semantic: bool = True
+    # Structural expansion (siblings/collaborators/callers) as token-light links.
+    include_related: bool = True
+    related_limit: int = Field(25, ge=0, le=100)
+
+
+class RelatedLink(BaseModel):
+    """A structurally-related file returned as a LINK (no code) to save tokens.
+
+    The caller fetches the body on demand (e.g. via /resolve or read) only for
+    the ones it actually needs.
+    """
+
+    file_path: str
+    name: str
+    lines: str
+    relation: str  # sibling | collaborator | subclass_or_caller
 
 
 class SmartSearchResponse(BaseModel):
     question: str
     inferred_symbols: list[str]
-    definitions: list[ContextSlice]
+    definitions: list[ContextSlice]      # prime files — full code
     usages: list[ContextSlice]
+    related: list[RelatedLink]           # siblings/collaborators/callers — links only
     semantic: list[SearchResultItem]
     symbol_inference_ms: float
     latency_ms: float
@@ -1959,6 +1976,82 @@ def create_app() -> FastAPI:
             logger.error("resolve_error", repo=req.repo, error=str(e))
             raise HTTPException(status_code=500, detail=f"Resolve failed ({type(e).__name__})")
 
+    async def _related_files(
+        collection: str, symbols: list[str], prime_paths: set[str], limit: int = 25,
+    ) -> list[RelatedLink]:
+        """Deterministically find files structurally related to the prime symbols
+        — NO LLM loop. Three directions, all from the Qdrant payload:
+          * sibling           — same package/directory as the prime definition
+          * collaborator      — a type the prime references (forward references_fqn)
+          * subclass_or_caller— a chunk that references the prime's FQN (reverse)
+        Returned as links (path/name/lines/relation), not code, to save tokens.
+        """
+        from qdrant_client import models
+
+        vectorstore = get_vectorstore()
+        client = await vectorstore._get_client()
+        internal_prefix = "org.thoughtcrime.securesms"
+        syms_lower = {s.lower() for s in symbols}
+        # Rank by relation: structural edges (subclass/caller, collaborator) beat
+        # generic same-package siblings, which are only kept when the filename is
+        # name-related to a queried symbol (drops package noise like
+        # KeepAliveService when asking about Job).
+        _PRIORITY = {"subclass_or_caller": 0, "collaborator": 1, "sibling": 2}
+        ranked: dict[str, tuple[int, RelatedLink]] = {}
+
+        def _add(payload: dict, relation: str) -> None:
+            fp = payload.get("file_path", "")
+            if not fp or fp in prime_paths:
+                return
+            pr = _PRIORITY[relation]
+            if fp in ranked and ranked[fp][0] <= pr:
+                return  # already held at equal-or-higher priority
+            lines = f"{payload.get('start_line', '?')}-{payload.get('end_line', '?')}"
+            ranked[fp] = (pr, RelatedLink(
+                file_path=fp, name=payload.get("name", "") or Path(fp).stem,
+                lines=lines, relation=relation,
+            ))
+
+        def _name_related(fp: str) -> bool:
+            stem = Path(fp).stem.lower()
+            return any(s in stem or stem in s for s in syms_lower)
+
+        async def _scroll(field: str, value: str, match_text: bool = False, lim: int = 60):
+            cond = (models.MatchText(text=value) if match_text else models.MatchValue(value=value))
+            try:
+                res = await client.scroll(
+                    collection_name=collection,
+                    scroll_filter=models.Filter(must=[models.FieldCondition(key=field, match=cond)]),
+                    limit=lim, with_payload=True,
+                )
+                return [pt.payload or {} for pt in (res[0] or [])]
+            except Exception:
+                return []
+
+        for symbol in symbols:
+            for prime in (await _scroll("name", symbol, lim=3)):
+                fqn = prime.get("defines_fqn")
+                fp = prime.get("file_path", "")
+                pkg = str(Path(fp).parent) if fp else ""
+                # subclasses / callers — chunks referencing the prime's fqn
+                if fqn:
+                    for vp in (await _scroll("references_fqn", fqn, lim=40)):
+                        _add(vp, "subclass_or_caller")
+                # collaborators — internal types the prime references
+                for ref in (prime.get("references_fqn") or [])[:12]:
+                    if isinstance(ref, str) and ref.startswith(internal_prefix):
+                        for rp in (await _scroll("defines_fqn", ref, lim=1)):
+                            _add(rp, "collaborator")
+                # siblings — same package, but only the name-related ones
+                if pkg:
+                    for sp in (await _scroll("file_path", pkg, match_text=True, lim=80)):
+                        sfp = sp.get("file_path", "")
+                        if str(Path(sfp).parent) == pkg and _name_related(sfp):
+                            _add(sp, "sibling")
+
+        ordered = sorted(ranked.values(), key=lambda t: t[0])
+        return [link for _, link in ordered][:limit]
+
     @app.post("/smart-search", response_model=SmartSearchResponse, dependencies=[Depends(require_auth)])
     async def smart_search(req: SmartSearchRequest):
         """Agentic retrieval = the design: an LLM (agy) infers candidate symbols
@@ -2014,7 +2107,35 @@ def create_app() -> FastAPI:
                     except Exception as e:
                         logger.warning("smart_search_structural_usages_failed", error=str(e))
 
-            # 3. Semantic complement (fills gaps when no symbol was inferred).
+                    # Two-phase relevance trim: a blast-radius query can yield
+                    # hundreds of usages. Return only the most relevant (same dir
+                    # as a definition / symbol in filename / first few), capped —
+                    # so the caller gets a usable set, not 185 raw files.
+                    if usages:
+                        def_dirs = {str(Path(s.file_path).parent) for s in definitions}
+                        syms_lower = {s.lower() for s in symbols}
+                        trimmed: list[ContextSlice] = []
+                        for idx, u in enumerate(usages):
+                            stem = Path(u.file_path).stem.lower()
+                            if (str(Path(u.file_path).parent) in def_dirs
+                                    or any(s in stem for s in syms_lower) or idx < 10):
+                                trimmed.append(u)
+                            if len(trimmed) >= 15:
+                                break
+                        usages = trimmed
+
+            # 3. Structural expansion (deterministic, no LLM): siblings /
+            #    collaborators / subclasses-callers, returned as token-light links.
+            related: list[RelatedLink] = []
+            if symbols and req.include_related:
+                try:
+                    prime_paths = {s.file_path for s in definitions}
+                    coll = _collection_for_repo(req.repo)
+                    related = await _related_files(coll, symbols, prime_paths, limit=req.related_limit)
+                except Exception as e:
+                    logger.warning("smart_search_related_failed", error=str(e))
+
+            # 4. Semantic complement (fills gaps when no symbol was inferred).
             semantic_items: list[SearchResultItem] = []
             if req.include_semantic:
                 vectorstore = get_vectorstore()
@@ -2033,11 +2154,12 @@ def create_app() -> FastAPI:
             logger.info(
                 "smart_search_executed", repo=req.repo, question=req.question,
                 inferred_symbols=symbols, definitions=len(definitions),
-                usages=len(usages), latency_ms=round(latency, 1),
+                usages=len(usages), related=len(related), latency_ms=round(latency, 1),
             )
             return SmartSearchResponse(
                 question=req.question, inferred_symbols=symbols,
-                definitions=definitions, usages=usages, semantic=semantic_items,
+                definitions=definitions, usages=usages, related=related,
+                semantic=semantic_items,
                 symbol_inference_ms=round(symbol_ms, 1), latency_ms=round(latency, 1),
             )
         except HTTPException:

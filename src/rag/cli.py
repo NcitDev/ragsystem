@@ -475,6 +475,56 @@ def search(
         console.print()
 
 
+@app.command("smart-search")
+def smart_search(
+    question: str = typer.Argument(..., help="Natural-language question"),
+    repo: str = typer.Option(..., "--repo", "-r", help="Repo name (required)"),
+    top_k: int = typer.Option(15, "--top-k", "-k", help="Semantic results"),
+    usages: bool = typer.Option(False, "--usages", help="Force blast-radius usage lookup"),
+):
+    """Agentic retrieval: an LLM infers the symbols your question is about,
+    resolves them to exact definitions (and usages), and adds a semantic
+    complement. Returns the golden code context."""
+    _require_daemon()
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{_base_url()}/smart-search",
+            json={
+                "question": question,
+                "repo": repo,
+                "top_k": top_k,
+                "usages_limit": 100 if usages else 0,
+            },
+            headers=_auth_headers(),
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        error = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {}
+        console.print(f"[red]Smart search failed: {error.get('detail', e)}[/red]")
+        raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Connection lost to daemon.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[dim]Inferred symbols:[/dim] {data.get('inferred_symbols', [])}  "
+        f"[dim]({data.get('symbol_inference_ms', 0):.0f}ms infer, {data.get('latency_ms', 0):.0f}ms total)[/dim]\n"
+    )
+    for bucket, color in (("definitions", "green"), ("usages", "yellow"), ("semantic", "cyan")):
+        items = data.get(bucket) or []
+        if not items:
+            continue
+        console.print(f"[bold]{bucket.upper()} ({len(items)})[/bold]")
+        for it in items[:10]:
+            console.print(f"  [bold {color}]{it['file_path']}:{it['lines']}[/bold {color}] "
+                          f"[dim]{it.get('name', '')}[/dim]")
+        console.print()
+
+
 @app.command()
 def context_pack(
     query: str = typer.Argument(..., help="Context query"),

@@ -51,8 +51,6 @@ TOP_K = 15
 ALL_TOOLS = ["rag-agentic", "rag-smart", "rag-search", "rag-resolve",
              "vanilla-rg", "ast-index", "graphify", "serena"]
 
-AGY_MODEL = "Gemini 3.5 Flash (Low)"
-
 # Question phrasings that mean "blast radius" → use two-phase /resolve usages.
 _BLAST_SIGNALS = (
     "what breaks", "who calls", "blast radius", "all usages", "usages",
@@ -249,88 +247,28 @@ def _post(endpoint: str, payload: dict, token: str) -> dict | None:
         return json.loads(resp.read().decode())
 
 
-def _agy_infer_symbols(question: str, timeout: float = 40.0) -> list[str]:
-    """Use agy (LLM) to INFER the exact class/interface names a question is about.
-
-    This is the missing piece: the regex extractor can't turn "sticker pack
-    install event" into `StickerPackInstallEvent`, but the LLM can. Run from
-    /tmp with a lean prompt (the agentic mode that hangs agy triggers on
-    project-dir + verbose prompts). Returns [] on timeout / parse failure so
-    the caller degrades to semantic.
-    """
-    prompt = (
-        "Output a JSON array of up to 5 likely PascalCase class/interface names "
-        "in the Signal-Android codebase that would DEFINE what this question is "
-        "about (infer them even if not literally present). Array only, no prose: "
-        + question
-    )
-    try:
-        proc = subprocess.run(
-            ["agy", "-p", prompt, "--model", AGY_MODEL],
-            capture_output=True, text=True, timeout=timeout, cwd="/tmp",
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return []
-    m = re.search(r"\[.*\]", proc.stdout, re.DOTALL)
-    if not m:
-        return []
-    try:
-        arr = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return []
-    return [s for s in arr if isinstance(s, str) and s][:5]
-
-
 def run_rag_agentic(sc: Scenario, token: str) -> ToolResult:
-    """The agentic retrieval loop = your design: agy infers symbols → /resolve
-    (exact) → semantic complement → return golden data.
-
-    Differs from rag-smart (which uses a regex symbol extractor) by using the
-    LLM to INFER symbol names from vague questions — the only thing shown to
-    move the 0%-everywhere scenarios.
+    """The agentic retrieval loop = your design, via the real /smart-search
+    endpoint: LLM infers symbols → exact /resolve (defs + trimmed usages) →
+    semantic complement → golden data. Files are collected definitions-first,
+    then usages, then semantic (precision-first ordering), capped to top_k.
     """
     t0 = time.time()
-    symbols = _agy_infer_symbols(sc.question)
-    q = sc.question.lower()
-    want_usages = any(sig in q for sig in _BLAST_SIGNALS)
-    files: list[str] = []
     try:
-        if symbols:
-            data = _post("/resolve", {
-                "repo": REPO_NAME, "symbols": symbols,
-                "definitions_limit": 20, "usages_limit": 100 if want_usages else 0,
-            }, token)
-            def_dirs: set[str] = set()
-            for item in (data or {}).get("definitions", []):
-                fp = item.get("file_path", "")
-                if fp:
-                    files.append(fp)
-                    def_dirs.add(str(Path(fp).parent))
-            if want_usages:
-                syms_lower = {s.lower() for s in symbols}
-                picked: list[str] = []
-                for idx, item in enumerate((data or {}).get("usages", [])):
-                    fp = item.get("file_path", "")
-                    if not fp:
-                        continue
-                    if (str(Path(fp).parent) in def_dirs
-                            or any(s in Path(fp).stem.lower() for s in syms_lower) or idx < 10):
-                        picked.append(fp)
-                    if len(picked) >= 12:
-                        break
-                files.extend(picked)
-        # Semantic complement (fast deterministic planner) fills remaining slots.
-        sdata = _post("/search", {
-            "query": sc.question, "repo": REPO_NAME, "top_k": TOP_K, "planner": "fallback",
+        data = _post("/smart-search", {
+            "question": sc.question, "repo": REPO_NAME, "top_k": TOP_K,
         }, token)
-        for r in (sdata or {}).get("results", []):
-            fp = r.get("file_path", "")
-            if fp:
-                files.append(fp)
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         return ToolResult(error=str(e), latency_ms=(time.time() - t0) * 1000)
+    files: list[str] = []
+    for bucket in ("definitions", "usages", "related", "semantic"):
+        for item in (data or {}).get(bucket, []):
+            fp = item.get("file_path", "")
+            if fp:
+                files.append(fp)
+    syms = (data or {}).get("inferred_symbols", [])
     return ToolResult(files=_cap(files), latency_ms=(time.time() - t0) * 1000,
-                      detail=f"agy_symbols={symbols}")
+                      detail=f"agy_symbols={syms[:3]}")
 
 
 def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
@@ -654,7 +592,8 @@ def main() -> None:
                 "latency_ms": round(r.latency_ms, 1), "detail": r.detail, "error": r.error,
             }
             tag = ("ERR " + r.error[:32]) if r.error else "OK"
-            print(f"    {tool:<12} files={len(r.files):<3} cov={r.coverage(sc.golden_files):5.1f}% "
+            print(f"    {tool:<12} hit={len(r.golden_hits)}/{len(sc.golden_files)} "
+                  f"files={len(r.files):<3} cov={r.coverage(sc.golden_files):5.1f}% "
                   f"prec={r.precision():5.1f}% lat={r.latency_ms:7.0f}ms [{tag}]")
         results["scenarios"].append(entry)
 
@@ -671,7 +610,16 @@ def main() -> None:
         vals = [s["tools"][tool] for s in results["scenarios"]]
         ok = [v for v in vals if not v["error"]]
         n = max(1, len(ok))
+        golden_total = sum(s["golden_count"] for s in results["scenarios"])
+        golden_hits = sum(v["golden_hits"] for v in vals)
+        total_files = sum(v["n_files"] for v in vals)
         summary[tool] = {
+            "golden_hits": golden_hits,
+            "golden_total": golden_total,
+            "total_files": total_files,
+            # Overall precision/coverage over the whole pool (not avg-of-ratios).
+            "precision_overall": (golden_hits / total_files * 100) if total_files else 0.0,
+            "coverage_overall": (golden_hits / golden_total * 100) if golden_total else 0.0,
             "coverage": sum(v["coverage_pct"] for v in ok) / n if ok else 0.0,
             "precision": sum(v["precision_pct"] for v in ok) / n if ok else 0.0,
             "files": sum(v["n_files"] for v in ok) / n if ok else 0.0,
@@ -679,8 +627,10 @@ def main() -> None:
             "errors": len(vals) - len(ok),
         }
         s = summary[tool]
-        print(f"  {tool:<12} cov={s['coverage']:5.1f}%  prec={s['precision']:5.1f}%  "
-              f"files={s['files']:4.1f}  lat={s['latency']:7.0f}ms  errors={s['errors']}")
+        print(f"  {tool:<12} found={s['golden_hits']:2d}/{s['golden_total']} golden  "
+              f"of {s['total_files']:3d} files returned  "
+              f"(coverage={s['coverage_overall']:4.1f}%  precision={s['precision_overall']:4.1f}%)  "
+              f"lat={s['latency']:6.0f}ms")
     results["summary"] = summary
 
     Path("benchmark_all_tools_results.json").write_text(json.dumps(results, indent=2))
@@ -699,12 +649,16 @@ def _write_report(results: dict) -> None:
         "backfill.\n",
         f"**top_k:** {results['top_k']}  |  **tools:** {', '.join(results['tools'])}\n",
         "## Averages\n",
-        "| Tool | Avg Coverage | Avg Precision | Avg Files | Avg Latency | Errors |",
+        "Golden found = golden files retrieved out of the whole pool. "
+        "Coverage = golden found / golden pool. Precision = golden found / files returned.\n",
+        "| Tool | Golden Found | Files Returned | Coverage | Precision | Avg Latency |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for tool, s in results["summary"].items():
-        L.append(f"| {tool} | {s['coverage']:.1f}% | {s['precision']:.1f}% | "
-                 f"{s['files']:.1f} | {s['latency']:.0f}ms | {s['errors']} |")
+        L.append(
+            f"| {tool} | {s['golden_hits']}/{s['golden_total']} | {s['total_files']} | "
+            f"{s['coverage_overall']:.1f}% | {s['precision_overall']:.1f}% | {s['latency']:.0f}ms |"
+        )
     L.append("\n## Per-scenario\n")
     for sc in results["scenarios"]:
         L.append(f"### S{sc['id']} [{sc['category']}] — {sc['question']}\n")

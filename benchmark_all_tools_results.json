@@ -1,10 +1,7 @@
 {
   "top_k": 15,
   "tools": [
-    "rag-agentic",
-    "rag-smart",
-    "rag-search",
-    "rag-resolve"
+    "rag-agentic"
   ],
   "scenarios": [
     {
@@ -15,103 +12,31 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/preview/StickerPackPreviewRepository.java",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerPackInstallEvent.java",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerRemoteUriFetcher.java",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/BlessedPacks.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerRolloverTouchListener.java",
             "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerSearchRepository.java",
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/KeyboardStickerPackListAdapter.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerPackInstallEvent.java",
-            "lib/archive/src/main/protowire/Backup.proto",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerAdditionMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerLaunchMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobManager.java",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerPreviewDataFactory.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerUrl.java",
             "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerManifest.java",
             "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerRemoteUriLoader.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerMyDailyLifeMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerDayByDayMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt"
-          ],
-          "n_files": 13,
-          "golden_hits": 2,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerPackInstallEvent.java",
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/preview/StickerPackPreviewRepository.java"
-          ],
-          "coverage_pct": 66.7,
-          "precision_pct": 15.4,
-          "latency_ms": 19909.7,
-          "detail": "agy_symbols=['StickerPackInstallEvent', 'StickerPackInstallJob', 'StickerPack', 'StickerDatabase', 'StickerManager']",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "core/util/src/main/java/org/signal/core/util/ThrottledDebouncer.java",
-            "core/util/src/main/java/org/signal/core/util/Throttler.java",
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/StickerKeyboardPageFragment.kt",
-            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/messages/SignalServiceDataMessage.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/StickerKeyboardRepository.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/messages/DataMessageProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/messages/SyncMessageProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/IndividualSendJob.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/StickerDownloadJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/importer/ChatItemArchiveImporter.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/exporters/ChatItemArchiveExporter.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerRemoteUri.java",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerPreviewPopup.java",
             "app/src/main/java/org/thoughtcrime/securesms/database/StickerTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/processor/StickerArchiveProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/calls/quality/CallQualityScreens.kt"
-          ],
-          "n_files": 14,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 933.5,
-          "detail": "context_pack_fallback",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerAdditionMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobManager.java",
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerManifest.java",
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerRemoteUriLoader.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerMyDailyLifeMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerDayByDayMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/StickerTable.kt"
-          ],
-          "n_files": 8,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 9497.1,
-          "detail": "strategy=hybrid nq=4",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/StickerKeyboardPageFragment.kt",
-            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/messages/SignalServiceDataMessage.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/StickerKeyboardRepository.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/messages/DataMessageProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/messages/SyncMessageProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/IndividualSendJob.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/StickerDownloadJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/importer/ChatItemArchiveImporter.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/exporters/ChatItemArchiveExporter.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/StickerTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/processor/StickerArchiveProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupFrameOutputStream.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V149_LegacyMigrations.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/database/DatabaseConsistencyTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/testutil/SignalDatabaseMigrationRule.kt"
+            "app/src/main/java/org/thoughtcrime/securesms/conversation/v2/ConversationFragment.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/conversation/v2/ConversationTooltips.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/manage/StickerManagementScreen.kt"
           ],
           "n_files": 15,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 359.6,
-          "detail": "terms=['sticker', 'pack']",
+          "golden_hits": 1,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerPackInstallEvent.java"
+          ],
+          "coverage_pct": 33.3,
+          "precision_pct": 6.7,
+          "latency_ms": 7895.0,
+          "detail": "agy_symbols=['StickerPackInstallEvent', 'StickerPackInstalledEvent', 'StickerPackInstallationEvent']",
           "error": ""
         }
       }
@@ -124,76 +49,28 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/SqlCipherErrorHandler.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/ApplicationContext.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/ThreadTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/MentionUtil.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DatabaseObserver.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DatabaseObserverExt.kt"
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V193_BackCallLinksWithRecipient.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V190_UniqueMessageMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/pin/Svr3Migration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V239_MessageFullTextSearchEmojiSupport.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V261_RemapCallRingers.kt",
+            "app/src/test/java/org/thoughtcrime/securesms/database/helpers/migration/MyStoryMigrationTest.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/ApplicationMigrationActivity.java",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/MigrationJob.java",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/DatabaseMigrationJob.java"
           ],
-          "n_files": 8,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 40642.5,
-          "detail": "agy_symbols=[]",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobManager.java",
-            "app/src/test/java/org/thoughtcrime/securesms/database/MegaphoneDatabaseTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/jobs/FastJobStorageTest.kt",
-            "app/src/benchmarkShared/java/org/thoughtcrime/securesms/database/TestDbUtils.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/AttachmentTableTest_deduping.kt",
-            "fast-lint/src/test/kotlin/org/signal/fastlint/rules/ForegroundServiceRuleTest.kt"
+          "n_files": 11,
+          "golden_hits": 2,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt"
           ],
-          "n_files": 6,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 1173.6,
-          "detail": "context_pack_fallback",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/SqlCipherErrorHandler.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/ApplicationContext.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/ThreadTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/MentionUtil.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DatabaseObserver.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DatabaseObserverExt.kt"
-          ],
-          "n_files": 8,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 10336.8,
-          "detail": "strategy=hybrid nq=6",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/test/java/org/thoughtcrime/securesms/database/MegaphoneDatabaseTest.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/AttachmentTableTest_deduping.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/jobs/FastJobStorageTest.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ApplicationMigrations.java"
-          ],
-          "n_files": 4,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 117.3,
-          "detail": "terms=['database', 'migration']",
+          "coverage_pct": 100.0,
+          "precision_pct": 18.2,
+          "latency_ms": 7092.0,
+          "detail": "agy_symbols=['IMigration', 'MigrationInterface', 'IDatabaseMigration']",
           "error": ""
         }
       }
@@ -206,89 +83,29 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/preview/StickerPackPreviewRepository.java",
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerSearchRepository.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/model/StickerPackRecord.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerLocator.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/model/StickerRecord.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/MainActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt"
-          ],
-          "n_files": 8,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 40316.0,
-          "detail": "agy_symbols=['StickerDatabase', 'StickerPackRecord', 'StickerRecord', 'StickerLocator', 'StickerPackRepository']",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/calls/log/CallLogContextMenu.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/CanNotSendPaymentDialog.java",
-            "core/ui/src/main/java/org/signal/core/ui/BottomSheetUtil.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/preferences/RecipientHasNotEnabledPaymentsDialog.java",
-            "app/src/main/java/org/thoughtcrime/securesms/calls/YouAreAlreadyInACallSnackbar.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/confirm/ConfirmPaymentFragment.java",
-            "core/ui/src/main/java/org/signal/core/ui/compose/DropdownMenus.kt",
-            "fast-lint/src/main/kotlin/org/signal/fastlint/Lint.kt",
-            "lib/debuglogs-viewer/src/main/assets/debuglogs-viewer.js",
-            "core/util/src/main/java/org/signal/core/util/concurrent/SignalDispatchers.kt",
-            "lintchecks/src/main/java/org/signal/lint/StartForegroundServiceDetector.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/StickerKeyboardPageFragment.kt",
-            "fast-lint/src/test/kotlin/org/signal/fastlint/TestSupport.kt"
-          ],
-          "n_files": 13,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 746.5,
-          "detail": "context_pack_fallback",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/MainActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt"
-          ],
-          "n_files": 3,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 10263.6,
-          "detail": "strategy=hybrid nq=5",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/StickerKeyboardPageFragment.kt",
-            "lintchecks/src/main/java/org/signal/lint/StartForegroundServiceDetector.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/stickers/StickerManifest.java",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/Sticker.java",
+            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/KeyboardStickerPackListAdapter.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/KeyboardStickerListAdapter.kt",
+            "lib/archive/src/main/protowire/Backup.proto",
+            "app/src/main/protowire/Backups.proto",
             "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/messages/SignalServiceDataMessage.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/keyboard/sticker/StickerKeyboardRepository.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/messages/DataMessageProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/messages/SyncMessageProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/IndividualSendJob.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/StickerDownloadJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/importer/ChatItemArchiveImporter.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/exporters/ChatItemArchiveExporter.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/StickerTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/processor/StickerArchiveProcessor.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupFrameOutputStream.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V149_LegacyMigrations.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/database/DatabaseConsistencyTest.kt"
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/DisplayRecord.java",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/GroupsV2UpdateMessageProducer.java",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/MessageRecord.java",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/MmsMessageRecord.java",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/MessageExportStatus.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/Quote.java",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/RecipientRecord.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/database/model/ThreadWithRecipient.java"
           ],
           "n_files": 15,
           "golden_hits": 0,
           "golden_found": [],
           "coverage_pct": 0.0,
           "precision_pct": 0.0,
-          "latency_ms": 238.8,
-          "detail": "terms=['classes', 'sticker', 'pack']",
+          "latency_ms": 7003.3,
+          "detail": "agy_symbols=['StickerPack', 'Sticker', 'StickerPackManager']",
           "error": ""
         }
       }
@@ -301,85 +118,32 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/test/java/org/thoughtcrime/securesms/backup/FullBackupExporterTest.kt",
             "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/LocalBackupJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/LocalBackupJobApi29.java"
-          ],
-          "n_files": 4,
-          "golden_hits": 1,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
-          ],
-          "coverage_pct": 50.0,
-          "precision_pct": 25.0,
-          "latency_ms": 40568.7,
-          "detail": "agy_symbols=[]",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java",
-            "app/src/main/java/org/thoughtcrime/securesms/calls/log/CallLogContextMenu.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/CanNotSendPaymentDialog.java",
-            "core/ui/src/main/java/org/signal/core/ui/BottomSheetUtil.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/preferences/RecipientHasNotEnabledPaymentsDialog.java",
-            "app/src/main/java/org/thoughtcrime/securesms/calls/YouAreAlreadyInACallSnackbar.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/confirm/ConfirmPaymentFragment.java",
-            "core/ui/src/main/java/org/signal/core/ui/compose/DropdownMenus.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/backup/ArchiveUploadProgressTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/testutil/MockSignalStoreRule.kt",
-            "feature/registration/src/main/java/org/signal/registration/screens/localbackuprestore/LocalBackupRestoreViewModel.kt"
-          ],
-          "n_files": 11,
-          "golden_hits": 1,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
-          ],
-          "coverage_pct": 50.0,
-          "precision_pct": 9.1,
-          "latency_ms": 831.4,
-          "detail": "resolve(syms=['FullBackupExporter'], usages=N); context_pack_fallback",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/test/java/org/thoughtcrime/securesms/backup/FullBackupExporterTest.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/LocalBackupJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/LocalBackupJobApi29.java"
-          ],
-          "n_files": 4,
-          "golden_hits": 1,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
-          ],
-          "coverage_pct": 50.0,
-          "precision_pct": 25.0,
-          "latency_ms": 10390.5,
-          "detail": "strategy=hybrid nq=4",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupVerifier.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/backup/FullBackupExporterTest.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupFileIOError.java",
             "app/src/main/java/org/thoughtcrime/securesms/backup/BackupFrameOutputStream.java",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupBase.java",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupEvent.java",
+            "app/src/main/java/org/thoughtcrime/securesms/crypto/AttachmentSecret.java",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/LocalExportProgress.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupFileIOError.java",
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/LocalBackupJobApi29.java",
             "app/src/main/java/org/thoughtcrime/securesms/devicetransfer/olddevice/OldDeviceClientTask.java",
+            "app/src/test/java/org/thoughtcrime/securesms/backup/FullBackupExporterTest.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupVerifier.kt",
             "app/src/main/java/org/thoughtcrime/securesms/jobs/LocalBackupJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/LocalBackupJobApi29.java"
+            "app/src/test/java/org/thoughtcrime/securesms/backup/FullBackupImporterTest.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/BackupRepository.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/local/LocalArchiver.kt"
           ],
-          "n_files": 8,
-          "golden_hits": 1,
+          "n_files": 15,
+          "golden_hits": 2,
           "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java"
+            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupBase.java"
           ],
-          "coverage_pct": 50.0,
-          "precision_pct": 12.5,
-          "latency_ms": 30.2,
-          "detail": "terms=['FullBackupExporter']",
+          "coverage_pct": 100.0,
+          "precision_pct": 13.3,
+          "latency_ms": 8789.7,
+          "detail": "agy_symbols=['FullBackupExporter', 'BackupExporter', 'IBackupExporter']",
           "error": ""
         }
       }
@@ -392,93 +156,31 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/JobManagerFactories.java",
             "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobManager.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/PassingMigrationJob.java",
             "app/src/main/java/org/thoughtcrime/securesms/jobmanager/migrations/DeprecatedJobMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/AepMigrationJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/UpdateSmsJobsMigrationJob.kt",
+            "app/src/test/java/org/thoughtcrime/securesms/jobmanager/JobMigratorTest.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/migrations/PushProcessMessageJobMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/BadE164MigrationJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/BackfillNotifiedStateMigrationJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/DuplicateE164MigrationJob.kt",
             "app/src/main/java/org/thoughtcrime/securesms/migrations/DeleteDeprecatedLogsMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/AttributesMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/LegacyMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/PinReminderMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/RecipientSearchMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ProfileMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/BlobStorageLocationMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/MigrationCompleteJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ApplyUnknownFieldsToSelfMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/MigrationJob.java"
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/SelfRegisteredStateMigrationJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/ResetArchiveTierMigrationJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/migrations/SubscriberIdMigrationJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobMigrator.java"
           ],
-          "n_files": 15,
-          "golden_hits": 1,
+          "n_files": 14,
+          "golden_hits": 2,
           "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/migrations/DeprecatedJobMigration.kt"
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/migrations/DeprecatedJobMigration.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/migrations/PushProcessMessageJobMigration.kt"
           ],
-          "coverage_pct": 33.3,
-          "precision_pct": 6.7,
-          "latency_ms": 21234.8,
-          "detail": "agy_symbols=['DeprecatedJobMigration', 'JobMigration', 'JobManagerFactories', 'JobManager', 'PassingMigrationJob']",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobManager.java",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/AttachmentTableTest_deduping.kt",
-            "core/network/src/main/java/org/signal/network/exceptions/NonSuccessfulResponseCodeException.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/registration/ui/countrycode/CountryCodeSelectScreen.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/registration/sms/ReceivedSmsEvent.java",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/preferences/PaymentType.java",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/preferences/PaymentCategory.java",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/confirm/ConfirmPaymentRepository.java",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/TransactionSubmissionResult.java",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/PaymentsAddressException.java",
-            "fast-lint/src/test/kotlin/org/signal/fastlint/rules/ForegroundServiceRuleTest.kt",
-            "fast-lint/src/test/kotlin/org/signal/fastlint/rules/LogNotSignalRuleTest.kt"
-          ],
-          "n_files": 12,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 700.6,
-          "detail": "context_pack_fallback",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/DeleteDeprecatedLogsMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/AttributesMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/LegacyMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/PinReminderMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/RecipientSearchMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ProfileMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/BlobStorageLocationMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/MigrationCompleteJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ApplyUnknownFieldsToSelfMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/MigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/PniAccountInitializationMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java"
-          ],
-          "n_files": 12,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 9758.1,
-          "detail": "strategy=filtered nq=5",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/AttachmentTableTest_deduping.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ApplicationMigrations.java"
-          ],
-          "n_files": 2,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 29.0,
-          "detail": "terms=['migration']",
+          "coverage_pct": 66.7,
+          "precision_pct": 14.3,
+          "latency_ms": 6805.8,
+          "detail": "agy_symbols=['JobMigration', 'LegacyJobMigrator', 'DeprecatedJobMigration']",
           "error": ""
         }
       }
@@ -491,37 +193,10 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/MigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobManager.java",
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java",
             "app/src/main/java/org/thoughtcrime/securesms/jobs/BaseJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/CoroutineJob.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/dependencies/MockApplicationDependencyProvider.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/BackupSubscriptionCheckJob.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/IndividualSendJobV2.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/PostRegistrationBackupRedemptionJob.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/stickers/manage/StickerManagementRepository.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/groups/v2/processing/GroupsV2StateProcessorTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/sms/UploadDependencyGraphTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/stories/StoriesTest.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/AccountConsistencyWorkerJob.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/ApkUpdateJob.kt"
-          ],
-          "n_files": 15,
-          "golden_hits": 2,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobManager.java"
-          ],
-          "coverage_pct": 50.0,
-          "precision_pct": 13.3,
-          "latency_ms": 11502.6,
-          "detail": "agy_symbols=['Job', 'BaseJob', 'MigrationJob', 'JobManager', 'CoroutineJob']",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java",
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobRunner.java",
+            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/JobSchedulerScheduler.java",
             "app/src/androidTest/java/org/thoughtcrime/securesms/jobs/AttachmentCompressionJobTest.kt",
             "app/src/benchmarkShared/java/org/signal/benchmark/setup/NoOpJob.kt",
             "app/src/test/java/org/thoughtcrime/securesms/jobs/FastJobStorageTest.kt",
@@ -530,58 +205,9 @@
             "demo/registration/src/main/java/org/signal/registration/sample/dependencies/FakeDeviceTransferRunner.kt",
             "demo/video/src/main/java/org/thoughtcrime/video/app/batch/BatchTranscodeViewModel.kt",
             "demo/video/src/main/java/org/thoughtcrime/video/app/transcode/TranscodeTestViewModel.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/jobs/InAppPaymentSetupJobTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/jobmanager/JobControllerTest.kt"
-          ],
-          "n_files": 11,
-          "golden_hits": 1,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java"
-          ],
-          "coverage_pct": 25.0,
-          "precision_pct": 9.1,
-          "latency_ms": 44.8,
-          "detail": "resolve(syms=['Job'], usages=Y)",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/RecipientTableCursorUtil.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/MainActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/ThreadTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/ContactSelectionListFragment.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DatabaseObserverExt.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/SqlCipherErrorHandler.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/SessionTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt"
-          ],
-          "n_files": 9,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 9581.3,
-          "detail": "strategy=hybrid nq=4",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/jobmanager/Job.java",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/jobs/AttachmentCompressionJobTest.kt",
-            "app/src/benchmarkShared/java/org/signal/benchmark/setup/NoOpJob.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/sms/UploadDependencyGraphTest.kt",
-            "demo/registration/src/main/java/org/signal/registration/sample/dependencies/FakeDeviceTransferRunner.kt",
-            "demo/video/src/main/java/org/thoughtcrime/video/app/batch/BatchTranscodeViewModel.kt",
-            "demo/video/src/main/java/org/thoughtcrime/video/app/transcode/TranscodeTestViewModel.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/jobs/InAppPaymentSetupJobTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/jobmanager/JobControllerTest.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/jobs/BackupSubscriptionCheckJobTest.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/jobs/JobManagerPerformanceTests.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/jobs/IndividualSendJobV2Test.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/testing/incomingmessageobserver/IncomingMessageObserverRule.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/StickerLaunchMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/jobs/MessageFetchJob.java"
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/AccountConsistencyWorkerJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/ApkUpdateJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/BackupRestoreMediaJob.kt"
           ],
           "n_files": 15,
           "golden_hits": 1,
@@ -590,8 +216,8 @@
           ],
           "coverage_pct": 25.0,
           "precision_pct": 6.7,
-          "latency_ms": 39.0,
-          "detail": "terms=['Job']",
+          "latency_ms": 6959.4,
+          "detail": "agy_symbols=['Job', 'BaseJob', 'JobExecutor']",
           "error": ""
         }
       }
@@ -604,37 +230,8 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/SignalDatabase.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DatabaseTable.java",
             "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ApplicationMigrations.java",
             "app/src/main/java/org/thoughtcrime/securesms/migrations/DatabaseMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/ApplicationMigrationActivity.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V149_LegacyMigrations.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V168_SingleMessageTableMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V172_GroupMembershipMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V175_FixFullTextSearchLink.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V181_ThreadTableForeignKeyCleanup.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V182_CallTableMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V186_ForeignKeyIndicesMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V188_FixMessageRecipientsAndEditMessageMigration.kt"
-          ],
-          "n_files": 15,
-          "golden_hits": 2,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt"
-          ],
-          "coverage_pct": 66.7,
-          "precision_pct": 13.3,
-          "latency_ms": 7871.4,
-          "detail": "agy_symbols=['SignalDatabaseMigration', 'DatabaseMigration', 'SignalDatabase', 'DatabaseHelper', 'ApplicationMigration']",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
             "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt",
             "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V149_LegacyMigrations.kt",
             "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V168_SingleMessageTableMigration.kt",
@@ -647,8 +244,7 @@
             "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V189_CreateCallLinkTableColumnsAndRebuildFKReference.kt",
             "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V191_UniqueMessageMigrationV2.kt",
             "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V195_GroupMemberForeignKeyMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V210_FixPniPossibleColumns.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V213_FixUsernameInE164Column.kt"
+            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V210_FixPniPossibleColumns.kt"
           ],
           "n_files": 15,
           "golden_hits": 2,
@@ -658,60 +254,8 @@
           ],
           "coverage_pct": 66.7,
           "precision_pct": 13.3,
-          "latency_ms": 39.8,
-          "detail": "resolve(syms=['SignalDatabaseMigration'], usages=Y)",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V269_BackupMediaSnapshotChanges.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/SignalDatabase.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/testutil/SignalDatabaseMigrationRule.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/database/DatabaseConsistencyTest.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V283_ViewOnceRemoteDataCleanup.kt"
-          ],
-          "n_files": 7,
-          "golden_hits": 2,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt"
-          ],
-          "coverage_pct": 66.7,
-          "precision_pct": 28.6,
-          "latency_ms": 9834.7,
-          "detail": "strategy=hybrid nq=4",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V188_FixMessageRecipientsAndEditMessageMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V191_UniqueMessageMigrationV2.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V195_GroupMemberForeignKeyMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V210_FixPniPossibleColumns.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V258_FixGroupRevokedInviteeUpdate.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V263_InAppPaymentsSubscriberTableRebuild.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V266_UniqueThreadPinOrder.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V267_FixGroupInvitationDeclinedUpdate.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V268_FixInAppPaymentsErrorStateConsistency.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V232_CreateInAppPaymentTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V219_PniPreKeyStores.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V154_PniSignaturesMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/V194_KyberPreKeyMigration.kt"
-          ],
-          "n_files": 15,
-          "golden_hits": 2,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/migration/SignalDatabaseMigration.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/helpers/SignalDatabaseMigrations.kt"
-          ],
-          "coverage_pct": 66.7,
-          "precision_pct": 13.3,
-          "latency_ms": 34.4,
-          "detail": "terms=['SignalDatabaseMigration']",
+          "latency_ms": 10931.4,
+          "detail": "agy_symbols=['ISignalDatabaseMigration', 'SignalDatabaseMigration', 'DatabaseMigration']",
           "error": ""
         }
       }
@@ -724,39 +268,12 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/RecipientId.kt",
             "app/src/main/java/org/thoughtcrime/securesms/recipients/RecipientRepository.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/conversation/colors/ui/ChatColorSelectionRepository.kt",
-            "lib/libsignal-service/src/main/protowire/StorageService.proto",
-            "lib/archive/src/main/protowire/Backup.proto",
-            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/privacy/PrivacySettingsRepository.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/database/RecipientDatabaseTestUtils.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/conversation/v2/items/V2ConversationItemShapeTest.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/ui/RecipientLookupFailureMessage.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/CallTableTest.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/RecipientTableTest_getAndPossiblyMerge.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/main/MainNavigationLaunchTest.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/messages/DataMessageProcessorTest_polls.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/database/TestSms.kt"
-          ],
-          "n_files": 15,
-          "golden_hits": 2,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/RecipientId.kt"
-          ],
-          "coverage_pct": 66.7,
-          "precision_pct": 13.3,
-          "latency_ms": 7879.7,
-          "detail": "agy_symbols=['Recipient', 'RecipientId', 'RecipientDatabase', 'RecipientResolver', 'RecipientRepository']",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
             "lib/libsignal-service/src/main/protowire/StorageService.proto",
             "lib/archive/src/main/protowire/Backup.proto",
             "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/IndividualSendJobV2.kt",
+            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/storage/StoryDistributionListRecordExtensions.kt",
             "app/src/androidTest/java/org/thoughtcrime/securesms/conversation/v2/items/V2ConversationItemShapeTest.kt",
             "app/src/androidTest/java/org/thoughtcrime/securesms/main/MainNavigationLaunchTest.kt",
             "app/src/androidTest/java/org/thoughtcrime/securesms/messages/DataMessageProcessorTest_polls.kt",
@@ -764,72 +281,18 @@
             "app/src/androidTest/java/org/thoughtcrime/securesms/messages/SyncMessageProcessorTest_synchronizeDeleteForMe.kt",
             "app/src/androidTest/java/org/thoughtcrime/securesms/testing/SignalActivityRule.kt",
             "app/src/benchmarkShared/java/org/signal/benchmark/BenchmarkSetupActivity.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/conversation/v2/UnreadDividerInstrumentationTest.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/RecipientTableTest_applyStorageSyncContactUpdate.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/RecipientTableTest_getAndPossiblyMerge.kt"
+            "app/src/main/java/org/thoughtcrime/securesms/recipients/ui/RecipientLookupFailureMessage.kt",
+            "app/src/androidTest/java/org/thoughtcrime/securesms/database/RecipientTableTest_applyStorageSyncContactUpdate.kt"
           ],
-          "n_files": 13,
+          "n_files": 15,
           "golden_hits": 1,
           "golden_found": [
             "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt"
           ],
           "coverage_pct": 33.3,
-          "precision_pct": 7.7,
-          "latency_ms": 41.0,
-          "detail": "resolve(syms=['Recipient'], usages=Y)",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/longmessage/LongMessageFragment.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/RecipientTableCursorUtil.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/AvatarPreviewActivity.java",
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/RecipientModifiedListener.java",
-            "app/src/main/java/org/thoughtcrime/securesms/conversation/ui/mentions/MentionsPickerViewModel.java",
-            "app/src/main/java/org/thoughtcrime/securesms/conversation/v2/items/V2ConversationItemTextOnlyViewHolder.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/WebRtcCallViewModel.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/ui/RecipientPicker.kt",
-            "app/src/spinner/java/org/thoughtcrime/securesms/database/RecipientTransformer.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/RecipientIdDatabaseReference.java",
-            "app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/ComposeCallScreenMediator.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/starred/StarredMessagesActivity.kt"
-          ],
-          "n_files": 13,
-          "golden_hits": 1,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt"
-          ],
-          "coverage_pct": 33.3,
-          "precision_pct": 7.7,
-          "latency_ms": 10437.5,
-          "detail": "strategy=hybrid nq=6",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "lib/libsignal-service/src/main/protowire/StorageService.proto",
-            "lib/archive/src/main/protowire/Backup.proto",
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/messages/DataMessageProcessorTest_polls.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/messages/EditMessageSyncProcessorTest.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/messages/SyncMessageProcessorTest_synchronizeDeleteForMe.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/MmsHelper.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/RecipientTableTest_applyStorageSyncContactUpdate.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/messages/SyncMessageProcessorTest_synchronizePniChangeNumber.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/AttachmentTableTest_deduping.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/database/RecipientTableTest_getAndPossiblyMerge.kt",
-            "core/util-jvm/src/test/java/org/signal/core/util/logging/ScrubberTest.kt"
-          ],
-          "n_files": 12,
-          "golden_hits": 1,
-          "golden_found": [
-            "app/src/main/java/org/thoughtcrime/securesms/recipients/Recipient.kt"
-          ],
-          "coverage_pct": 33.3,
-          "precision_pct": 8.3,
-          "latency_ms": 36.7,
-          "detail": "terms=['Recipient']",
+          "precision_pct": 6.7,
+          "latency_ms": 7786.5,
+          "detail": "agy_symbols=['Recipient', 'RecipientService', 'RecipientRepository']",
           "error": ""
         }
       }
@@ -842,107 +305,22 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupExporter.java",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupImporter.java",
             "app/src/main/java/org/thoughtcrime/securesms/backup/BackupPassphrase.java",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/FullBackupBase.java",
-            "app/src/main/java/org/thoughtcrime/securesms/MainActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/preferences/BackupsPreferenceFragment.java",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/ApplicationContext.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/BackupNotificationMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/PassphraseChangeActivity.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/RecipientTableCursorUtil.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/ThreadTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/PassphraseCreateActivity.java",
-            "app/src/main/java/org/thoughtcrime/securesms/PassphrasePromptActivity.java"
+            "app/src/main/java/org/thoughtcrime/securesms/util/TextSecurePreferences.java",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/local/LocalArchiver.kt",
+            "app/src/test/java/org/thoughtcrime/securesms/backup/v2/stream/EncryptedBackupReaderWriterTest.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/crypto/MasterSecretUtil.java",
+            "app/src/main/java/org/thoughtcrime/securesms/backup/BackupFrameOutputStream.java"
           ],
-          "n_files": 15,
+          "n_files": 6,
           "golden_hits": 1,
           "golden_found": [
             "app/src/main/java/org/thoughtcrime/securesms/backup/BackupPassphrase.java"
           ],
           "coverage_pct": 33.3,
-          "precision_pct": 6.7,
-          "latency_ms": 34274.9,
-          "detail": "agy_symbols=['BackupPassphrase', 'FullBackupExporter', 'FullBackupImporter', 'FullBackupBase', 'BackupCreator']",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "app/src/spinner/java/org/thoughtcrime/securesms/BackupPlugin.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/util/FrameExtensions.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/backup/v2/ArchiveImportExportTests.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/backup/ArchiveUploadProgressTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/testutil/MockSignalStoreRule.kt",
-            "feature/registration/src/main/java/org/signal/registration/screens/localbackuprestore/LocalBackupRestoreViewModel.kt",
-            "lintchecks/src/main/java/org/signal/lint/ThreadIdDatabaseDetector.kt",
-            "lintchecks/src/main/java/org/signal/lint/RecipientIdDatabaseDetector.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/appearance/appicon/AppIconSelectionFragment.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/registration/fragments/ContactSupportBottomSheetFragment.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/linkpreview/LinkPreviewUtilTest_findValidPreviewUrls.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/registration/data/RegistrationRepository.kt",
-            "feature/registration/src/main/java/org/signal/registration/screens/welcome/WelcomeScreenEvents.kt",
-            "feature/registration/src/main/java/org/signal/registration/screens/localbackuprestore/EnterLocalBackupV1PassphaseScreen.kt"
-          ],
-          "n_files": 14,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 907.4,
-          "detail": "context_pack_fallback",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/MainActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/preferences/BackupsPreferenceFragment.java",
-            "app/src/main/java/org/thoughtcrime/securesms/crypto/MasterSecretUtil.java",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/ApplicationContext.java",
-            "app/src/main/java/org/thoughtcrime/securesms/migrations/BackupNotificationMigrationJob.java",
-            "app/src/main/java/org/thoughtcrime/securesms/PassphraseChangeActivity.java",
-            "app/src/main/java/org/thoughtcrime/securesms/database/RecipientTableCursorUtil.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/ThreadTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/util/EncryptedStreamUtils.kt"
-          ],
-          "n_files": 11,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 10515.2,
-          "detail": "strategy=hybrid nq=7",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/test/java/org/thoughtcrime/securesms/backup/ArchiveUploadProgressTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/testutil/MockSignalStoreRule.kt",
-            "feature/registration/src/main/java/org/signal/registration/screens/localbackuprestore/EnterLocalBackupV1PassphaseScreen.kt",
-            "feature/registration/src/main/java/org/signal/registration/screens/localbackuprestore/LocalBackupRestoreViewModel.kt",
-            "app/src/spinner/java/org/thoughtcrime/securesms/BackupPlugin.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/backup/v2/util/FrameExtensions.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/backup/v2/ArchiveImportExportTests.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/verify/EncryptionVerifiedSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/crypto/MasterSecret.java",
-            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/changenumber/ChangeNumberViewModel.kt",
-            "lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/crypto/ProfileCipher.java",
-            "app/src/main/java/org/thoughtcrime/securesms/ApplicationContext.java",
-            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/internal/backup/InternalBackupPlaygroundFragment.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/conversation/ConversationItem.java",
-            "app/src/main/java/org/thoughtcrime/securesms/conversationlist/ConversationListFragment.java"
-          ],
-          "n_files": 15,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 661.6,
-          "detail": "terms=['chat', 'backup', 'encryption', 'passphrase']",
+          "precision_pct": 16.7,
+          "latency_ms": 7493.0,
+          "detail": "agy_symbols=['BackupEncryptor', 'PassphraseManager', 'ChatBackupService']",
           "error": ""
         }
       }
@@ -955,95 +333,25 @@
       "tools": {
         "rag-agentic": {
           "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/MainActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/ThreadTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/SqlCipherErrorHandler.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/ContactSelectionListFragment.java",
-            "app/src/main/java/org/thoughtcrime/securesms/calls/YouAreAlreadyInACallSnackbar.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/InviteFragment.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DistributionListTables.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/RemoteMegaphoneTable.kt"
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/PushProcessMessageJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/PushSendJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/apkupdate/ApkUpdateNotificationReceiver.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/gcm/FcmReceiveService.java",
+            "app/src/main/java/org/thoughtcrime/securesms/jobs/PushProcessMessageErrorJob.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/apkupdate/ApkUpdateNotifications.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/notifications/v2/NotificationPendingIntentHelper.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/notifications/NotificationsSettingsFragment.kt",
+            "app/src/main/java/org/thoughtcrime/securesms/gcm/FcmFetchManager.kt"
           ],
-          "n_files": 10,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 40680.1,
-          "detail": "agy_symbols=[]",
-          "error": ""
-        },
-        "rag-smart": {
-          "files": [
-            "core/util/src/main/protowire/Trace.proto",
-            "app/src/main/java/org/thoughtcrime/securesms/groups/v2/processing/StateChain.java",
-            "lib/image-editor/src/main/java/org/signal/imageeditor/core/model/InBoundsMemory.java",
-            "app/src/main/java/org/thoughtcrime/securesms/groups/GroupId.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/AppSettingsActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/payments/history/TransactionReconstruction.java",
-            "app/src/test/java/org/thoughtcrime/securesms/payments/history/BlockTransactionReconstructionTests.java",
-            "benchmark/src/main/java/org/thoughtcrime/benchmark/BenchmarkMetrics.kt",
-            "core/util/src/main/java/org/signal/core/util/tracing/Tracer.java",
-            "app/src/main/java/org/thoughtcrime/securesms/mediaoverview/MediaDeleteProgressDialogFragment.kt",
-            "demo/registration/src/main/java/org/signal/registration/sample/RegistrationApplication.kt",
-            "app/src/androidTest/java/org/thoughtcrime/securesms/dependencies/InstrumentationApplicationDependencyProvider.kt",
-            "demo/registration/src/main/java/org/signal/registration/sample/fcm/PushChallengeReceiver.kt"
+          "n_files": 9,
+          "golden_hits": 1,
+          "golden_found": [
+            "app/src/main/java/org/thoughtcrime/securesms/gcm/FcmReceiveService.java"
           ],
-          "n_files": 13,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 602.1,
-          "detail": "context_pack_fallback",
-          "error": ""
-        },
-        "rag-search": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/MainActivity.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/BiometricDeviceAuthentication.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/ThreadTable.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/DevicePinAuthEducationSheet.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/SqlCipherErrorHandler.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/ContactSelectionListFragment.java",
-            "app/src/main/java/org/thoughtcrime/securesms/calls/YouAreAlreadyInACallSnackbar.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/InviteFragment.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/DistributionListTables.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/database/RemoteMegaphoneTable.kt"
-          ],
-          "n_files": 10,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 10569.5,
-          "detail": "strategy=hybrid nq=7",
-          "error": ""
-        },
-        "rag-resolve": {
-          "files": [
-            "app/src/main/java/org/thoughtcrime/securesms/groups/v2/processing/StateChain.java",
-            "lib/image-editor/src/main/java/org/signal/imageeditor/core/model/InBoundsMemory.java",
-            "app/src/main/java/org/thoughtcrime/securesms/groups/GroupId.kt",
-            "app/src/main/java/org/thoughtcrime/securesms/components/settings/app/AppSettingsActivity.kt",
-            "demo/debuglogs-viewer/src/main/assets/WebView.js",
-            "app/src/main/java/org/thoughtcrime/securesms/megaphone/Megaphones.java",
-            "app/src/main/java/org/thoughtcrime/securesms/messages/SyncMessageProcessor.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/database/DatabaseConsistencyTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/groups/GroupIdTest.java",
-            "app/src/main/java/org/thoughtcrime/securesms/notifications/TurnOnNotificationsBottomSheet.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/groups/v2/processing/StateChainTest.kt",
-            "app/src/test/java/org/thoughtcrime/securesms/conversation/colors/AvatarColorHashTest.kt"
-          ],
-          "n_files": 12,
-          "golden_hits": 0,
-          "golden_found": [],
-          "coverage_pct": 0.0,
-          "precision_pct": 0.0,
-          "latency_ms": 59.2,
-          "detail": "terms=['push', 'notifications']",
+          "coverage_pct": 33.3,
+          "precision_pct": 11.1,
+          "latency_ms": 7383.1,
+          "detail": "agy_symbols=['PushNotificationManager', 'PushNotificationHandler', 'PushNotificationReceiver']",
           "error": ""
         }
       }
@@ -1051,31 +359,15 @@
   ],
   "summary": {
     "rag-agentic": {
-      "coverage": 36.67,
-      "precision": 9.370000000000001,
-      "files": 11.8,
-      "latency": 26488.04,
-      "errors": 0
-    },
-    "rag-smart": {
-      "coverage": 17.5,
-      "precision": 3.9200000000000004,
-      "files": 12.2,
-      "latency": 602.0699999999999,
-      "errors": 0
-    },
-    "rag-search": {
-      "coverage": 15.0,
-      "precision": 6.130000000000001,
-      "files": 8.5,
-      "latency": 10118.43,
-      "errors": 0
-    },
-    "rag-resolve": {
-      "coverage": 17.5,
-      "precision": 4.08,
-      "files": 11.3,
-      "latency": 160.57999999999998,
+      "golden_hits": 13,
+      "golden_total": 29,
+      "total_files": 130,
+      "precision_overall": 10.0,
+      "coverage_overall": 44.827586206896555,
+      "coverage": 49.160000000000004,
+      "precision": 10.7,
+      "files": 13.0,
+      "latency": 7813.92,
       "errors": 0
     }
   }
