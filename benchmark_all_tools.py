@@ -88,19 +88,22 @@ SCENARIOS: list[Scenario] = [
     ]),
     Scenario(5, "migration", "Find deprecated job migration code that should be cleaned up", [
         f"{PKG}/jobmanager/migrations/DeprecatedJobMigration.kt",
-        f"{PKG}/jobmanager/migrations/PushDecryptMessageJobEnvelopeMigration.kt",
+        # NOTE: this migration is a .java file, not .kt (golden audit fix).
+        f"{PKG}/jobmanager/migrations/PushDecryptMessageJobEnvelopeMigration.java",
         f"{PKG}/jobmanager/migrations/PushProcessMessageJobMigration.kt",
     ]),
     Scenario(6, "impact", "If I change the Job base class, what code breaks? Show all subclasses", [
         f"{PKG}/jobmanager/Job.java",
         f"{PKG}/jobmanager/JobManager.java",
-        f"{PKG}/jobs/PushDecryptMessageJob.java",
+        # NOTE: PushDecryptMessageJob.java was removed from Signal — phantom golden
+        # dropped in the audit (don't fabricate a replacement).
         f"{PKG}/jobmanager/migrations/PushProcessMessageJobMigration.kt",
     ]),
     Scenario(7, "refactor", "Rename SignalDatabaseMigration interface. Find all implementors and callers", [
         f"{PKG}/database/helpers/migration/SignalDatabaseMigration.kt",
         f"{PKG}/database/helpers/SignalDatabaseMigrations.kt",
-        f"{PKG}/jobmanager/JobMigration.kt",
+        # NOTE: JobMigration.kt removed — it's the job-manager's migration base
+        # ("migration on persisted Jobs"), unrelated to SignalDatabaseMigration.
     ]),
     Scenario(8, "impact", "Who calls Recipient? Show me the blast radius of changing the Recipient model", [
         f"{PKG}/recipients/Recipient.kt",
@@ -110,7 +113,8 @@ SCENARIOS: list[Scenario] = [
     Scenario(9, "info", "How does the chat backup encryption and passphrase system work?", [
         f"{PKG}/backup/BackupPassphrase.java",
         f"{PKG}/backup/BackupDialog.java",
-        f"{PKG}/backup/BackupVersions.kt",
+        # NOTE: BackupVersions.kt removed — backup format version constants,
+        # not part of the encryption/passphrase system.
     ]),
     Scenario(10, "debug", "Trace how push notifications are received and processed by the app", [
         f"{PKG}/gcm/FcmReceiveService.java",

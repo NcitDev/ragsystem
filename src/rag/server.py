@@ -127,7 +127,7 @@ class SmartSearchRequest(BaseModel):
     include_semantic: bool = True
     # Structural expansion (siblings/collaborators/callers) as token-light links.
     include_related: bool = True
-    related_limit: int = Field(25, ge=0, le=100)
+    related_limit: int = Field(40, ge=0, le=100)
 
 
 class RelatedLink(BaseModel):
@@ -145,7 +145,8 @@ class RelatedLink(BaseModel):
 
 class SmartSearchResponse(BaseModel):
     question: str
-    inferred_symbols: list[str]
+    inferred_symbols: list[str]          # raw from the LLM (may include hallucinations)
+    grounded_symbols: list[str] = []     # inferred ∩ index, + real names from semantic
     definitions: list[ContextSlice]      # prime files — full code
     usages: list[ContextSlice]
     related: list[RelatedLink]           # siblings/collaborators/callers — links only
@@ -1977,7 +1978,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=f"Resolve failed ({type(e).__name__})")
 
     async def _related_files(
-        collection: str, symbols: list[str], prime_paths: set[str], limit: int = 25,
+        collection: str, symbols: list[str], prime_paths: set[str],
+        anchor_files: set[str] | None = None, limit: int = 25,
     ) -> list[RelatedLink]:
         """Deterministically find files structurally related to the prime symbols
         — NO LLM loop. Three directions, all from the Qdrant payload:
@@ -1996,7 +1998,7 @@ def create_app() -> FastAPI:
         # generic same-package siblings, which are only kept when the filename is
         # name-related to a queried symbol (drops package noise like
         # KeepAliveService when asking about Job).
-        _PRIORITY = {"subclass_or_caller": 0, "collaborator": 1, "sibling": 2}
+        _PRIORITY = {"subclass": 0, "subclass_or_caller": 1, "collaborator": 2, "sibling": 3}
         ranked: dict[str, tuple[int, RelatedLink]] = {}
 
         def _add(payload: dict, relation: str) -> None:
@@ -2028,12 +2030,52 @@ def create_app() -> FastAPI:
             except Exception:
                 return []
 
+        # Anchor chunks come from the grounded symbol NAMES *and* the resolved
+        # definition FILES — the latter are the reliable anchors (a found
+        # definition's package siblings/collaborators are what we're after).
+        anchors: list[dict] = []
+        seen_anchor: set = set()
+
+        async def _collect_anchor(payload: dict) -> None:
+            key = (payload.get("file_path"), payload.get("defines_fqn"), payload.get("name"))
+            if key not in seen_anchor:
+                seen_anchor.add(key)
+                anchors.append(payload)
+
         for symbol in symbols:
             for prime in (await _scroll("name", symbol, lim=3)):
-                fqn = prime.get("defines_fqn")
-                fp = prime.get("file_path", "")
-                pkg = str(Path(fp).parent) if fp else ""
-                # subclasses / callers — chunks referencing the prime's fqn
+                await _collect_anchor(prime)
+        # Anchor on resolved definitions AND the top semantic files — many golden
+        # collaborators are siblings of a semantic hit that never resolved to a
+        # definition (e.g. preview-package siblings, gcm siblings).
+        for pf in (set(prime_paths) | set(anchor_files or [])):
+            for prime in (await _scroll("file_path", pf, lim=6)):
+                if prime.get("defines_fqn") or prime.get("chunk_type", "") in (
+                    "class_declaration", "interface_declaration", "class", "interface",
+                ):
+                    await _collect_anchor(prime)
+
+        for prime in anchors:
+            symbol = prime.get("name", "")
+            fqn = prime.get("defines_fqn")
+            fp = prime.get("file_path", "")
+            pkg = str(Path(fp).parent) if fp else ""
+            if True:
+                # true subclasses — chunks whose AST inherits_from names this
+                # symbol (by simple name or FQN). The most precise edge.
+                inh_keys = ([symbol] if symbol else []) + ([fqn] if fqn else [])
+                try:
+                    sub = await client.scroll(
+                        collection_name=collection,
+                        scroll_filter=models.Filter(must=[models.FieldCondition(
+                            key="inherits_from", match=models.MatchAny(any=inh_keys))]),
+                        limit=40, with_payload=True,
+                    )
+                    for pt in (sub[0] or []):
+                        _add(pt.payload or {}, "subclass")
+                except Exception:
+                    pass
+                # callers — chunks referencing the prime's fqn
                 if fqn:
                     for vp in (await _scroll("references_fqn", fqn, lim=40)):
                         _add(vp, "subclass_or_caller")
@@ -2042,15 +2084,35 @@ def create_app() -> FastAPI:
                     if isinstance(ref, str) and ref.startswith(internal_prefix):
                         for rp in (await _scroll("defines_fqn", ref, lim=1)):
                             _add(rp, "collaborator")
-                # siblings — same package, but only the name-related ones
+                # siblings — same package. Kept broadly (they're cheap links and
+                # the golden collaborators often live in the prime's package);
+                # name-related ones are prioritized first, then the rest.
                 if pkg:
-                    for sp in (await _scroll("file_path", pkg, match_text=True, lim=80)):
-                        sfp = sp.get("file_path", "")
-                        if str(Path(sfp).parent) == pkg and _name_related(sfp):
-                            _add(sp, "sibling")
+                    sibs_here = [sp for sp in (await _scroll("file_path", pkg, match_text=True, lim=80))
+                                 if str(Path(sp.get("file_path", "")).parent) == pkg]
+                    for sp in sorted(sibs_here, key=lambda s: not _name_related(s.get("file_path", ""))):
+                        _add(sp, "sibling")
 
         ordered = sorted(ranked.values(), key=lambda t: t[0])
         return [link for _, link in ordered][:limit]
+
+    async def _symbol_exists(collection: str, name: str) -> bool:
+        """True if any indexed chunk is named `name` — used to discard the LLM's
+        hallucinated symbols before they reach resolve/expansion."""
+        from qdrant_client import models
+
+        vectorstore = get_vectorstore()
+        client = await vectorstore._get_client()
+        try:
+            r = await client.scroll(
+                collection_name=collection,
+                scroll_filter=models.Filter(must=[
+                    models.FieldCondition(key="name", match=models.MatchValue(value=name))]),
+                limit=1, with_payload=False,
+            )
+            return bool(r[0])
+        except Exception:
+            return False
 
     @app.post("/smart-search", response_model=SmartSearchResponse, dependencies=[Depends(require_auth)])
     async def smart_search(req: SmartSearchRequest):
@@ -2066,17 +2128,45 @@ def create_app() -> FastAPI:
         start = time.time()
         try:
             from rag.agents.retrieval import infer_symbols
+            from rag.core.scoring import score_results
 
-            # 1. LLM symbol inference (degrades to [] on timeout/failure).
+            coll = _collection_for_repo(req.repo)
+            vectorstore = get_vectorstore()
+
+            # 1. LLM symbol inference (raw — may include hallucinated names).
             s_start = time.time()
-            symbols = await infer_symbols(req.question)
+            inferred = await infer_symbols(req.question)
             symbol_ms = (time.time() - s_start) * 1000
 
+            # 2. Semantic search. Doubles as the GROUNDING source: real symbol
+            #    names from the top hits anchor the inference in the index.
+            sresults = await vectorstore.search(
+                collection=coll, query=req.question, top_k=req.top_k,
+            )
+            sresults = score_results(sresults, req.question, reranked=False)[: req.top_k]
+            semantic_items = (
+                [SearchResultItem(**r.slim(), matched_queries=[0]) for r in sresults]
+                if req.include_semantic else []
+            )
+
+            # 3. Ground the symbols: keep inferred names that actually EXIST in
+            #    the index, then add real names from the top semantic hits. This
+            #    discards the LLM's hallucinations (e.g. "BackupEncryptionManager")
+            #    so every resolve/expansion anchors on a real indexed symbol.
+            verified = [s for s in inferred if await _symbol_exists(coll, s)]
+            sem_names: list[str] = []
+            for r in sresults[:10]:
+                nm = (r.payload or {}).get("name") or ""
+                # Only type-like names (PascalCase, >=4 chars) — skip generic
+                # method names like get/set that resolve to noise.
+                if nm and nm[0].isupper() and len(nm) >= 4 and nm not in sem_names:
+                    sem_names.append(nm)
+            grounded = list(dict.fromkeys(verified + sem_names))[:8]
+
+            # 4. Exact resolve on the grounded symbols.
             definitions: list[ContextSlice] = []
             usages: list[ContextSlice] = []
-
-            # 2. Exact resolve on the inferred symbols.
-            if symbols:
+            if grounded:
                 repo_info = _repo_info_for_name(req.repo)
                 from rag.core.ast_index import resolve_symbols
 
@@ -2087,7 +2177,7 @@ def create_app() -> FastAPI:
                     usages_limit = 100
 
                 resolved = resolve_symbols(
-                    repo_info.path, symbols,
+                    repo_info.path, grounded,
                     definitions_limit=req.definitions_limit, usages_limit=usages_limit,
                 )
                 definitions = [
@@ -2100,20 +2190,23 @@ def create_app() -> FastAPI:
                 ]
                 if usages_limit:
                     try:
-                        coll = _collection_for_repo(req.repo)
+                        structural = await _query_structural_usages_from_qdrant(
+                            coll, grounded, req.repo
+                        )
+                        # Structural usages come back as dicts — convert to
+                        # ContextSlice so they match the rest of `usages`.
                         usages.extend(
-                            await _query_structural_usages_from_qdrant(coll, symbols, req.repo)
+                            s for item in structural
+                            if (s := _context_slice_from_candidate(item)) is not None
                         )
                     except Exception as e:
                         logger.warning("smart_search_structural_usages_failed", error=str(e))
 
                     # Two-phase relevance trim: a blast-radius query can yield
-                    # hundreds of usages. Return only the most relevant (same dir
-                    # as a definition / symbol in filename / first few), capped —
-                    # so the caller gets a usable set, not 185 raw files.
+                    # hundreds of usages. Keep only the most relevant, capped.
                     if usages:
                         def_dirs = {str(Path(s.file_path).parent) for s in definitions}
-                        syms_lower = {s.lower() for s in symbols}
+                        syms_lower = {s.lower() for s in grounded}
                         trimmed: list[ContextSlice] = []
                         for idx, u in enumerate(usages):
                             stem = Path(u.file_path).stem.lower()
@@ -2124,40 +2217,28 @@ def create_app() -> FastAPI:
                                 break
                         usages = trimmed
 
-            # 3. Structural expansion (deterministic, no LLM): siblings /
-            #    collaborators / subclasses-callers, returned as token-light links.
+            # 5. Structural expansion (deterministic, no LLM) on grounded symbols.
             related: list[RelatedLink] = []
-            if symbols and req.include_related:
+            if grounded and req.include_related:
                 try:
                     prime_paths = {s.file_path for s in definitions}
-                    coll = _collection_for_repo(req.repo)
-                    related = await _related_files(coll, symbols, prime_paths, limit=req.related_limit)
+                    anchor_files = {r.payload.get("file_path") for r in sresults[:5]
+                                    if (r.payload or {}).get("file_path")}
+                    related = await _related_files(
+                        coll, grounded, prime_paths,
+                        anchor_files=anchor_files, limit=req.related_limit,
+                    )
                 except Exception as e:
                     logger.warning("smart_search_related_failed", error=str(e))
-
-            # 4. Semantic complement (fills gaps when no symbol was inferred).
-            semantic_items: list[SearchResultItem] = []
-            if req.include_semantic:
-                vectorstore = get_vectorstore()
-                coll = _collection_for_repo(req.repo)
-                sresults = await vectorstore.search(
-                    collection=coll, query=req.question, top_k=req.top_k,
-                )
-                from rag.core.scoring import score_results
-
-                sresults = score_results(sresults, req.question, reranked=False)[: req.top_k]
-                semantic_items = [
-                    SearchResultItem(**r.slim(), matched_queries=[0]) for r in sresults
-                ]
 
             latency = (time.time() - start) * 1000
             logger.info(
                 "smart_search_executed", repo=req.repo, question=req.question,
-                inferred_symbols=symbols, definitions=len(definitions),
+                inferred=inferred, grounded=grounded, definitions=len(definitions),
                 usages=len(usages), related=len(related), latency_ms=round(latency, 1),
             )
             return SmartSearchResponse(
-                question=req.question, inferred_symbols=symbols,
+                question=req.question, inferred_symbols=inferred, grounded_symbols=grounded,
                 definitions=definitions, usages=usages, related=related,
                 semantic=semantic_items,
                 symbol_inference_ms=round(symbol_ms, 1), latency_ms=round(latency, 1),
