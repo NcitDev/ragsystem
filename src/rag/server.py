@@ -128,6 +128,13 @@ class SmartSearchRequest(BaseModel):
     # Structural expansion (siblings/collaborators/callers) as token-light links.
     include_related: bool = True
     related_limit: int = Field(40, ge=0, le=100)
+    # Vocab (summary) anchor channel — set False to A/B the layer's contribution.
+    include_vocab: bool = True
+    # Paginated "show more" candidate link-list (token-light, no code). The
+    # caller pages with candidate_offset across turns and reads full bodies only
+    # for the files it actually wants.
+    candidate_offset: int = Field(0, ge=0)
+    candidate_limit: int = Field(25, ge=0, le=200)
 
 
 class RelatedLink(BaseModel):
@@ -143,15 +150,66 @@ class RelatedLink(BaseModel):
     relation: str  # sibling | collaborator | subclass_or_caller
 
 
+class VocabFile(BaseModel):
+    """A file surfaced by the vocab (summary) layer — the concept→symbol anchor.
+
+    Returned with its summary + path directly so the caller can use it even when
+    exact symbol-resolve (ast-index) is unavailable.
+    """
+
+    file_path: str
+    name: str
+    summary: str
+    score: float
+
+
+class Candidate(BaseModel):
+    """A token-light candidate LINK (no code) for the paginated 'show more' list.
+
+    The caller scans these across turns (via candidate_offset) and reads full
+    bodies only for the files it decides it needs.
+    """
+
+    file_path: str
+    name: str
+    lines: str = ""
+    source: str          # vocab | definition | usage | related | semantic
+    summary: str = ""    # populated for vocab-sourced candidates
+
+
 class SmartSearchResponse(BaseModel):
     question: str
     inferred_symbols: list[str]          # raw from the LLM (may include hallucinations)
-    grounded_symbols: list[str] = []     # inferred ∩ index, + real names from semantic
+    grounded_symbols: list[str] = []     # inferred ∩ index + real names from semantic (NOT vocab)
+    vocab_anchors: list[str] = []        # file stems surfaced by the vocab (summary) layer
+    vocab_files: list[VocabFile] = []    # vocab hits with path + summary (separate, additive)
     definitions: list[ContextSlice]      # prime files — full code
     usages: list[ContextSlice]
     related: list[RelatedLink]           # siblings/collaborators/callers — links only
     semantic: list[SearchResultItem]
+    candidates: list[Candidate] = []     # paginated 'show more' link list (this page)
+    candidates_total: int = 0            # full pool size — page with candidate_offset
     symbol_inference_ms: float
+    latency_ms: float
+
+
+class VocabBuildRequest(BaseModel):
+    """Build/refresh the project-vocabulary collection from a summaries JSONL.
+
+    The JSONL ({file: rel-path, summary: text}) lives on the daemon's host;
+    upsert runs through the daemon so it shares the embedded-Qdrant lock.
+    """
+
+    repo: str = Field(..., min_length=1)
+    jsonl_path: str = Field(..., min_length=1)
+    batch_size: int = Field(64, ge=1, le=256)
+
+
+class VocabBuildResponse(BaseModel):
+    repo: str
+    collection: str
+    records: int          # non-error summaries loaded from the JSONL
+    upserted: int         # points written to the vocab collection
     latency_ms: float
 
 
@@ -2157,6 +2215,51 @@ def create_app() -> FastAPI:
         except Exception:
             return False
 
+    @app.post("/vocab/build", response_model=VocabBuildResponse, dependencies=[Depends(require_auth)])
+    async def vocab_build(req: VocabBuildRequest):
+        """Embed per-file summaries into the repo's vocab collection.
+
+        Idempotent: chunk_ids are deterministic per (repo, rel-path), so a re-run
+        with an updated JSONL upserts in place rather than duplicating.
+        """
+        start = time.time()
+        try:
+            from rag.core.vocab import (
+                build_vocab_docs,
+                load_summaries,
+                vocab_collection_for,
+            )
+
+            path = Path(req.jsonl_path).expanduser()
+            if not path.is_file():
+                raise HTTPException(status_code=400, detail=f"JSONL not found: {path}")
+
+            records = load_summaries(path)
+            if not records:
+                raise HTTPException(status_code=400, detail="No valid summaries in JSONL")
+
+            docs = build_vocab_docs(records, req.repo)
+            collection = vocab_collection_for(_collection_for_repo(req.repo))
+
+            vectorstore = get_vectorstore()
+            upserted = await vectorstore.upsert(
+                collection=collection, documents=docs, batch_size=req.batch_size,
+            )
+            latency = (time.time() - start) * 1000
+            logger.info(
+                "vocab_build_complete", repo=req.repo, collection=collection,
+                records=len(records), upserted=upserted, latency_ms=round(latency, 1),
+            )
+            return VocabBuildResponse(
+                repo=req.repo, collection=collection, records=len(records),
+                upserted=upserted, latency_ms=round(latency, 1),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("vocab_build_error", repo=req.repo, error=str(e))
+            raise HTTPException(status_code=500, detail=f"Vocab build failed ({type(e).__name__})")
+
     @app.post("/smart-search", response_model=SmartSearchResponse, dependencies=[Depends(require_auth)])
     async def smart_search(req: SmartSearchRequest):
         """Agentic retrieval = the design: an LLM (agy) infers candidate symbols
@@ -2197,6 +2300,29 @@ def create_app() -> FastAPI:
             #    discards the LLM's hallucinations (e.g. "BackupEncryptionManager")
             #    so every resolve/expansion anchors on a real indexed symbol.
             verified = [s for s in inferred if await _symbol_exists(coll, s)]
+
+            # 3b. VOCAB channel: search the per-file summary collection. A vague
+            #     question embeds near the right file's SUMMARY (which names the
+            #     symbol + domain concepts) even when it embeds far from raw code,
+            #     so this surfaces canonical anchors that semantic code search
+            #     buries — the concept→symbol "anchor" fix.
+            vocab_anchors: list[str] = []
+            vocab_hits: list[dict[str, Any]] = []
+            if req.include_vocab:
+                try:
+                    from rag.core.vocab import search_vocab, vocab_collection_for
+
+                    vocab_hits = await search_vocab(
+                        vectorstore, vocab_collection_for(coll), req.question, top_k=5,
+                    )
+                    for hit in vocab_hits:
+                        nm = hit.get("name") or ""
+                        if (nm and nm[0].isupper() and len(nm) >= 4
+                                and "." not in nm and nm not in vocab_anchors):
+                            vocab_anchors.append(nm)
+                except Exception as e:
+                    logger.warning("smart_search_vocab_failed", error=str(e))
+
             sem_names: list[str] = []
             for r in sresults[:10]:
                 nm = (r.payload or {}).get("name") or ""
@@ -2206,6 +2332,11 @@ def create_app() -> FastAPI:
                 if (nm and nm[0].isupper() and len(nm) >= 4
                         and "." not in nm and nm not in sem_names):
                     sem_names.append(nm)
+            # Grounding stays BASELINE-only (inferred ∩ index + semantic names).
+            # Vocab anchors are deliberately NOT injected here: doing so drifted
+            # the resolve/related expansion off the exact named symbol and cost
+            # ~5% coverage on precise questions (benchmarked). Vocab is returned
+            # separately as `vocab_files`/`vocab_anchors` — purely additive.
             grounded = list(dict.fromkeys(verified + sem_names))[:8]
 
             # 4. Exact resolve on the grounded symbols.
@@ -2307,13 +2438,50 @@ def create_app() -> FastAPI:
             latency = (time.time() - start) * 1000
             logger.info(
                 "smart_search_executed", repo=req.repo, question=req.question,
-                inferred=inferred, grounded=grounded, definitions=len(definitions),
-                usages=len(usages), related=len(related), latency_ms=round(latency, 1),
+                inferred=inferred, vocab_anchors=vocab_anchors, grounded=grounded,
+                definitions=len(definitions), usages=len(usages), related=len(related),
+                latency_ms=round(latency, 1),
             )
+            vocab_files = [
+                VocabFile(
+                    file_path=h.get("file_path", ""), name=h.get("name", ""),
+                    summary=h.get("summary", ""), score=float(h.get("score", 0.0)),
+                )
+                for h in vocab_hits if h.get("file_path")
+            ]
+
+            # Paginated 'show more' candidate pool: all signals as token-light
+            # LINKS (no code), deduped, precision-first. The caller pages with
+            # candidate_offset and reads full bodies only for what it picks.
+            pool: list[Candidate] = []
+            seen_paths: set[str] = set()
+
+            def _add_candidate(fp: str, name: str, lines: str, source: str, summary: str = "") -> None:
+                if fp and fp not in seen_paths:
+                    seen_paths.add(fp)
+                    pool.append(Candidate(file_path=fp, name=name, lines=lines,
+                                          source=source, summary=summary))
+
+            for s in definitions:
+                _add_candidate(s.file_path, getattr(s, "name", ""), getattr(s, "lines", ""), "definition")
+            for vf in vocab_files:
+                _add_candidate(vf.file_path, vf.name, "", "vocab", vf.summary)
+            for s in usages:
+                _add_candidate(s.file_path, getattr(s, "name", ""), getattr(s, "lines", ""), "usage")
+            for r in related:
+                _add_candidate(r.file_path, r.name, r.lines, "related")
+            for it in semantic_items:
+                _add_candidate(it.file_path, it.name, it.lines, "semantic")
+
+            candidates_total = len(pool)
+            page = pool[req.candidate_offset: req.candidate_offset + req.candidate_limit]
+
             return SmartSearchResponse(
                 question=req.question, inferred_symbols=inferred, grounded_symbols=grounded,
+                vocab_anchors=vocab_anchors, vocab_files=vocab_files,
                 definitions=definitions, usages=usages, related=related,
                 semantic=semantic_items,
+                candidates=page, candidates_total=candidates_total,
                 symbol_inference_ms=round(symbol_ms, 1), latency_ms=round(latency, 1),
             )
         except HTTPException:
