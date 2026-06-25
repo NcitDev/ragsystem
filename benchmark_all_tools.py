@@ -521,8 +521,10 @@ def run_graphify(sc: Scenario, token: str) -> ToolResult:
                 discovered.append(node_path[nb])
     exts = {".java", ".kt", ".kts"}
     discovered = [p for p in discovered if Path(p).suffix.lower() in exts]
+    # Token cost = the distinct file paths graphify surfaces (the BFS list has
+    # heavy duplication; dedupe for an honest "what the agent receives" count).
     return ToolResult(files=_cap(discovered), latency_ms=(time.time() - t0) * 1000,
-                      tokens=_toklen(discovered), detail=f"seeds={len(seeds)}")
+                      tokens=_toklen(sorted(set(discovered))), detail=f"seeds={len(seeds)}")
 
 
 _SERENA: dict[str, Any] = {}
