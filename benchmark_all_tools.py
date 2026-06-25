@@ -177,6 +177,7 @@ class ToolResult:
     files: list[str] = field(default_factory=list)   # ranked, distinct, capped
     golden_hits: list[str] = field(default_factory=list)
     latency_ms: float = 0.0
+    tokens: int = 0          # est. tokens of the payload handed to the main agent
     detail: str = ""
     error: str = ""
 
@@ -202,6 +203,12 @@ def _rel(path: str) -> str:
         while p.startswith("./"):
             p = p[2:]
         return p
+
+
+def _toklen(obj) -> int:
+    """Rough token estimate (~chars/4) of a payload the agent would receive."""
+    text = obj if isinstance(obj, str) else json.dumps(obj)
+    return len(text) // 4
 
 
 def _cap(files: list[str]) -> list[str]:
@@ -261,18 +268,17 @@ def run_rag_agentic(sc: Scenario, token: str) -> ToolResult:
     """
     t0 = time.time()
     try:
+        # Eager top-15 WITH code bodies — the "naive agentic" context cost.
         data = _post("/smart-search", {
             "question": sc.question, "repo": REPO_NAME, "top_k": TOP_K,
-            "candidate_offset": 0, "candidate_limit": 200,
+            "candidate_offset": 0, "candidate_limit": TOP_K, "include_bodies": True,
         }, token)
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         return ToolResult(error=str(e), latency_ms=(time.time() - t0) * 1000)
-    # The candidate pool is the unified, deduped, precision-first link list
-    # (definitions+vocab+usages+related+semantic). Top-k = the first page.
     files = [c.get("file_path", "") for c in (data or {}).get("candidates", []) if c.get("file_path")]
     anchors = (data or {}).get("vocab_anchors", [])
     return ToolResult(files=_cap(files), latency_ms=(time.time() - t0) * 1000,
-                      detail=f"vocab_anchors={anchors[:3]}")
+                      tokens=_toklen(data), detail=f"vocab_anchors={anchors[:3]}")
 
 
 def run_rag_agentic_pool(sc: Scenario, token: str) -> ToolResult:
@@ -280,16 +286,19 @@ def run_rag_agentic_pool(sc: Scenario, token: str) -> ToolResult:
     LLM can reach by paging candidate_offset), not just the top-k first page."""
     t0 = time.time()
     try:
+        # Lazy mode: full candidate pool as LINKS only (no code bodies). The
+        # agent reads bodies on demand, so context tokens stay low despite the
+        # wider net.
         data = _post("/smart-search", {
             "question": sc.question, "repo": REPO_NAME, "top_k": TOP_K,
-            "candidate_offset": 0, "candidate_limit": 200,
+            "candidate_offset": 0, "candidate_limit": 200, "include_bodies": False,
         }, token)
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         return ToolResult(error=str(e), latency_ms=(time.time() - t0) * 1000)
     files = [c.get("file_path", "") for c in (data or {}).get("candidates", []) if c.get("file_path")]
     total = (data or {}).get("candidates_total", len(files))
     return ToolResult(files=files, latency_ms=(time.time() - t0) * 1000,
-                      detail=f"pool={total}")
+                      tokens=_toklen(data), detail=f"pool={total}")
 
 
 def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
@@ -315,12 +324,14 @@ def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
     want_usages = any(sig in q for sig in _BLAST_SIGNALS)
     files: list[str] = []
     notes: list[str] = []
+    payloads: list = []
     try:
         if symbols:
             data = _post("/resolve", {
                 "repo": REPO_NAME, "symbols": symbols[:6],
                 "definitions_limit": 20, "usages_limit": 100 if want_usages else 0,
             }, token)
+            payloads.append(data)
             def_dirs: set[str] = set()
             for item in (data or {}).get("definitions", []):
                 fp = item.get("file_path", "")
@@ -349,6 +360,7 @@ def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
                 "query": sc.question, "repo": REPO_NAME, "max_slices": 15,
                 "max_source_tokens": 30000, "use_ast_index": True, "include_semantic": False,
             }, token)
+            payloads.append(pack)
             discovered = []
             for sl in (pack or {}).get("slices", []):
                 fp = sl.get("file_path", "")
@@ -360,6 +372,7 @@ def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
                     "repo": REPO_NAME, "symbols": list(dict.fromkeys(discovered))[:8],
                     "definitions_limit": 10, "usages_limit": 0,
                 }, token)
+                payloads.append(data2)
                 for item in (data2 or {}).get("definitions", []):
                     fp = item.get("file_path", "")
                     if fp:
@@ -368,7 +381,7 @@ def run_rag_smart(sc: Scenario, token: str) -> ToolResult:
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         return ToolResult(error=str(e), latency_ms=(time.time() - t0) * 1000)
     return ToolResult(files=_cap(files), latency_ms=(time.time() - t0) * 1000,
-                      detail="; ".join(notes))
+                      tokens=sum(_toklen(p) for p in payloads), detail="; ".join(notes))
 
 
 def run_rag_search(sc: Scenario, token: str) -> ToolResult:
@@ -382,7 +395,7 @@ def run_rag_search(sc: Scenario, token: str) -> ToolResult:
     files = [r.get("file_path", "") for r in (data or {}).get("results", [])]
     plan = (data or {}).get("plan") or {}
     return ToolResult(
-        files=_cap(files), latency_ms=(time.time() - t0) * 1000,
+        files=_cap(files), latency_ms=(time.time() - t0) * 1000, tokens=_toklen(data),
         detail=f"strategy={plan.get('strategy')} nq={len(plan.get('queries', []))}",
     )
 
@@ -404,13 +417,14 @@ def run_rag_resolve(sc: Scenario, token: str) -> ToolResult:
             if fp:
                 files.append(fp)
     return ToolResult(files=_cap(files), latency_ms=(time.time() - t0) * 1000,
-                      detail=f"terms={terms}")
+                      tokens=_toklen(data), detail=f"terms={terms}")
 
 
 def run_vanilla_rg(sc: Scenario, token: str) -> ToolResult:
     t0 = time.time()
     terms = search_terms(sc.question)
     discovered: list[str] = []
+    raw = 0
     for term in terms:
         try:
             proc = subprocess.run(
@@ -420,15 +434,17 @@ def run_vanilla_rg(sc: Scenario, token: str) -> ToolResult:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             continue
         if proc.returncode == 0:
+            raw += len(proc.stdout)
             discovered.extend(line.strip() for line in proc.stdout.splitlines() if line.strip())
     return ToolResult(files=_cap(discovered), latency_ms=(time.time() - t0) * 1000,
-                      detail=f"terms={terms}")
+                      tokens=raw // 4, detail=f"terms={terms}")
 
 
 def run_ast_index(sc: Scenario, token: str) -> ToolResult:
     t0 = time.time()
     terms = search_terms(sc.question)
     discovered: list[str] = []
+    raw = 0
     for term in terms[:4]:
         for sub in ("symbol", "usages"):
             try:
@@ -437,6 +453,7 @@ def run_ast_index(sc: Scenario, token: str) -> ToolResult:
                     cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=20,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
+                    raw += len(proc.stdout)
                     discovered.extend(_extract_paths_from_json(json.loads(proc.stdout)))
             except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
                 pass
@@ -447,11 +464,12 @@ def run_ast_index(sc: Scenario, token: str) -> ToolResult:
                 cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=20,
             )
             if proc.returncode == 0 and proc.stdout.strip():
+                raw += len(proc.stdout)
                 discovered.extend(_extract_paths_from_json(json.loads(proc.stdout)))
         except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
             pass
     return ToolResult(files=_cap(discovered), latency_ms=(time.time() - t0) * 1000,
-                      detail=f"terms={terms}")
+                      tokens=raw // 4, detail=f"terms={terms}")
 
 
 _GRAPH_CACHE: dict[str, Any] = {}
@@ -504,7 +522,7 @@ def run_graphify(sc: Scenario, token: str) -> ToolResult:
     exts = {".java", ".kt", ".kts"}
     discovered = [p for p in discovered if Path(p).suffix.lower() in exts]
     return ToolResult(files=_cap(discovered), latency_ms=(time.time() - t0) * 1000,
-                      detail=f"seeds={len(seeds)}")
+                      tokens=_toklen(discovered), detail=f"seeds={len(seeds)}")
 
 
 _SERENA: dict[str, Any] = {}
@@ -548,16 +566,18 @@ def run_serena(sc: Scenario, token: str) -> ToolResult:
     find_symbol = None if use_warm else _SERENA["agent"].get_tool_by_name("find_symbol")
 
     discovered: list[str] = []
+    raw = 0
     for sym in search_terms(sc.question):
         try:
             res = (_serena_warm_lookup(sym) if use_warm
                    else find_symbol.apply(name_path_pattern=sym, include_body=False))
             if res and res.strip():
+                raw += len(res)
                 discovered.extend(_extract_paths_from_json(json.loads(res)))
         except Exception:
             pass
     return ToolResult(files=_cap(discovered), latency_ms=(time.time() - t0) * 1000,
-                      detail="warm" if use_warm else "in-process")
+                      tokens=raw // 4, detail="warm" if use_warm else "in-process")
 
 
 DRIVERS: dict[str, Callable[[Scenario, str], ToolResult]] = {
@@ -607,7 +627,7 @@ def main() -> None:
             r = DRIVERS[tool](sc, token)
             r.score(sc.golden_files)
             entry["tools"][tool] = {
-                "files": r.files, "n_files": len(r.files),
+                "files": r.files, "n_files": len(r.files), "tokens": r.tokens,
                 "golden_hits": len(r.golden_hits), "golden_found": r.golden_hits,
                 "coverage_pct": round(r.coverage(sc.golden_files), 1),
                 "precision_pct": round(r.precision(), 1),
@@ -615,7 +635,7 @@ def main() -> None:
             }
             tag = ("ERR " + r.error[:32]) if r.error else "OK"
             print(f"    {tool:<12} hit={len(r.golden_hits)}/{len(sc.golden_files)} "
-                  f"files={len(r.files):<3} cov={r.coverage(sc.golden_files):5.1f}% "
+                  f"files={len(r.files):<3} tok={r.tokens:6d} cov={r.coverage(sc.golden_files):5.1f}% "
                   f"prec={r.precision():5.1f}% lat={r.latency_ms:7.0f}ms [{tag}]")
         results["scenarios"].append(entry)
 
@@ -635,10 +655,13 @@ def main() -> None:
         golden_total = sum(s["golden_count"] for s in results["scenarios"])
         golden_hits = sum(v["golden_hits"] for v in vals)
         total_files = sum(v["n_files"] for v in vals)
+        total_tokens = sum(v.get("tokens", 0) for v in vals)
         summary[tool] = {
             "golden_hits": golden_hits,
             "golden_total": golden_total,
             "total_files": total_files,
+            "total_tokens": total_tokens,
+            "tokens_per_scenario": round(total_tokens / max(1, len(vals))),
             # Overall precision/coverage over the whole pool (not avg-of-ratios).
             "precision_overall": (golden_hits / total_files * 100) if total_files else 0.0,
             "coverage_overall": (golden_hits / golden_total * 100) if golden_total else 0.0,
@@ -649,9 +672,10 @@ def main() -> None:
             "errors": len(vals) - len(ok),
         }
         s = summary[tool]
-        print(f"  {tool:<12} found={s['golden_hits']:2d}/{s['golden_total']} golden  "
-              f"of {s['total_files']:3d} files returned  "
-              f"(coverage={s['coverage_overall']:4.1f}%  precision={s['precision_overall']:4.1f}%)  "
+        print(f"  {tool:<16} found={s['golden_hits']:2d}/{s['golden_total']}  "
+              f"files={s['total_files']:4d}  tokens={s['total_tokens']:7d} "
+              f"({s['tokens_per_scenario']:5d}/scn)  "
+              f"cov={s['coverage_overall']:4.1f}%  prec={s['precision_overall']:4.1f}%  "
               f"lat={s['latency']:6.0f}ms")
     results["summary"] = summary
 
@@ -673,12 +697,13 @@ def _write_report(results: dict) -> None:
         "## Averages\n",
         "Golden found = golden files retrieved out of the whole pool. "
         "Coverage = golden found / golden pool. Precision = golden found / files returned.\n",
-        "| Tool | Golden Found | Files Returned | Coverage | Precision | Avg Latency |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Tool | Golden Found | Files Returned | Context Tokens | Coverage | Precision | Avg Latency |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for tool, s in results["summary"].items():
         L.append(
             f"| {tool} | {s['golden_hits']}/{s['golden_total']} | {s['total_files']} | "
+            f"{s.get('total_tokens', 0)} | "
             f"{s['coverage_overall']:.1f}% | {s['precision_overall']:.1f}% | {s['latency']:.0f}ms |"
         )
     L.append("\n## Per-scenario\n")
