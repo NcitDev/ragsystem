@@ -29,7 +29,6 @@ def test_lsp_server_config_complete():
 
 @pytest.mark.asyncio
 async def test_enrich_chunks_with_running_clients():
-    import pytest
     from unittest.mock import AsyncMock, MagicMock
     from rag.core.lsp import enrich_chunks_with_running_clients, LSPClient
 
@@ -57,5 +56,57 @@ async def test_enrich_chunks_with_running_clients():
     assert len(enriched_chunks) == 1
     assert enriched_chunks[0]["fan_in"] == 1
     assert enriched_chunks[0]["called_by"] == ["/path/to/caller.py:10"]
-    client.get_references.assert_called_once_with("test.py", 5, 4)
+    # start_line is 1-based; LSP positions are 0-based (legacy column fallback = 4)
+    client.get_references.assert_called_once_with("test.py", 4, 4)
+
+
+@pytest.mark.asyncio
+async def test_enrich_uses_precise_name_position():
+    from unittest.mock import AsyncMock, MagicMock
+    from rag.core.lsp import enrich_chunks_with_running_clients, LSPClient
+
+    client = MagicMock(spec=LSPClient)
+    client.get_references = AsyncMock(return_value=[])
+
+    chunks = [
+        {
+            "language": "python",
+            "file_path": "test.py",
+            "start_line": 3,       # decorator line (1-based)
+            "name_line": 4,        # 0-based row of the `def` name identifier
+            "name_col": 4,
+            "name": "cached_fn",
+            "chunk_type": "function",
+            "is_public": True,
+        }
+    ]
+
+    enriched = await enrich_chunks_with_running_clients(chunks, {"python": client})
+    client.get_references.assert_called_once_with("test.py", 4, 4)
+    # zero refs at a precise position → dead-code candidate
+    assert enriched[0]["dead_code_candidate"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_dead_code_flag_without_precise_position():
+    from unittest.mock import AsyncMock, MagicMock
+    from rag.core.lsp import enrich_chunks_with_running_clients, LSPClient
+
+    client = MagicMock(spec=LSPClient)
+    client.get_references = AsyncMock(return_value=[])
+
+    chunks = [
+        {
+            "language": "python",
+            "file_path": "test.py",
+            "start_line": 5,
+            "name": "maybe_used",
+            "chunk_type": "function",
+            "is_public": True,
+        }
+    ]
+
+    enriched = await enrich_chunks_with_running_clients(chunks, {"python": client})
+    # position was guessed → empty refs must NOT mark dead code
+    assert "dead_code_candidate" not in enriched[0]
 

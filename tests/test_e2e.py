@@ -186,6 +186,7 @@ def patched_app(tmp_path: Path, monkeypatch):
     get_settings.cache_clear()
     settings = get_settings()
     settings.qdrant.path = str(qdrant_dir)
+    settings.qdrant.mode = "embedded"  # never depend on a live Qdrant server
     settings.lsp.enabled = False
 
     # Redirect every module-level RAG_HOME-derived constant.

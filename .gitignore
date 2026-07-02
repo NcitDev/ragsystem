@@ -27,3 +27,13 @@ tmp_serena/
 
 # Claude
 .claude/plans/
+
+# Benchmark / vocab experiment artifacts (results live in docs/ or bench/)
+/vocab_*.jsonl
+/*_run.log
+/benchmark_*_results.json
+/graphify-out/
+/*_list.txt
+
+# IDE/tool metadata that regenerates itself
+.qoder/

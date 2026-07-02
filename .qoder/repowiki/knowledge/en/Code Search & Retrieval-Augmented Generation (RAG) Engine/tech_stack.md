@@ -1,4 +1,0 @@
-- **Vector Store**: Embedded Qdrant (`qdrant-client`) for dense cosine similarity search.
-- **Embeddings**: Ollama-backed dense embeddings (e.g., `qwen3-embedding`) via `httpx`, replacing previous ONNX/FastEmbed implementations.
-- **Code Parsing**: `tree-sitter` (with language-specific grammars) for structural chunking and `networkx` for knowledge graph construction.
-- **UI/Frameworks**: `FastAPI`/`uvicorn` for the API layer, `Textual` for the TUI dashboard, and `Typer` for the CLI.

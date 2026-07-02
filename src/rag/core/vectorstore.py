@@ -304,11 +304,15 @@ class QdrantVectorStore:
         batch_size: int = 50,
         cache: Any = None,
         timings_ms: dict[str, float] | None = None,
+        skipped_files: set[str] | None = None,
     ) -> int:
         """Embed and upsert documents into Qdrant.
 
         Args:
             cache: Optional EmbeddingCache to skip re-embedding unchanged chunks.
+            skipped_files: Optional out-param; collects file_paths of documents
+                dropped because their embedding slot was never filled, so callers
+                can avoid marking those files as successfully indexed.
         """
         t0 = perf_counter()
         await self.ensure_collection(collection)
@@ -384,6 +388,8 @@ class QdrantVectorStore:
                         chunk_id=doc.chunk_id,
                         file_path=doc.metadata.get("file_path"),
                     )
+                    if skipped_files is not None and doc.metadata.get("file_path"):
+                        skipped_files.add(doc.metadata["file_path"])
                     continue
                 # Dimension mismatch between produced vector and collection is a
                 # silent-corruption hazard; refuse rather than write garbage.

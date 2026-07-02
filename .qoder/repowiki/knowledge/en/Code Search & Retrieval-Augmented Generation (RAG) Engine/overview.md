@@ -1,1 +1,0 @@
-A standalone, code-aware RAG system providing dense vector search, AST-based symbol resolution, and a supervised FastAPI daemon with a Textual TUI dashboard.

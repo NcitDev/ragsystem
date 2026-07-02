@@ -18,10 +18,16 @@ coverage from 60% → 73% with **no regressions**, and cracks vague concept ques
 
 ## The one call
 
+```bash
+rag smart-search "<natural language question>" --repo <repo> --links-only
+# cross-repo: --repos repoA,repoB   or   --all-repos   (items carry a repo tag)
+# paging:     --offset 25 --limit 25
+# raw JSON:   --json
 ```
-POST /smart-search   { "question": "<natural language>", "repo": "<repo>",
-                       "top_k": 15, "candidate_offset": 0, "candidate_limit": 25 }
-```
+
+(The CLI is a thin client for `POST /smart-search`; prefer it over hand-built
+HTTP calls — fewer tokens, and `--links-only` strips code bodies so the first
+pass is links + summaries only.)
 
 Response fields, cheapest-to-richest:
 
@@ -44,7 +50,7 @@ Response fields, cheapest-to-richest:
 4. **Read full text only for those** — use `Read` on the `file_path`, or `/resolve` for
    the exact symbol's definition/usages. This is the only step that spends real tokens.
 5. **Need more?** If the picked files left a gap, page the candidate list:
-   re-call with `candidate_offset += candidate_limit` (the golden file is often beyond
+   re-run with `--offset <offset + limit>` (the golden file is often beyond
    the first 15 — `candidates_total` tells you how many remain). Repeat from step 2.
 6. **Stop** as soon as the read files answer the question.
 
@@ -63,6 +69,9 @@ Response fields, cheapest-to-richest:
 - Never read a file body to *decide relevance* — that's what `lines`, `name`, and the vocab
   `summary` are for. Read bodies only to *use* the content.
 - Page before you re-search. A second `/smart-search` re-runs inference + embedding (~10–25s);
-  paging `candidate_offset` is free and deterministic.
+  paging `--offset` is free and deterministic.
+- Start with `--links-only`; drop it only when you already know you want bodies inline.
+- Cross-repo questions ("which of my repos handles X?") → one call with `--all-repos`
+  instead of N sequential searches.
 - `vocab_files` is additive and never reshapes the baseline — treat it as an extra lead list,
   not a replacement for `definitions`/`related`.

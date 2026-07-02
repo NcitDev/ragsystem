@@ -64,6 +64,7 @@ def app_ctx(tmp_path: Path, monkeypatch):
     get_settings.cache_clear()
     settings = get_settings()
     settings.qdrant.path = str(tmp_path / "qdrant")
+    settings.qdrant.mode = "embedded"  # never depend on a live Qdrant server
     settings.lsp.enabled = False
 
     import rag.config as _config
@@ -938,3 +939,23 @@ def test_rate_limit_eventually_429(app_ctx, monkeypatch):
     )
     codes = [client.get("/health").status_code for _ in range(6)]
     assert 429 in codes, codes
+
+
+def test_smart_search_requires_repo_or_repos(app_ctx):
+    client, token = app_ctx
+    r = client.post(
+        "/smart-search",
+        json={"question": "where is auth handled?"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 422
+
+
+def test_smart_search_unknown_repo_in_repos_404(app_ctx):
+    client, token = app_ctx
+    r = client.post(
+        "/smart-search",
+        json={"question": "where is auth handled?", "repos": ["missing-repo"]},
+        headers=_auth(token),
+    )
+    assert r.status_code == 404

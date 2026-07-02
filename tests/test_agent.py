@@ -24,9 +24,9 @@ def test_fallback_detects_complexity():
     assert plan.filters.get("complexity_cyclomatic") == 10
 
 
-def test_fallback_strategy_filtered():
+def test_fallback_strategy_filters_use_hybrid():
     plan = asyncio.run(async_fallback("find python factories"))
-    assert plan.strategy == "filtered"
+    assert plan.strategy == "hybrid"
 
 
 def test_fallback_strategy_graph():
@@ -34,9 +34,9 @@ def test_fallback_strategy_graph():
     assert plan.strategy == "graph_walk"
 
 
-def test_fallback_strategy_aggregate():
+def test_fallback_strategy_stats_use_hybrid():
     plan = asyncio.run(async_fallback("how many patterns exist"))
-    assert plan.strategy == "aggregate"
+    assert plan.strategy == "hybrid"
 
 
 def test_fallback_expands_query():

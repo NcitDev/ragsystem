@@ -4,20 +4,13 @@ from __future__ import annotations
 
 import os
 import secrets
-import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore[no-redef]
+import tomllib  # requires-python >= 3.11
 
 
 RAG_HOME = Path.home() / ".rag"
@@ -48,13 +41,10 @@ def _load_env_files() -> None:
 
 
 _load_env_files()
-_REPO_DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config" / "default.toml"
-_PACKAGE_DEFAULT_CONFIG = Path(__file__).with_name("default.toml")
-DEFAULT_CONFIG = (
-    _REPO_DEFAULT_CONFIG
-    if _REPO_DEFAULT_CONFIG.exists()
-    else _PACKAGE_DEFAULT_CONFIG
-)
+# Single source of truth: the packaged default.toml. (There used to be a
+# second copy under config/ in the repo root, preferred when running from a
+# checkout — dev and installed runs silently diverged.)
+DEFAULT_CONFIG = Path(__file__).with_name("default.toml")
 
 
 class ServerSettings(BaseModel):

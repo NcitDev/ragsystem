@@ -16,7 +16,7 @@ async def main():
             try:
                 await client.create_payload_index(collection_name=coll, field_name=field, field_schema=schema)
                 n += 1
-            except Exception as e:
+            except Exception:
                 pass
         print(f"  {coll}: created/ensured {n} payload indexes")
     await client.close()

@@ -40,9 +40,9 @@ def test_fallback_default_strategy_is_lod_drill():
 
 
 def test_fallback_lod_drill_overridden_by_filter():
-    # Language filter triggers "filtered" — overrides default lod_drill.
+    # Filters trigger "hybrid" (filters applied in the flat path) — overrides lod_drill.
     plan = asyncio.run(_async_fallback("find python singletons"))
-    assert plan.strategy == "filtered"
+    assert plan.strategy == "hybrid"
 
 
 def test_fallback_lod_drill_overridden_by_graph():

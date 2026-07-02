@@ -478,27 +478,48 @@ def search(
 @app.command("smart-search")
 def smart_search(
     question: str = typer.Argument(..., help="Natural-language question"),
-    repo: str = typer.Option(..., "--repo", "-r", help="Repo name (required)"),
+    repo: str = typer.Option("", "--repo", "-r", help="Repo name"),
+    repos: str = typer.Option("", "--repos", help="Comma-separated repo names for cross-repo fan-out"),
+    all_repos: bool = typer.Option(False, "--all-repos", help="Search every registered repo"),
     top_k: int = typer.Option(15, "--top-k", "-k", help="Semantic results"),
     usages: bool = typer.Option(False, "--usages", help="Force blast-radius usage lookup"),
+    offset: int = typer.Option(0, "--offset", help="Candidate page offset (page 'show more' links)"),
+    limit: int = typer.Option(25, "--limit", help="Candidate page size"),
+    links_only: bool = typer.Option(False, "--links-only", help="Strip code bodies (~75% fewer tokens)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON response"),
 ):
     """Agentic retrieval: an LLM infers the symbols your question is about,
     resolves them to exact definitions (and usages), and adds a semantic
-    complement. Returns the golden code context."""
+    complement. Returns the golden code context. Use --repos/--all-repos to
+    fan out across repos (results carry a repo tag)."""
     _require_daemon()
     import httpx
+
+    if not repo and not repos and not all_repos:
+        console.print("[red]Pass --repo NAME, --repos a,b or --all-repos.[/red]")
+        raise typer.Exit(1)
+
+    payload: dict = {
+        "question": question,
+        "top_k": top_k,
+        "usages_limit": 100 if usages else 0,
+        "candidate_offset": offset,
+        "candidate_limit": limit,
+        "include_bodies": not links_only,
+    }
+    if all_repos:
+        payload["repos"] = ["*"]
+    elif repos:
+        payload["repos"] = [r.strip() for r in repos.split(",") if r.strip()]
+    else:
+        payload["repo"] = repo
 
     try:
         resp = httpx.post(
             f"{_base_url()}/smart-search",
-            json={
-                "question": question,
-                "repo": repo,
-                "top_k": top_k,
-                "usages_limit": 100 if usages else 0,
-            },
+            json=payload,
             headers=_auth_headers(),
-            timeout=120,
+            timeout=300,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -510,19 +531,41 @@ def smart_search(
         console.print("[red]Connection lost to daemon.[/red]")
         raise typer.Exit(1)
 
+    if as_json:
+        import json as _json
+        print(_json.dumps(data, indent=2))
+        return
+
+    searched = data.get("repos_searched") or []
+    if searched:
+        console.print(f"[dim]Repos searched:[/dim] {', '.join(searched)}")
     console.print(
         f"[dim]Inferred symbols:[/dim] {data.get('inferred_symbols', [])}  "
         f"[dim]({data.get('symbol_inference_ms', 0):.0f}ms infer, {data.get('latency_ms', 0):.0f}ms total)[/dim]\n"
     )
-    for bucket, color in (("definitions", "green"), ("usages", "yellow"), ("semantic", "cyan")):
+
+    def _tag(it: dict) -> str:
+        return f"[magenta]{it['repo']}:[/magenta]" if it.get("repo") else ""
+
+    vocab_files = data.get("vocab_files") or []
+    if vocab_files:
+        console.print(f"[bold]VOCAB ({len(vocab_files)})[/bold]")
+        for it in vocab_files[:10]:
+            console.print(f"  {_tag(it)}[bold blue]{it['file_path']}[/bold blue] [dim]{it.get('summary', '')[:100]}[/dim]")
+        console.print()
+    for bucket, color in (("definitions", "green"), ("usages", "yellow"), ("semantic", "cyan"), ("related", "white")):
         items = data.get(bucket) or []
         if not items:
             continue
         console.print(f"[bold]{bucket.upper()} ({len(items)})[/bold]")
         for it in items[:10]:
-            console.print(f"  [bold {color}]{it['file_path']}:{it['lines']}[/bold {color}] "
+            console.print(f"  {_tag(it)}[bold {color}]{it['file_path']}:{it.get('lines', '')}[/bold {color}] "
                           f"[dim]{it.get('name', '')}[/dim]")
         console.print()
+    total = data.get("candidates_total", 0)
+    shown = len(data.get("candidates") or [])
+    if total > offset + shown:
+        console.print(f"[dim]{total - offset - shown} more candidates — page with --offset {offset + limit}[/dim]")
 
 
 @app.command()

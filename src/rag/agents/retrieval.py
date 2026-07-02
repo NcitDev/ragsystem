@@ -106,7 +106,7 @@ class SearchPlan:
 
     queries: list[str] = field(default_factory=list)
     filters: dict[str, Any] = field(default_factory=dict)
-    # lod_drill = default. Other: hybrid | filtered | graph_walk | aggregate | global | naive
+    # lod_drill = default. Other: hybrid | graph_walk | global
     strategy: str = "lod_drill"
     top_k: int = 20
 
@@ -121,19 +121,17 @@ _RETRIEVAL_INSTRUCTIONS = [
     "The plan must have these fields:",
     '  - "queries": list of search queries (expanded with synonyms)',
     '  - "filters": dict of Qdrant payload filters (e.g. {"language": "python", "patterns": "repository"})',
-    '  - "strategy": one of "hybrid", "filtered", "graph_walk", "aggregate"',
+    '  - "strategy": one of "lod_drill", "hybrid", "graph_walk", "global"',
     '  - "top_k": number of results (default 20)',
     "",
-    "Strategy guide:",
+    "Strategy guide (only these four execute differently — pick one):",
     '  - "lod_drill": DEFAULT — hierarchical drill-down (module → file → chunk).',
     '       Best for most queries. Cheaper than flat search; reads ~100-token',
     '       summaries before fetching full code.',
-    '  - "hybrid": flat vector search across all chunks (no drill-down).',
-    '  - "filtered": when user asks for specific patterns/language/complexity',
+    '  - "hybrid": flat multi-query vector search across all chunks, with any',
+    '       payload filters applied. Use for pattern/language/complexity asks.',
     '  - "graph_walk": when user asks about call chains or relationships',
-    '  - "aggregate": when user asks about codebase-level stats',
     '  - "global": when user asks for overview/summary of a module or architecture',
-    '  - "naive": when user wants simple vector search without reranking',
     "",
     "Available filter fields: language, chunk_type, patterns, domains, layers,",
     "  is_async, complexity_cyclomatic, nesting_depth, has_docstring, decorator_tags",
@@ -236,12 +234,25 @@ def _extract_json_object(text: str) -> dict | None:
 _AGY_TIMEOUT_S = 90.0
 
 
+# "filtered"/"naive"/"aggregate" executed identically to "hybrid" (one shared
+# code path); the distinct names only wasted planner deliberation. They are
+# normalized here so plans from older prompts/configs keep working.
+_LEGACY_STRATEGY_ALIASES = {"filtered": "hybrid", "naive": "hybrid", "aggregate": "hybrid"}
+_VALID_STRATEGIES = {"lod_drill", "hybrid", "graph_walk", "global"}
+
+
+def _normalize_strategy(value: Any) -> str:
+    strategy = str(value or "lod_drill")
+    strategy = _LEGACY_STRATEGY_ALIASES.get(strategy, strategy)
+    return strategy if strategy in _VALID_STRATEGIES else "lod_drill"
+
+
 def _plan_from_data(data: dict, query: str) -> SearchPlan:
     """Build a SearchPlan from a parsed LLM JSON object."""
     return SearchPlan(
         queries=data.get("queries", [query]),
         filters=_sanitize_filters(data.get("filters", {}) or {}),
-        strategy=data.get("strategy", "lod_drill"),
+        strategy=_normalize_strategy(data.get("strategy", "lod_drill")),
         top_k=data.get("top_k", 20),
     )
 
@@ -366,7 +377,7 @@ async def plan_search(query: str) -> SearchPlan:
         plan = SearchPlan(
             queries=data.get("queries", [query]),
             filters=_sanitize_filters(data.get("filters", {}) or {}),
-            strategy=data.get("strategy", "lod_drill"),
+            strategy=_normalize_strategy(data.get("strategy", "lod_drill")),
             top_k=data.get("top_k", 20),
         )
         return plan
@@ -417,20 +428,19 @@ def _fallback_plan(query: str) -> SearchPlan:
         filters["complexity_cyclomatic"] = 10
 
     # Strategy detection — lod_drill is the default; specific signals override.
+    # Only the four real strategies remain: filtered/aggregate/naive executed
+    # identically to hybrid and were collapsed into it.
     strategy = "lod_drill"
     if filters:
-        strategy = "filtered"
+        strategy = "hybrid"
     if any(w in query_lower for w in ["calls", "uses", "depends", "flow", "chain", "trace"]):
         strategy = "graph_walk"
     if any(w in query_lower for w in ["how many", "count", "all patterns", "statistics"]):
-        strategy = "aggregate"
+        strategy = "hybrid"
     if any(w in query_lower for w in ["overview", "summary", "what does this", "architecture", "main purpose", "module"]):
         strategy = "global"
-    # ``naive`` historically meant "vector search without rerank". Now
-    # that rerank is gone it's effectively an alias for ``hybrid``; kept
-    # as a distinct value for plan-shape compatibility.
     if any(w in query_lower for w in ["exact", "literal", "raw search"]):
-        strategy = "naive"
+        strategy = "hybrid"
 
     return SearchPlan(
         queries=expanded,

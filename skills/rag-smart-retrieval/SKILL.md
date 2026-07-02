@@ -17,9 +17,9 @@ infers the likely class/interface names, resolves them to exact definitions
 (plus usages for blast-radius questions), and adds a semantic complement —
 returning the golden code context in one call.
 
-```
-POST /smart-search
-{ "question": "How does the chat backup encryption work?", "repo": "<repo>", "top_k": 15 }
+```bash
+rag smart-search "How does the chat backup encryption work?" --repo <repo> --links-only
+# cross-repo fan-out: --repos repoA,repoB or --all-repos
 ```
 
 Benchmarked: ~2x the file coverage of plain `/search` (36.7% vs 15-18%) because

@@ -42,20 +42,25 @@ dependencies = [
     # Dart has no standalone PyPI wheel — pulled in via the community
     # tree-sitter-language-pack (also a fallback for any other languages).
     "tree-sitter-language-pack>=1.8.0,<2",
-    # Agent framework
+    # Agent framework. ollama/openai/google-genai have no direct imports here —
+    # they are backends for Agno's lazily-imported provider classes.
     "agno>=2.6.0,<3",
     "ollama>=0.6.0,<1",
     "openai>=2.38.0,<3",
-    # Storage
-    "aiosqlite>=0.22.0,<1",
+    "google-genai>=2.8.0,<3",
+    # Secrets loading (~/.rag/.env and project .env)
+    "python-dotenv>=1.0,<2",
     # Logging
     "structlog>=25.0.0,<26",
     # Plugin config parsing
     "pyyaml>=6.0,<7",
     # Code knowledge graph
     "networkx>=3.0,<4",
-    "google-genai>=2.8.0",
 ]
+
+[project.optional-dependencies]
+# provider="anthropic" in [retrieval_agent] needs the anthropic SDK.
+anthropic = ["anthropic>=0.40,<1"]
 
 [dependency-groups]
 dev = [
@@ -81,3 +86,5 @@ asyncio_mode = "auto"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# Benchmark/eval harnesses are experiment scripts, not product code.
+extend-exclude = ["bench", "scripts", "tests/eval"]

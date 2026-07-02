@@ -215,3 +215,85 @@ class MyClass extends BaseClass {
     assert "org.external.OtherClass" in meta_method.get("references_fqn", [])
     assert "org.another.WildcardClass" in meta_method.get("references_fqn", [])
 
+
+
+def test_decorated_definitions_produce_chunks():
+    from rag.core.chunker import chunk_code
+    source = """import functools
+
+@functools.lru_cache
+def cached_fn(x):
+    return x * 2
+
+class Service:
+    @property
+    def value(self):
+        return self._v
+"""
+    chunks = chunk_code(source, "svc.py", "python")
+    names = {c.name for c in chunks}
+    assert "cached_fn" in names
+    assert "value" in names
+    cached = next(c for c in chunks if c.name == "cached_fn")
+    # span includes the decorator line
+    assert cached.start_line == 3
+    assert "@functools.lru_cache" in cached.content
+
+
+def test_python_enrichment_populates_metadata():
+    from rag.core.chunker import chunk_code
+    source = """class Runner:
+    async def run(self, a, b):
+        for i in range(a):
+            if i > b:
+                return i
+"""
+    chunks = chunk_code(source, "runner.py", "python")
+    run = next(c for c in chunks if c.name == "run")
+    run.enrich_metadata()
+    assert run.metadata["is_async"] is True
+    assert run.metadata["complexity_cyclomatic"] >= 3
+    assert run.metadata["parameter_count"] == 3
+    assert run.metadata["nesting_depth"] >= 2
+
+
+def test_typescript_export_statements_produce_chunks():
+    from rag.core.chunker import chunk_code
+    source = """export function exportedFn(a: number): number {
+  return a + 1;
+}
+
+export class ExportedClass {
+  method(): void {}
+}
+"""
+    chunks = chunk_code(source, "mod.ts", "typescript")
+    names = {c.name for c in chunks}
+    assert "exportedFn" in names
+    assert "ExportedClass" in names
+
+
+def test_chunk_id_unique_across_chunk_types():
+    from rag.core.chunker import chunk_code
+    # class spans the whole file: file_summary and class share start/end lines
+    source = "class Only:\n    def m(self):\n        return 1"
+    chunks = chunk_code(source, "only.py", "python")
+    ids = [c.chunk_id for c in chunks]
+    assert len(ids) == len(set(ids))
+
+
+def test_context_header_uses_python_comment_syntax():
+    from rag.core.chunker import chunk_code
+    source = "def f():\n    return 1\n"
+    chunks = chunk_code(source, "f.py", "python")
+    fn = next(c for c in chunks if c.name == "f")
+    assert fn.content.startswith("# File: f.py")
+    assert "//" not in fn.content
+
+
+def test_kotlin_and_go_names_resolve():
+    from rag.core.chunker import chunk_code
+    kt = chunk_code("@Singleton\nclass Service {\n    fun run() = 1\n}\n", "A.kt", "kotlin")
+    assert {c.name for c in kt} >= {"Service", "run"}
+    go = chunk_code("package main\n\ntype Svc struct{}\n", "a.go", "go")
+    assert any(c.name == "Svc" for c in go)

@@ -133,10 +133,14 @@ class LSPClient:
         self._request_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._opened_files: set[str] = set()
 
-    async def start(self) -> bool:
-        """Start the LSP server process."""
+    def _build_env(self) -> dict[str, str]:
+        """Server env with a Homebrew JDK on PATH if present (jdtls/kotlin need it).
+        Copies rather than mutating the daemon's own environment."""
         import os
+        env = dict(os.environ)
         for openjdk_path in (
             "/opt/homebrew/opt/openjdk@21",
             "/usr/local/opt/openjdk@21",
@@ -145,31 +149,27 @@ class LSPClient:
         ):
             openjdk_bin = f"{openjdk_path}/bin"
             if os.path.exists(openjdk_bin):
-                paths = os.environ.get("PATH", "").split(os.pathsep)
+                paths = env.get("PATH", "").split(os.pathsep)
                 if openjdk_bin not in paths:
-                    paths.insert(0, openjdk_bin)
-                    os.environ["PATH"] = os.pathsep.join(paths)
-                os.environ["JAVA_HOME"] = openjdk_path
+                    env["PATH"] = os.pathsep.join([openjdk_bin, *paths])
+                env["JAVA_HOME"] = openjdk_path
                 break
+        return env
 
+    async def start(self) -> bool:
+        """Start the LSP server process."""
         if self._language not in LSP_SERVERS:
             return False
 
         server = LSP_SERVERS[self._language]
         binary = shutil.which(server["binary"])
         if not binary:
-            install_cmd = server.get("install", "")
-            if install_cmd and not install_cmd.startswith("Install "):
-                logger.info("lsp_auto_installing", language=self._language, command=install_cmd)
-                try:
-                    import subprocess
-                    # Run auto-install command synchronously
-                    subprocess.run(install_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    binary = shutil.which(server["binary"])
-                except Exception as e:
-                    logger.warning("lsp_auto_install_failed", language=self._language, error=str(e))
-            if not binary:
-                return False
+            logger.info(
+                "lsp_server_missing",
+                language=self._language,
+                install_hint=server.get("install", ""),
+            )
+            return False
 
         cmd = [binary]
         if server["args"]:
@@ -182,8 +182,10 @@ class LSPClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._repo_path,
+                env=self._build_env(),
             )
             self._reader_task = asyncio.create_task(self._read_responses())
+            self._stderr_task = asyncio.create_task(self._drain_stderr())
 
             # Initialize
             await self._send_request("initialize", {
@@ -219,16 +221,44 @@ class LSPClient:
                 await asyncio.wait_for(self._process.wait(), timeout=5)
             except Exception:
                 self._process.kill()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=5)
+                except Exception:
+                    logger.warning("lsp_kill_wait_failed", language=self._language)
             self._process = None
-        if self._reader_task:
-            self._reader_task.cancel()
-            self._reader_task = None
+        for task_attr in ("_reader_task", "_stderr_task"):
+            task = getattr(self, task_attr)
+            if task:
+                task.cancel()
+                setattr(self, task_attr, None)
+        self._opened_files.clear()
         logger.info("lsp_stopped", language=self._language)
 
+    async def ensure_open(self, file_path: str) -> None:
+        """Send textDocument/didOpen for a file (once). Several servers only
+        answer position queries for documents that were explicitly opened."""
+        if file_path in self._opened_files:
+            return
+        self._opened_files.add(file_path)
+        full_path = Path(self._repo_path) / file_path
+        try:
+            text = full_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        await self._send_notification("textDocument/didOpen", {
+            "textDocument": {
+                "uri": f"file://{full_path}",
+                "languageId": self._language,
+                "version": 1,
+                "text": text,
+            },
+        })
+
     async def get_references(self, file_path: str, line: int, character: int) -> list[dict]:
-        """Find all references to a symbol at the given position."""
+        """Find all references to a symbol at the given position (0-based)."""
         uri = f"file://{Path(self._repo_path) / file_path}"
         try:
+            await self.ensure_open(file_path)
             result = await self._send_request("textDocument/references", {
                 "textDocument": {"uri": uri},
                 "position": {"line": line, "character": character},
@@ -239,9 +269,10 @@ class LSPClient:
             return []
 
     async def get_definition(self, file_path: str, line: int, character: int) -> list[dict]:
-        """Go to definition of a symbol."""
+        """Go to definition of a symbol (0-based position)."""
         uri = f"file://{Path(self._repo_path) / file_path}"
         try:
+            await self.ensure_open(file_path)
             result = await self._send_request("textDocument/definition", {
                 "textDocument": {"uri": uri},
                 "position": {"line": line, "character": character},
@@ -253,9 +284,10 @@ class LSPClient:
             return []
 
     async def get_implementations(self, file_path: str, line: int, character: int) -> list[dict]:
-        """Find implementations of an interface/trait."""
+        """Find implementations of an interface/trait (0-based position)."""
         uri = f"file://{Path(self._repo_path) / file_path}"
         try:
+            await self.ensure_open(file_path)
             result = await self._send_request("textDocument/implementation", {
                 "textDocument": {"uri": uri},
                 "position": {"line": line, "character": character},
@@ -336,11 +368,90 @@ class LSPClient:
                             future.set_result(None)
                         else:
                             future.set_result(msg.get("result"))
+                elif "id" in msg and "method" in msg:
+                    # Server-initiated request (workspace/configuration,
+                    # client/registerCapability, ...). Reply with an empty
+                    # result so the server doesn't stall waiting on us.
+                    await self._send_response(msg["id"], None)
 
         except (asyncio.CancelledError, ConnectionError):
             pass
         except Exception as e:
             logger.debug("lsp_reader_error", error=str(e))
+
+    async def _send_response(self, req_id: Any, result: Any) -> None:
+        """Answer a server-initiated JSON-RPC request."""
+        if not self._process or not self._process.stdin:
+            return
+        msg = {"jsonrpc": "2.0", "id": req_id, "result": result}
+        content = json.dumps(msg)
+        header = f"Content-Length: {len(content)}\r\n\r\n"
+        self._process.stdin.write((header + content).encode())
+        await self._process.stdin.drain()
+
+    async def _drain_stderr(self) -> None:
+        """Discard server stderr so a chatty server can't fill the pipe and
+        deadlock the process."""
+        if not self._process or not self._process.stderr:
+            return
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    return
+        except (asyncio.CancelledError, ConnectionError):
+            pass
+
+
+_ENRICHABLE_CHUNK_TYPES = (
+    "class_declaration", "interface_declaration", "method", "function", "class", "interface",
+)
+
+
+async def _enrich_one_chunk(client: LSPClient, chunk: dict, lsp_timeout: float) -> bool:
+    """Query references for one chunk and record fan-in metadata.
+    Returns True when the chunk was enriched."""
+    file_path = chunk.get("file_path", "")
+    name = chunk.get("name", "")
+    if not file_path or not name:
+        return False
+
+    # Prefer the exact 0-based name position recorded by the chunker; fall back
+    # to the declaration line (start_line is 1-based, LSP wants 0-based).
+    line = chunk.get("name_line")
+    character = chunk.get("name_col")
+    if line is None:
+        line = max(0, int(chunk.get("start_line", 1)) - 1)
+        character = 4
+    try:
+        refs = await asyncio.wait_for(
+            client.get_references(file_path, int(line), int(character or 0)),
+            timeout=lsp_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("lsp_enrich_timeout", file=file_path, name=name)
+        return False
+    except Exception as e:
+        logger.debug("lsp_enrich_error", file=file_path, name=name, error=str(e))
+        return False
+
+    chunk["fan_in"] = len(refs)
+    chunk["called_by"] = [
+        f"{r.get('uri', '').replace('file://', '')}:{r.get('range', {}).get('start', {}).get('line', 0)}"
+        for r in refs[:10]
+    ]
+
+    # Only flag dead-code candidates from a *precise* position: the legacy
+    # line-guess produced empty reference lists for live symbols.
+    is_public = chunk.get("is_public", True)
+    if (
+        len(refs) == 0
+        and is_public
+        and chunk.get("name_line") is not None
+        and chunk.get("chunk_type", "") in ("function", "method")
+    ):
+        chunk["dead_code_candidate"] = True
+    return True
 
 
 async def enrich_chunks_with_lsp(
@@ -386,49 +497,17 @@ async def enrich_chunks_with_lsp(
     enriched = 0
     total = len(chunks)
 
+    lsp_timeout = get_settings().lsp.timeout / 1000  # ms → seconds
     for i, chunk in enumerate(chunks):
         lang = chunk.get("language", "")
         if lang not in clients:
             continue
-
-        chunk_type = chunk.get("chunk_type", "")
         # Only query LSP references for structural symbol declarations
-        if chunk_type not in ("class_declaration", "interface_declaration", "method", "function", "class", "interface"):
+        if chunk.get("chunk_type", "") not in _ENRICHABLE_CHUNK_TYPES:
             continue
 
-        client = clients[lang]
-        file_path = chunk.get("file_path", "")
-        start_line = chunk.get("start_line", 0)
-        name = chunk.get("name", "")
-
-        if not file_path or not name:
-            continue
-
-        try:
-            # Get references to this symbol (fan_in) — with timeout protection
-            lsp_timeout = get_settings().lsp.timeout / 1000  # ms → seconds
-            refs = await asyncio.wait_for(
-                client.get_references(file_path, start_line, 4),
-                timeout=lsp_timeout,
-            )
-            chunk["fan_in"] = len(refs)
-            chunk["called_by"] = [
-                f"{r.get('uri', '').replace('file://', '')}:{r.get('range', {}).get('start', {}).get('line', 0)}"
-                for r in refs[:10]
-            ]
-
-            # If no references found, it might be dead code
-            chunk_type = chunk.get("chunk_type", "")
-            is_public = chunk.get("is_public", True)
-            if len(refs) == 0 and is_public and chunk_type in ("function", "method"):
-                chunk["dead_code_candidate"] = True
-
+        if await _enrich_one_chunk(clients[lang], chunk, lsp_timeout):
             enriched += 1
-
-        except asyncio.TimeoutError:
-            logger.warning("lsp_enrich_timeout", file=file_path, name=name)
-        except Exception as e:
-            logger.debug("lsp_enrich_error", file=file_path, name=name, error=str(e))
 
         if on_progress and (i + 1) % 10 == 0:
             on_progress(lang, i + 1, total)
@@ -446,48 +525,14 @@ async def enrich_chunks_with_running_clients(
     clients: dict[str, LSPClient],
 ) -> list[dict]:
     """Enrich chunks using pre-started persistent LSP clients."""
-    enriched = 0
+    lsp_timeout = get_settings().lsp.timeout / 1000
     for chunk in chunks:
         lang = chunk.get("language", "")
         if lang not in clients:
             continue
-
-        chunk_type = chunk.get("chunk_type", "")
-        # Only query LSP references for structural symbol declarations
-        if chunk_type not in ("class_declaration", "interface_declaration", "method", "function", "class", "interface"):
+        if chunk.get("chunk_type", "") not in _ENRICHABLE_CHUNK_TYPES:
             continue
-
-        client = clients[lang]
-        file_path = chunk.get("file_path", "")
-        start_line = chunk.get("start_line", 0)
-        name = chunk.get("name", "")
-
-        if not file_path or not name:
-            continue
-
-        try:
-            lsp_timeout = get_settings().lsp.timeout / 1000
-            refs = await asyncio.wait_for(
-                client.get_references(file_path, start_line, 4),
-                timeout=lsp_timeout,
-            )
-            chunk["fan_in"] = len(refs)
-            chunk["called_by"] = [
-                f"{r.get('uri', '').replace('file://', '')}:{r.get('range', {}).get('start', {}).get('line', 0)}"
-                for r in refs[:10]
-            ]
-
-            chunk_type = chunk.get("chunk_type", "")
-            is_public = chunk.get("is_public", True)
-            if len(refs) == 0 and is_public and chunk_type in ("function", "method"):
-                chunk["dead_code_candidate"] = True
-
-            enriched += 1
-
-        except asyncio.TimeoutError:
-            logger.warning("lsp_enrich_timeout", file=file_path, name=name)
-        except Exception as e:
-            logger.debug("lsp_enrich_error", file=file_path, name=name, error=str(e))
+        await _enrich_one_chunk(clients[lang], chunk, lsp_timeout)
 
     return chunks
 

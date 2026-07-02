@@ -1,3 +1,0 @@
-- **Daemon Supervision**: `rag service install` registers the daemon as a macOS `launchd` agent for auto-start and crash recovery.
-- **Initialization**: `rag init .` bootstraps the config, starts the daemon, and performs an initial index of the current directory.
-- **Skill Installation**: `rag install-agent codex` runs a shell script to install project-specific Codex skills.

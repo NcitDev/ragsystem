@@ -1,4 +1,3 @@
-import pytest
 from rag.core.graph import CodeGraph
 
 def test_code_graph_traversal_prunes_imports():

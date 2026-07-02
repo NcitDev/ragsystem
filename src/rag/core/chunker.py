@@ -45,10 +45,15 @@ class Chunk:
     start_line: int = 0
     end_line: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Raw, parseable source for metadata enrichment. `content` may carry a
+    # synthetic context header / signature summary that no parser accepts.
+    source_text: str = ""
 
     @property
     def chunk_id(self) -> str:
-        raw = f"{self.file_path}:{self.start_line}:{self.end_line}"
+        # chunk_type is part of the key: a class spanning a whole file shares
+        # file_path:start:end with the file summary and must not collide.
+        raw = f"{self.file_path}:{self.chunk_type.value}:{self.start_line}:{self.end_line}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     @property
@@ -57,15 +62,16 @@ class Chunk:
 
     def enrich_metadata(self, test_files: set[str] | None = None) -> None:
         """Enrich chunk metadata with pattern detection and quality signals."""
-        if self.language == "python" and self.content:
+        source = self.source_text or self.content
+        if self.language == "python" and source:
             from rag.core.patterns import detect_patterns_from_source
 
             rich_meta = detect_patterns_from_source(
-                self.content, self.name, test_files=test_files
+                source, self.name, test_files=test_files
             )
             self.metadata.update(rich_meta)
-        elif self.language in ("kotlin", "java") and self.content:
-            enriched = _detect_kotlin_java_coroutines(self.content, self.language)
+        elif self.language in ("kotlin", "java") and source:
+            enriched = _detect_kotlin_java_coroutines(source, self.language)
             if "inherits_from" in enriched and "inherits_from" in self.metadata:
                 enriched["inherits_from"] = list(set(self.metadata["inherits_from"] + enriched["inherits_from"]))
             self.metadata.update(enriched)
@@ -283,8 +289,7 @@ LANGUAGE_CONFIG: dict[str, dict[str, Any]] = {
         "name_field": "name",
         "body_field": "body",
         "import_types": ["import_statement", "import_from_statement"],
-        "decorator_type": "decorator",
-        "docstring_type": "expression_statement",
+        "wrapper_types": ["decorated_definition"],
         "extensions": [".py"],
     },
     "java": {
@@ -312,6 +317,7 @@ LANGUAGE_CONFIG: dict[str, dict[str, Any]] = {
         "name_field": "name",
         "body_field": "body",
         "import_types": ["import_statement"],
+        "wrapper_types": ["export_statement", "ambient_declaration"],
         "extensions": [".ts", ".tsx"],
         "sub_language": "typescript",
     },
@@ -322,6 +328,7 @@ LANGUAGE_CONFIG: dict[str, dict[str, Any]] = {
         "name_field": "name",
         "body_field": "body",
         "import_types": ["import_statement"],
+        "wrapper_types": ["export_statement"],
         "extensions": [".js", ".jsx", ".mjs"],
     },
     "go": {
@@ -358,6 +365,7 @@ LANGUAGE_CONFIG: dict[str, dict[str, Any]] = {
         "name_field": "declarator",
         "body_field": "body",
         "import_types": ["preproc_include"],
+        "wrapper_types": ["template_declaration"],
         "extensions": [".cpp", ".cc", ".cxx", ".hpp", ".hh"],
     },
     "dart": {
@@ -424,27 +432,27 @@ def _get_parser(language: str) -> ts.Parser:
     return parser
 
 
-def _get_node_name(node: ts.Node, config: dict[str, Any]) -> str:
+def _get_name_node(node: ts.Node, config: dict[str, Any]) -> ts.Node | None:
     name_field = config.get("name_field", "name")
 
     if hasattr(node, "child_by_field_name"):
         name_node = node.child_by_field_name(name_field)
         if name_node:
-            return name_node.text.decode("utf-8") if name_node.text else ""
+            return name_node
 
-    # For Kotlin simple_identifier
+    # For Kotlin: older tree-sitter-kotlin grammars used ``simple_identifier``,
+    # current ones emit plain ``identifier`` — accept both.
     if name_field == "simple_identifier":
         for child in node.children:
-            if child.type == "simple_identifier":
-                return child.text.decode("utf-8") if child.text else ""
+            if child.type in ("simple_identifier", "identifier", "type_identifier"):
+                return child
 
     # For C/C++ declarator (may be nested)
     if name_field == "declarator":
         name_node = node.child_by_field_name("declarator")
         if name_node:
             # May be a function_declarator wrapping an identifier
-            ident = name_node.child_by_field_name("declarator") or name_node
-            return ident.text.decode("utf-8").split("(")[0] if ident.text else ""
+            return name_node.child_by_field_name("declarator") or name_node
 
     # Dart: method_signature wraps function_signature/getter_signature/etc.
     # whose own `name` field holds the identifier. Mixin declarations have a
@@ -452,22 +460,108 @@ def _get_node_name(node: ts.Node, config: dict[str, Any]) -> str:
     if node.type == "method_signature":
         for child in node.children:
             inner = child.child_by_field_name("name") if hasattr(child, "child_by_field_name") else None
-            if inner and inner.text:
-                return inner.text.decode("utf-8")
+            if inner:
+                return inner
     if node.type == "mixin_declaration":
         for child in node.children:
-            if child.type == "identifier" and child.text:
-                return child.text.decode("utf-8")
+            if child.type == "identifier":
+                return child
 
-    return ""
+    # Go: `type Foo struct {...}` — the name lives on the inner type_spec.
+    if node.type == "type_declaration":
+        for child in node.children:
+            if child.type == "type_spec":
+                inner = child.child_by_field_name("name")
+                if inner:
+                    return inner
+
+    # Rust: `impl Svc { ... }` — the subject type is the closest thing to a name.
+    if node.type == "impl_item":
+        inner = node.child_by_field_name("type")
+        if inner:
+            return inner
+
+    # Generic fallback: many grammars (C/C++ struct/enum/union specifiers,
+    # etc.) expose the name under a literal "name" field.
+    if hasattr(node, "child_by_field_name"):
+        inner = node.child_by_field_name("name")
+        if inner:
+            return inner
+
+    return None
+
+
+def _get_node_name(node: ts.Node, config: dict[str, Any]) -> str:
+    name_node = _get_name_node(node, config)
+    if name_node is None or not name_node.text:
+        return ""
+    text = name_node.text.decode("utf-8")
+    # C/C++ declarators may include the parameter list
+    return text.split("(")[0] if config.get("name_field") == "declarator" else text
+
+
+# Comment leader per language, so the context header stays valid syntax for
+# downstream parsers (the header used to be C-style for every language, which
+# broke ast-based enrichment of Python chunks).
+_COMMENT_LEADERS: dict[str, str] = {"python": "#"}
 
 
 def _build_context_header(file_path: str, language: str, parent_name: str = "") -> str:
-    parts = [f"// File: {file_path}"]
+    leader = _COMMENT_LEADERS.get(language, "//")
+    parts = [f"{leader} File: {file_path}"]
     if parent_name:
-        parts.append(f"// Class: {parent_name}")
-    parts.append(f"// Language: {language}")
+        parts.append(f"{leader} Class: {parent_name}")
+    parts.append(f"{leader} Language: {language}")
     return "\n".join(parts)
+
+
+def _unwrap_node(node: ts.Node, config: dict[str, Any]) -> tuple[ts.Node | None, str | None]:
+    """Resolve wrapper nodes (decorated_definition, export_statement, template_declaration,
+    ...) to the inner class/function definition.
+
+    Returns (inner_node, kind) where kind is "class" | "function", or (None, None)
+    when the node is neither a definition nor a wrapper around one.
+    """
+    wrapper_types = config.get("wrapper_types", [])
+    current: ts.Node | None = node
+    for _ in range(3):  # wrappers can nest, e.g. export_statement > decorated class
+        if current is None:
+            return None, None
+        if current.type in config["class_types"]:
+            return current, "class"
+        if current.type in config["function_types"]:
+            return current, "function"
+        if current.type not in wrapper_types:
+            return None, None
+        current = next(
+            (
+                c for c in current.children
+                if c.type in config["class_types"]
+                or c.type in config["function_types"]
+                or c.type in wrapper_types
+            ),
+            None,
+        )
+    return None, None
+
+
+def _name_position_meta(node: ts.Node, config: dict[str, Any]) -> dict[str, Any]:
+    """0-based position of the symbol's name identifier, for LSP queries."""
+    name_node = _get_name_node(node, config)
+    if name_node is None:
+        return {}
+    return {"name_line": name_node.start_point[0], "name_col": name_node.start_point[1]}
+
+
+def _node_source(source_lines: list[str], start_row: int, end_row: int) -> str:
+    """Full-line slice of the original source, dedented so it parses standalone.
+
+    Uses whole lines (not node byte offsets) so nested definitions keep their
+    relative indentation, which `textwrap.dedent` can then strip uniformly.
+    """
+    import textwrap
+
+    return textwrap.dedent("\n".join(source_lines[start_row:end_row]))
 
 
 def chunk_code(source: str, file_path: str, language: str | None = None) -> list[Chunk]:
@@ -490,6 +584,8 @@ def chunk_code(source: str, file_path: str, language: str | None = None) -> list
         logger.warning("parse_failed", file=file_path, language=language, error=str(e))
         return _chunk_sliding_window(source, file_path, language)
 
+    source_lines = source.splitlines()
+
     # Tier 1: File summary
     file_summary_parts: list[str] = []
     import_types = config.get("import_types", [])
@@ -498,12 +594,11 @@ def chunk_code(source: str, file_path: str, language: str | None = None) -> list
         if child.type in import_types:
             text = child.text.decode("utf-8") if child.text else ""
             file_summary_parts.append(text)
-        elif child.type in config["class_types"]:
-            first_line = (child.text.decode("utf-8") if child.text else "").split("\n")[0]
-            file_summary_parts.append(first_line)
-        elif child.type in config["function_types"]:
-            first_line = (child.text.decode("utf-8") if child.text else "").split("\n")[0]
-            file_summary_parts.append(first_line)
+        else:
+            inner, kind = _unwrap_node(child, config)
+            if kind:
+                first_line = (inner.text.decode("utf-8") if inner.text else "").split("\n")[0]
+                file_summary_parts.append(first_line)
 
     if file_summary_parts:
         summary_content = "\n".join(file_summary_parts)[:max_chars]
@@ -515,15 +610,24 @@ def chunk_code(source: str, file_path: str, language: str | None = None) -> list
             name=Path(file_path).name,
             start_line=1,
             end_line=root.end_point[0] + 1,
+            source_text=source,
         ))
 
-    # Tier 2 & 3
+    # Tier 2 & 3. Definitions may sit inside wrapper nodes (@decorated, exported,
+    # templated); `inner` carries the definition, `child` the full span.
     for child in root.children:
-        if child.type in config["class_types"]:
-            class_name = _get_node_name(child, config)
-            _extract_class_chunks(child, config, file_path, language, class_name, max_chars, chunks)
-        elif child.type in config["function_types"]:
-            _extract_function_chunk(child, config, file_path, language, "", max_chars, chunks)
+        inner, kind = _unwrap_node(child, config)
+        if kind == "class":
+            class_name = _get_node_name(inner, config)
+            _extract_class_chunks(
+                inner, config, file_path, language, class_name, max_chars, chunks,
+                source_lines, outer=child,
+            )
+        elif kind == "function":
+            _extract_function_chunk(
+                inner, config, file_path, language, "", max_chars, chunks,
+                source_lines, outer=child,
+            )
 
     if not chunks:
         return _chunk_sliding_window(source, file_path, language)
@@ -532,15 +636,19 @@ def chunk_code(source: str, file_path: str, language: str | None = None) -> list
     return chunks
 
 
-def _collect_class_members(node: ts.Node, config: dict[str, Any]) -> list[ts.Node]:
-    members: list[ts.Node] = []
+def _collect_class_members(node: ts.Node, config: dict[str, Any]) -> list[tuple[ts.Node, ts.Node]]:
+    """Return (definition, outer_span) pairs for function members, unwrapping
+    decorated/exported members inside the class body."""
+    members: list[tuple[ts.Node, ts.Node]] = []
     for child in node.children:
-        if child.type in config["function_types"]:
-            members.append(child)
+        inner, kind = _unwrap_node(child, config)
+        if kind == "function":
+            members.append((inner, child))
         elif child.type in ("block", "class_body", "body", "declaration_list"):
             for grandchild in child.children:
-                if grandchild.type in config["function_types"]:
-                    members.append(grandchild)
+                inner, kind = _unwrap_node(grandchild, config)
+                if kind == "function":
+                    members.append((inner, grandchild))
     return members
 
 
@@ -552,12 +660,15 @@ def _extract_class_chunks(
     class_name: str,
     max_chars: int,
     chunks: list[Chunk],
+    source_lines: list[str],
+    outer: ts.Node | None = None,
 ) -> None:
+    outer = outer or node
     class_text = node.text.decode("utf-8") if node.text else ""
     members = _collect_class_members(node, config)
 
     summary_lines: list[str] = []
-    for member in members:
+    for member, _member_outer in members:
         member_text = member.text.decode("utf-8") if member.text else ""
         summary_lines.append(member_text.split("\n")[0])
 
@@ -574,12 +685,17 @@ def _extract_class_chunks(
         file_path=file_path,
         language=language,
         name=class_name,
-        start_line=node.start_point[0] + 1,
-        end_line=node.end_point[0] + 1,
+        start_line=outer.start_point[0] + 1,
+        end_line=outer.end_point[0] + 1,
+        source_text=_node_source(source_lines, outer.start_point[0], outer.end_point[0] + 1),
+        metadata=_name_position_meta(node, config),
     ))
 
-    for member in members:
-        _extract_function_chunk(member, config, file_path, language, class_name, max_chars, chunks)
+    for member, member_outer in members:
+        _extract_function_chunk(
+            member, config, file_path, language, class_name, max_chars, chunks,
+            source_lines, outer=member_outer,
+        )
 
 
 def _extract_function_chunk(
@@ -590,20 +706,22 @@ def _extract_function_chunk(
     parent_name: str,
     max_chars: int,
     chunks: list[Chunk],
+    source_lines: list[str],
+    outer: ts.Node | None = None,
 ) -> None:
+    outer = outer or node
     func_name = _get_node_name(node, config)
-    func_text = node.text.decode("utf-8") if node.text else ""
 
     # Dart's grammar emits signature and function_body as separate siblings.
-    # Splice the immediate following function_body so the chunk holds the
-    # full implementation, not just the prototype.
-    end_line = node.end_point[0] + 1
+    # Extend the span over the immediate following function_body so the chunk
+    # holds the full implementation, not just the prototype.
+    end_line = outer.end_point[0] + 1
     if language == "dart" and node.next_sibling and node.next_sibling.type == "function_body":
-        body_node = node.next_sibling
-        body_text = body_node.text.decode("utf-8") if body_node.text else ""
-        if body_text:
-            func_text = f"{func_text} {body_text}"
-            end_line = body_node.end_point[0] + 1
+        end_line = node.next_sibling.end_point[0] + 1
+
+    # Full-line slice covering decorators/export keywords, dedented so nested
+    # methods parse standalone (used for both embedding content and enrichment).
+    func_text = _node_source(source_lines, outer.start_point[0], end_line)
 
     if not func_text.strip():
         return
@@ -620,8 +738,10 @@ def _extract_function_chunk(
         language=language,
         name=func_name,
         parent_name=parent_name,
-        start_line=node.start_point[0] + 1,
+        start_line=outer.start_point[0] + 1,
         end_line=end_line,
+        source_text=func_text,
+        metadata=_name_position_meta(node, config),
     ))
 
 

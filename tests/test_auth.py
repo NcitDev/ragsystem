@@ -30,6 +30,7 @@ def patched_unauth_app(tmp_path: Path, monkeypatch):
     get_settings.cache_clear()
     settings = get_settings()
     settings.qdrant.path = str(qdrant_dir)
+    settings.qdrant.mode = "embedded"  # never depend on a live Qdrant server
     settings.lsp.enabled = False
 
     import rag.config as _config
@@ -132,3 +133,24 @@ def test_search_requires_bearer_token(patched_unauth_app):
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200, resp.text
+
+
+def test_untrusted_host_header_blocked(patched_unauth_app):
+    """DNS-rebinding defense: a request whose Host is not localhost must 403,
+    even on the unauthenticated dashboard route that embeds the token."""
+    client, token = patched_unauth_app
+    resp = client.get("/", headers={"Host": "evil.example.com"})
+    assert resp.status_code == 403
+    assert token not in resp.text
+    resp = client.get("/health", headers={"Host": "evil.example.com:7890"})
+    assert resp.status_code == 403
+
+
+def test_dashboard_served_with_no_store(patched_unauth_app):
+    """The token-injected dashboard must never be disk-cached."""
+    client, _ = patched_unauth_app
+    resp = client.get("/", headers={"Host": "127.0.0.1:7890"})
+    if resp.status_code == 200:  # only when web/index.html ships
+        assert resp.headers.get("cache-control") == "no-store"
+    else:
+        assert resp.status_code == 404

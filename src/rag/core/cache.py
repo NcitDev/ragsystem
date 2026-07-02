@@ -99,15 +99,29 @@ def _init_table(conn: sqlite3.Connection) -> None:
 
 
 class EmbeddingCache:
-    """Thread-safe, TTL-based embedding cache with binary storage."""
+    """Thread-safe, TTL-based embedding cache with binary storage.
 
-    def __init__(self, ttl_days: int = _DEFAULT_TTL_DAYS) -> None:
+    Keys are namespaced by embedding model: a cached vector produced by one
+    model must never be served for another (mixing models yields garbage
+    cosine similarity). When no model is given, the current configured
+    embedding model is used.
+    """
+
+    def __init__(self, ttl_days: int = _DEFAULT_TTL_DAYS, model: str | None = None) -> None:
         # A non-positive TTL would treat every entry as expired -> 100% miss
         # rate (every chunk re-embedded every run). Guard against misconfig.
         if ttl_days <= 0:
             logger.warning("cache_ttl_invalid", ttl_days=ttl_days, fallback=_DEFAULT_TTL_DAYS)
             ttl_days = _DEFAULT_TTL_DAYS
         self._ttl_seconds = ttl_days * 86400
+        if model is None:
+            from rag.config import get_settings
+
+            model = get_settings().embeddings.model
+        self._model = model
+
+    def _key(self, content_hash: str) -> str:
+        return f"{self._model}:{content_hash}"
 
     def get(self, content_hash: str) -> EmbeddingResult | None:
         """Look up a cached embedding. Returns None on miss or expiry."""
@@ -116,7 +130,7 @@ class EmbeddingCache:
             row = conn.execute(
                 "SELECT dense, sparse_idx, sparse_val, created_at "
                 "FROM embed_cache WHERE content_hash = ?",
-                (content_hash,),
+                (self._key(content_hash),),
             ).fetchone()
 
             if row is None:
@@ -126,7 +140,7 @@ class EmbeddingCache:
             dense_blob, sparse_idx_blob, sparse_val_blob, created_at = row
 
             if time.time() - created_at > self._ttl_seconds:
-                conn.execute("DELETE FROM embed_cache WHERE content_hash = ?", (content_hash,))
+                conn.execute("DELETE FROM embed_cache WHERE content_hash = ?", (self._key(content_hash),))
                 conn.commit()
                 self._bump(conn, "miss_count")
                 return None
@@ -150,7 +164,7 @@ class EmbeddingCache:
                 "(content_hash, dense, sparse_idx, sparse_val, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (
-                    content_hash,
+                    self._key(content_hash),
                     _pack_floats(result.dense),
                     _pack_ints(result.sparse_indices) if result.sparse_indices else None,
                     _pack_floats(result.sparse_values) if result.sparse_values else None,

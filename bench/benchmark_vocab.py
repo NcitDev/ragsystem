@@ -11,7 +11,6 @@ Run ON the remote box (hits localhost:7890 with the repo_signal_vocab collection
   python3 benchmark_vocab.py
 """
 import json
-import time
 import urllib.request
 
 RAG_URL = "http://127.0.0.1:7890"

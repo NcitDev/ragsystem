@@ -55,8 +55,9 @@ class FileWatcher:
 
         self._running = True
         # Capture the initial state so the first tick only reports *new*
-        # changes, not every file in the repo.
-        self._mtimes = self._scan()
+        # changes, not every file in the repo. The scan walks the whole tree —
+        # keep it off the event loop.
+        self._mtimes = await asyncio.to_thread(self._scan)
         logger.info(
             "watcher_started",
             repo=str(self._repo_path),
@@ -122,7 +123,7 @@ class FileWatcher:
 
     async def _check_changes(self) -> None:
         """Compare current mtimes against the cached state and fire callback."""
-        current = self._scan()
+        current = await asyncio.to_thread(self._scan)
         changed: list[str] = []
 
         # Detect new or modified files.
@@ -181,3 +182,8 @@ class FileWatcher:
                     repo=str(self._repo_path),
                     changed_files=len(batch),
                 )
+                # Failed changes must not be silently dropped (e.g. the callback
+                # hit an IndexLockError because a manual run holds the lock).
+                # Re-queue the batch and retry after a poll interval.
+                self._dirty.update(batch)
+                await asyncio.sleep(self._poll_interval)

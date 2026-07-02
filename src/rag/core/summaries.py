@@ -141,8 +141,17 @@ async def generate_community_summaries(
         ))
         generated += 1
 
-    # Store summaries
+    # Store summaries. Louvain community ids are not stable run-to-run and the
+    # community count can shrink, so replace the whole community set: stale
+    # summaries would otherwise accumulate forever and keep being served by the
+    # `global` strategy.
     if summaries:
+        try:
+            await vectorstore.delete_by_filter(
+                SUMMARY_COLLECTION, "chunk_type", "community_summary"
+            )
+        except Exception as e:
+            logger.warning("stale_community_summaries_delete_failed", error=str(e))
         await vectorstore.upsert(SUMMARY_COLLECTION, summaries)
         logger.info("summaries_stored", count=generated, collection=SUMMARY_COLLECTION)
 
@@ -371,6 +380,15 @@ async def generate_lod_summaries(
     settings = get_settings()
     model = settings.llm.agent_model  # qwen3:8b per design
     url = settings.llm.ollama_url
+
+    # Full rebuild: wipe both LOD collections first. L1 ids are keyed by file
+    # path hash, so summaries of deleted files would otherwise live forever.
+    if changed_files is None:
+        for lod_collection in (LOD_L0_COLLECTION, LOD_L1_COLLECTION):
+            try:
+                await vectorstore.drop_collection(lod_collection)
+            except Exception as e:
+                logger.warning("lod_collection_reset_failed", collection=lod_collection, error=str(e))
 
     # Group chunks by file
     by_file: dict[str, list[dict]] = {}

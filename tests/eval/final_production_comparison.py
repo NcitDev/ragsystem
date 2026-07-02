@@ -114,10 +114,10 @@ def main():
         g_data = json.load(f)
     
     print("\n## Infrastructure Metrics")
-    print(f"- **Total Files**: 5,099")
+    print("- **Total Files**: 5,099")
     print(f"- **Graphify Nodes**: {len(g_data['nodes']):,}")
     print(f"- **Graphify Edges**: {len(g_data['edges']):,}")
-    print(f"- **RAG Chunks**: 31,181")
+    print("- **RAG Chunks**: 31,181")
 
 if __name__ == "__main__":
     main()

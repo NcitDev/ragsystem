@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 import structlog
 
@@ -151,7 +152,13 @@ class IndexState:
 
         if not state_path.exists():
             return cls()
-        data = json.loads(state_path.read_text())
+        try:
+            data = json.loads(state_path.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            # A corrupt/truncated state file must not brick indexing forever.
+            # Fall back to a clean slate: the next run re-processes everything.
+            logger.warning("index_state_corrupt", path=str(state_path), error=str(e))
+            return cls()
         return cls(
             last_commit=data.get("last_commit", ""),
             file_hashes=data.get("file_hashes", {}),
@@ -284,7 +291,9 @@ async def _index_repository_locked(
 
     t_scan = perf_counter()
     previous_state = IndexState.load(path)
-    state = IndexState() if full else previous_state
+    # A language-filtered full run keeps other languages' hashes: only the
+    # requested languages are being reset, everything else stays indexed.
+    state = IndexState() if (full and not languages) else previous_state
     if full:
         # Wipe the materialized overview counters — incremental upserts
         # below will rebuild them from scratch.
@@ -296,7 +305,14 @@ async def _index_repository_locked(
             logger.warning("sqlite_index_reset_failed", error=str(e))
         try:
             t_collection_reset = perf_counter()
-            await vectorstore.drop_collection(collection)
+            if languages:
+                # A language-filtered full run must only reset chunks of those
+                # languages — dropping the whole collection would destroy every
+                # other language's chunks (`--full --lang py` used to wipe them).
+                for lang in languages:
+                    await vectorstore.delete_by_filter(collection, "language", lang)
+            else:
+                await vectorstore.drop_collection(collection)
             _add_timing("collection_reset_ms", t_collection_reset)
         except Exception as e:
             logger.warning("collection_reset_failed", collection=collection, error=str(e))
@@ -311,20 +327,23 @@ async def _index_repository_locked(
             if lang in LANGUAGE_CONFIG:
                 extensions.extend(LANGUAGE_CONFIG[lang]["extensions"])
 
-    all_files = _discover_files(path, extensions)
-    test_files = _discover_test_files(path)
+    def _scan() -> tuple[list[Path], set[str], list[Path]]:
+        """Discovery + per-file hashing. Runs in a worker thread — it reads
+        and hashes every file in the repo, which must not block the loop."""
+        found = _discover_files(path, extensions)
+        tests = _discover_test_files(path)
+        if not full and state.last_commit and current_commit:
+            changed = set(_get_changed_files(path, state.last_commit))
+            to_process = [f for f in found if str(f.relative_to(path)) in changed]
+            for f in found:
+                rel = str(f.relative_to(path))
+                if rel not in changed and state.file_hashes.get(rel) != _file_hash(f):
+                    to_process.append(f)
+        else:
+            to_process = found
+        return found, tests, to_process
 
-    if not full and state.last_commit and current_commit:
-        changed = set(_get_changed_files(path, state.last_commit))
-        files_to_process = [f for f in all_files if str(f.relative_to(path)) in changed]
-
-        for f in all_files:
-            rel = str(f.relative_to(path))
-            current_hash = _file_hash(f)
-            if rel not in changed and state.file_hashes.get(rel) != current_hash:
-                files_to_process.append(f)
-    else:
-        files_to_process = all_files
+    all_files, test_files, files_to_process = await asyncio.to_thread(_scan)
     _add_timing("scan_ms", t_scan)
 
     total_files = len(files_to_process)
@@ -396,7 +415,9 @@ async def _index_repository_locked(
             if active_lsp_clients:
                 await asyncio.sleep(2)
 
-        async def _flush_batch(docs: list[ChunkDocument]) -> int:
+        async def _flush_batch(docs: list[ChunkDocument]) -> tuple[int, set[str]]:
+            """Enrich + upsert one batch. Returns (chunks_upserted, files whose
+            chunks were dropped for missing embeddings)."""
             if settings.lsp.enabled and active_lsp_clients:
                 t_lsp = perf_counter()
                 await _lsp_enrich_batch_with_clients(docs, active_lsp_clients)
@@ -425,10 +446,13 @@ async def _index_repository_locked(
                 _add_timing("delete_old_chunks_ms", t_delete)
             t_upsert = perf_counter()
             upsert_kwargs: dict[str, object] = {"cache": embed_cache}
+            skipped_files: set[str] = set()
             try:
                 upsert_params = inspect.signature(vectorstore.upsert).parameters
                 if "timings_ms" in upsert_params:
                     upsert_kwargs["timings_ms"] = result.timings_ms
+                if "skipped_files" in upsert_params:
+                    upsert_kwargs["skipped_files"] = skipped_files
             except (TypeError, ValueError):  # pragma: no cover - defensive
                 upsert_kwargs["timings_ms"] = result.timings_ms
             count = await vectorstore.upsert(collection, docs, **upsert_kwargs)
@@ -443,35 +467,61 @@ async def _index_repository_locked(
             t_overview_update = perf_counter()
             _update_overview_stats(docs)
             _add_timing("overview_update_ms", t_overview_update)
-            return count
+            return count, skipped_files
 
-        def _process_file(fp: Path, rel: str) -> list[ChunkDocument]:
-            """CPU-bound: chunk + enrich a single file. Runs in thread pool."""
-            content = fp.read_text(encoding="utf-8", errors="replace")
+        def _process_file(fp: Path, rel: str) -> tuple[list[ChunkDocument], str]:
+            """CPU-bound: chunk + enrich a single file. Runs in thread pool.
+            Reads the file once — the returned hash matches the exact bytes
+            that were chunked (no TOCTOU between chunking and hashing)."""
+            raw = fp.read_bytes()
+            fhash = hashlib.sha256(raw).hexdigest()[:16]
+            content = raw.decode("utf-8", errors="replace")
             language = detect_language(rel)
             if language:
                 detected_langs.add(language)
             chunks = chunk_code(content, rel, language)
             for chunk in chunks:
                 chunk.enrich_metadata(test_files=test_files if language == "python" else None)
-            return [
+            docs = [
                 ChunkDocument(content=c.content, metadata=c.to_index_metadata(), chunk_id=c.chunk_id)
                 for c in chunks
             ]
+            return docs, fhash
+
+        async def _await_pending() -> None:
+            """Collect the in-flight flush. A failed flush drops that batch's
+            hashes (files re-process next run) and records the error instead of
+            poisoning every later flush and aborting the whole run."""
+            nonlocal pending_upsert, pending_hashes
+            if pending_upsert is None:
+                return
+            task, pending_upsert = pending_upsert, None
+            hashes, pending_hashes = pending_hashes, {}
+            try:
+                count, skipped = await task
+            except Exception as e:
+                logger.warning("flush_failed", error=str(e), files=len(hashes))
+                result.errors.append(f"flush failed ({len(hashes)} files): {e}")
+                return
+            result.chunks_indexed += count
+            for skipped_file in skipped:
+                hashes.pop(skipped_file, None)
+            new_hashes.update(hashes)
+            _emit_progress()
 
         for idx, file_path in enumerate(files_to_process):
             rel_path = str(file_path.relative_to(path))
             try:
                 # Run CPU-bound chunking in thread pool to avoid blocking event loop
                 t_chunk = perf_counter()
-                docs = await asyncio.to_thread(_process_file, file_path, rel_path)
+                docs, fhash = await asyncio.to_thread(_process_file, file_path, rel_path)
                 _add_timing("chunk_ms", t_chunk)
                 batch.extend(docs)
                 chunks_seen += len(docs)
 
                 # Stage this file's hash; it is only promoted to new_hashes once the
                 # batch carrying its chunks is confirmed flushed.
-                staged_hashes[rel_path] = _file_hash(file_path)
+                staged_hashes[rel_path] = fhash
                 processed_files.add(rel_path)
                 result.files_processed += 1
                 current_file_for_progress = rel_path
@@ -483,10 +533,7 @@ async def _index_repository_locked(
 
                 # Pipeline: await previous upsert (committing its hashes), start new one
                 if len(batch) >= batch_size:
-                    if pending_upsert is not None:
-                        result.chunks_indexed += await pending_upsert
-                        new_hashes.update(pending_hashes)
-                        _emit_progress()
+                    await _await_pending()
                     pending_upsert = asyncio.create_task(_flush_batch(list(batch)))
                     pending_hashes = staged_hashes
                     staged_hashes = {}
@@ -500,20 +547,32 @@ async def _index_repository_locked(
 
         # Await pending + flush remaining. Each confirmed upsert promotes its
         # staged hashes; the trailing partial batch (still in ``staged_hashes``)
-        # is committed only after its own upsert returns.
-        if pending_upsert is not None:
-            result.chunks_indexed += await pending_upsert
-            new_hashes.update(pending_hashes)
-            _emit_progress()
+        # is committed only after its own upsert returns. Failures here must not
+        # abort the run — state.save() below persists all confirmed progress.
+        await _await_pending()
         if batch:
-            result.chunks_indexed += await _flush_batch(batch)
-            _emit_progress()
-        new_hashes.update(staged_hashes)
+            try:
+                count, skipped = await _flush_batch(batch)
+                result.chunks_indexed += count
+                for skipped_file in skipped:
+                    staged_hashes.pop(skipped_file, None)
+                new_hashes.update(staged_hashes)
+                _emit_progress()
+            except Exception as e:
+                logger.warning("flush_failed", error=str(e), files=len(staged_hashes))
+                result.errors.append(f"flush failed ({len(staged_hashes)} files): {e}")
+        else:
+            new_hashes.update(staged_hashes)
 
         # Delete chunks for removed files. Delete the vectors BEFORE dropping the
         # file from new_hashes so a crash between the two leaves the file still
         # tracked (next run retries the delete) rather than orphaning its chunks.
         indexed_files = set(previous_state.file_hashes.keys()) if full else set(new_hashes.keys())
+        if extensions:
+            # Scan was limited to these extensions; files of other languages
+            # were never discovered and must not be treated as removed.
+            ext_tuple = tuple(extensions)
+            indexed_files = {f for f in indexed_files if f.endswith(ext_tuple)}
         current_files = {str(f.relative_to(path)) for f in all_files}
         removed = indexed_files - current_files
         t_removed = perf_counter()
@@ -779,6 +838,17 @@ async def index_documents(
             result.errors.append(f"{file_path}: {e}")
 
     if documents:
+        # Section edits shift line ranges and therefore chunk ids; clear each
+        # file's previous points first so stale sections don't accumulate.
+        reindexed_files = sorted({
+            doc.metadata.get("file_path", "") for doc in documents
+            if doc.metadata.get("file_path")
+        })
+        for rel_path in reindexed_files:
+            try:
+                await vectorstore.delete_by_filter(collection, "file_path", rel_path)
+            except Exception as e:
+                logger.warning("doc_stale_delete_failed", file=rel_path, error=str(e))
         result.chunks_indexed = await vectorstore.upsert(collection, documents)
 
     return result

@@ -45,17 +45,19 @@ class CodeGraph:
         self._node_to_community: dict[str, int] = {}
 
     def build_from_chunks(self, chunks: list[dict[str, Any]]) -> None:
-        """Build graph from Qdrant chunk payloads collected at index time."""
-        self.graph.clear()
-        self.communities.clear()
-        self._node_to_community.clear()
+        """Build graph from Qdrant chunk payloads collected at index time.
+
+        Builds into a fresh graph and swaps the reference at the end, so
+        concurrent graph_walk queries never observe a half-built graph.
+        """
+        new_graph = nx.DiGraph()
 
         for chunk in chunks:
             node_id = self._make_node_id(chunk)
             if not node_id:
                 continue
 
-            self.graph.add_node(node_id, **{
+            new_graph.add_node(node_id, **{
                 "file_path": chunk.get("file_path", ""),
                 "name": chunk.get("name", ""),
                 "parent_name": chunk.get("parent_name", ""),
@@ -68,21 +70,26 @@ class CodeGraph:
             # Edges from call graph
             for call in chunk.get("calls", []):
                 call_id = call if ":" in call else f"?:{call}"
-                self.graph.add_edge(node_id, call_id, relation="calls")
+                new_graph.add_edge(node_id, call_id, relation="calls")
 
             for caller in chunk.get("called_by", []):
                 caller_id = caller if ":" in caller else f"?:{caller}"
-                self.graph.add_edge(caller_id, node_id, relation="calls")
+                new_graph.add_edge(caller_id, node_id, relation="calls")
 
             # Edges from inheritance
             for parent in chunk.get("inherits_from", []):
                 parent_id = f"?:{parent}"
-                self.graph.add_edge(node_id, parent_id, relation="inherits")
+                new_graph.add_edge(node_id, parent_id, relation="inherits")
 
             # Edges from imports (file-level)
             for imp in chunk.get("imports", []):
                 imp_id = f"import:{imp}"
-                self.graph.add_edge(node_id, imp_id, relation="imports")
+                new_graph.add_edge(node_id, imp_id, relation="imports")
+
+        # Atomic reference swaps: readers see either the old or the new graph.
+        self.graph = new_graph
+        self.communities = {}
+        self._node_to_community = {}
 
         logger.info(
             "graph_built",
@@ -103,8 +110,8 @@ class CodeGraph:
             logger.warning("community_detection_failed", error=str(e))
             return {}
 
-        self.communities.clear()
-        self._node_to_community.clear()
+        new_communities: dict[int, Community] = {}
+        new_node_to_community: dict[str, int] = {}
 
         for comm_id, members in enumerate(partition):
             member_list = sorted(members)
@@ -119,10 +126,13 @@ class CodeGraph:
                 members=member_list,
                 files=files,
             )
-            self.communities[comm_id] = community
+            new_communities[comm_id] = community
 
             for node in member_list:
-                self._node_to_community[node] = comm_id
+                new_node_to_community[node] = comm_id
+
+        self.communities = new_communities
+        self._node_to_community = new_node_to_community
 
         logger.info("communities_detected", count=len(self.communities))
         return self.communities
@@ -209,8 +219,11 @@ class CodeGraph:
             },
             "node_to_community": self._node_to_community,
         }
-        with open(path, "wb") as f:
+        # tmp-then-rename so a crash mid-write can't corrupt the cache file
+        tmp_path = path.with_suffix(".tmp")
+        with open(tmp_path, "wb") as f:
             pickle.dump(data, f)
+        tmp_path.replace(path)
         logger.info("graph_saved", path=str(path))
 
     def load(self, path: Path | None = None) -> bool:

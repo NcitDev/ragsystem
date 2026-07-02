@@ -129,14 +129,14 @@ async def test_clean_run_records_all_hashes(big_repo, isolated_state):
 
 
 async def test_crash_midflush_does_not_record_unflushed_hashes(big_repo, isolated_state):
-    """If an upsert raises, no file whose chunks were in a failed/never-run
-    batch may appear in the saved state. The whole run should bubble the error
-    rather than silently persisting a hash for missing chunks."""
-    # Fail the 2nd batch upsert — earlier batches succeed, later never run.
+    """If an upsert raises, no file whose chunks were in the failed batch may
+    appear in the saved state. The run itself survives (a transient store/embed
+    blip must not discard the rest of the run) but records the flush error."""
+    # Fail the 2nd batch upsert — other batches succeed.
     vs = _CapturingVectorStore(fail_on_call=2)
 
-    with pytest.raises(RuntimeError, match="simulated Qdrant crash"):
-        await index_repository(str(big_repo), vs, collection="code_chunks", full=True)
+    result = await index_repository(str(big_repo), vs, collection="code_chunks", full=True)
+    assert any("flush failed" in e for e in result.errors), result.errors
 
     hashes = _read_state_hashes(big_repo)
 
@@ -152,12 +152,12 @@ async def test_crash_midflush_does_not_record_unflushed_hashes(big_repo, isolate
 
 
 async def test_partial_state_lets_next_run_reprocess(big_repo, isolated_state):
-    """End-to-end of the invariant: after a crash, a clean re-run must re-index
-    the files that were lost, ending with a complete state."""
-    # First run crashes on batch 2.
+    """End-to-end of the invariant: after a failed flush, a clean re-run must
+    re-index the files that were lost, ending with a complete state."""
+    # First run: batch 2's flush fails; its files must not be marked indexed.
     vs1 = _CapturingVectorStore(fail_on_call=2)
-    with pytest.raises(RuntimeError):
-        await index_repository(str(big_repo), vs1, collection="code_chunks", full=False)
+    result1 = await index_repository(str(big_repo), vs1, collection="code_chunks", full=False)
+    assert any("flush failed" in e for e in result1.errors), result1.errors
 
     # Second run, no failure. Incremental: only files NOT in state get processed.
     vs2 = _CapturingVectorStore()
