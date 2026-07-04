@@ -199,11 +199,13 @@ def start(
             for _ in range(20):
                 _time.sleep(0.5)
                 if _check_daemon():
+                    console.print(f"[green]Daemon:[/green] running on {_base_url()}")
                     break
             else:
-                console.print("[red]Daemon failed to start. Check: rag diagnose[/red]")
-                raise typer.Exit(1)
-            console.print(f"[green]Daemon:[/green] running on {_base_url()}")
+                console.print(
+                    "[yellow]Daemon did not come up in 10s — opening the dashboard "
+                    "anyway; it will show what is failing.[/yellow]"
+                )
 
         from rag.app import RAGApp
 
@@ -387,12 +389,11 @@ def benchmark_embeddings(
 
 @app.command()
 def tui():
-    """Launch the read-only TUI dashboard. Requires a running daemon."""
+    """Launch the TUI stack dashboard (works even when the daemon is down)."""
     ensure_rag_home()
     if not _check_daemon():
-        console.print("[red]RAG daemon is not running.[/red]")
-        console.print("[dim]Start it with: rag start  (or: rag start --tui to auto-spawn)[/dim]")
-        raise typer.Exit(1)
+        console.print("[yellow]Daemon not running — dashboard will show it as down "
+                      "(press D inside to start it).[/yellow]")
 
     from rag.app import RAGApp
 
