@@ -1088,6 +1088,59 @@ def create_app() -> FastAPI:
             out["embed_p95_ms"] = round(lats[max(0, int(len(lats) * 0.95) - 1)], 1)
         return out
 
+    # --- Stack health (external services — web dashboard parity with the TUI) ---
+
+    def _get_stack_monitor():
+        from rag.tui.monitor import StackMonitor
+
+        monitor = _state.get("stack_monitor")
+        if monitor is None:
+            monitor = StackMonitor()
+            _state["stack_monitor"] = monitor
+        return monitor
+
+    @app.get("/stack", dependencies=[Depends(require_auth)])
+    async def stack_status():
+        """Ollama/Docker/Qdrant/LSP/launchd health via the TUI's StackMonitor,
+        so the browser dashboard renders the same service cards. The daemon
+        card is built client-side from /health + /status (this route answering
+        already proves the daemon is up)."""
+        from dataclasses import asdict
+
+        monitor = _get_stack_monitor()
+        snap = await monitor.external_checks()
+
+        def _repo_meta() -> dict[str, Any]:
+            from rag.core.repos import RepoManager
+            from rag.tui.monitor import _repo_state_files, humanize_ago
+
+            out: dict[str, Any] = {}
+            try:
+                for r in RepoManager().list_repos():
+                    out[r.name] = {
+                        "files": _repo_state_files(r.path),
+                        "last_indexed": humanize_ago(r.last_indexed),
+                    }
+            except Exception as e:
+                logger.debug("stack_repo_meta_error", error=str(e))
+            return out
+
+        return {
+            "ts": snap.ts,
+            "ollama": asdict(snap.ollama),
+            "docker": asdict(snap.docker),
+            "qdrant": asdict(snap.qdrant),
+            "lsp": [asdict(s) for s in snap.lsp],
+            "service": snap.service,
+            "repos_meta": await asyncio.to_thread(_repo_meta),
+        }
+
+    @app.post("/stack/qdrant/start", dependencies=[Depends(require_auth)])
+    async def stack_qdrant_start():
+        """Start the Qdrant container — same action as the TUI's U key."""
+        message = await _get_stack_monitor().start_qdrant()
+        return {"message": message}
+
     # --- Overview for TUI (module summaries + KG communities digest) ---
 
     @app.get("/overview/tui", dependencies=[Depends(require_auth)])

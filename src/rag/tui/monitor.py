@@ -260,19 +260,30 @@ class StackMonitor:
         activity_task = asyncio.create_task(self._collect_activity(snap))
         tasks = [daemon_task, activity_task]
         if not fast_only:
-            tasks += [
-                asyncio.create_task(self._check_ollama(snap)),
-                asyncio.create_task(self._check_docker(snap)),
-                asyncio.create_task(self._check_qdrant(snap)),
-                asyncio.create_task(self._collect_lsp(snap)),
-                asyncio.create_task(self._collect_service(snap)),
-            ]
+            tasks.append(asyncio.create_task(self.external_checks(snap)))
         await asyncio.gather(*tasks, return_exceptions=True)
         # Repos need to know whether the daemon answered, so run after.
         try:
             await self._collect_repos(snap)
         except Exception as e:
             logger.debug("tui_repos_collect_error", error=str(e))
+        return snap
+
+    async def external_checks(self, snap: StackSnapshot | None = None) -> StackSnapshot:
+        """The probes that don't need daemon HTTP: Ollama, Docker, Qdrant,
+        LSP which-scan, launchd. Also serves the daemon's ``/stack`` route,
+        where the daemon is by definition up and self-probing over HTTP
+        would be wasteful."""
+        if snap is None:
+            snap = StackSnapshot(ts=time.time())
+        await asyncio.gather(
+            self._check_ollama(snap),
+            self._check_docker(snap),
+            self._check_qdrant(snap),
+            self._collect_lsp(snap),
+            self._collect_service(snap),
+            return_exceptions=True,
+        )
         return snap
 
     # ------------------------------------------------------------------
