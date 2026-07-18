@@ -233,7 +233,7 @@ port = 7890         # HTTP server port
 #### Embeddings Configuration
 ```toml
 [embeddings]
-model = "Qwen/Qwen3-Embedding-4B"
+model = "qwen3-embedding:4b"
 dim = 2560          # Embedding dimension
 batch_size = 64     # Batch processing size
 keep_alive = "30m"  # Model persistence

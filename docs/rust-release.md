@@ -2,7 +2,7 @@
 
 ## Build
 
-Build the host artifact with no Python dependency:
+Build the host artifact with Rust 1.88 or newer and no Python dependency:
 
 ```sh
 scripts/build-rust-release.sh
@@ -28,7 +28,7 @@ rag qdrant-status
 
 # 3. Models (names come from ~/.rag/config.toml — created with defaults on
 #    first start; edit [embeddings] / [retrieval_agent] to match your pulls)
-ollama pull qwen3-embedding:latest    # embeddings (dim 4096)
+ollama pull qwen3-embedding:4b        # default embeddings model (dim 2560)
 ollama pull qwen3:8b                  # planner + /ask generation (optional)
 
 # 4. Daemon under supervision (systemd user unit on Linux, launchd on macOS)
@@ -43,9 +43,24 @@ First start bootstraps `~/.rag` (bearer token with `0600` permissions, default
 `config.toml`). The web dashboard is served at `http://127.0.0.1:7890/` with
 the token injected; `rag tui` gives the terminal stack dashboard.
 
-The default `config.toml` names `Qwen/Qwen3-Embedding-4B` (dim 2560) — set
-`[embeddings] model/dim` to the Ollama model you actually pulled before the
-first `rag index`, since the collection is created with that dimension.
+The default `config.toml` names `qwen3-embedding:4b` (dim 2560), an exact
+official Ollama tag. Set `[embeddings] model/dim` to the model you actually
+pulled before the first `rag index`, since the collection is created with that
+dimension. Existing user config is not rewritten; users with the former
+`Qwen/Qwen3-Embedding-4B` default must change it explicitly.
+
+For remote Qdrant, use an `https://` `qdrant.url` and export the secret named
+by `qdrant.api_key_env` (default: `QDRANT_API_KEY`). The daemon rejects remote
+plaintext HTTP. Remote `llm.ollama_url` also requires HTTPS. Embedded mode
+verifies the pinned official release SHA-256,
+bounds download/extraction sizes, and refuses to adopt an unknown process on
+the configured port. A legacy managed binary without its `.sha256` sidecar is
+replaced from the verified release on the next embedded-mode start.
+
+Use `/live` for supervisor liveness and `/ready` for dependency readiness.
+The latter probes Ollama and Qdrant under a two-second overall deadline. All
+responses include `x-request-id`, and `server.max_in_flight` controls protected
+request backpressure (HTTP 503 plus `Retry-After: 1` when saturated).
 
 ## Supervision
 

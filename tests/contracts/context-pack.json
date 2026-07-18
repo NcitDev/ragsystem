@@ -1,4 +1,12 @@
 {
+  "budget": {
+    "max_slices": 8,
+    "max_source_bytes": 24000,
+    "max_source_tokens": 6000
+  },
+  "freshness": {
+    "indexed_at": null
+  },
   "latency_ms": 0.0,
   "query": "bearer auth",
   "repo": "ragsystem",
@@ -7,18 +15,37 @@
       "chunk_type": "function",
       "citation": "src/rag/server.py:533-539 (require_auth)",
       "code": "def require_auth(request: Request) -> None: ...",
+      "content_sha256": "08e7e60b6896d4a0c8fe46c4bf8c0071dab1e6789e65dc7048ea65050b9858bf",
       "file_path": "src/rag/server.py",
       "language": "python",
       "lines": "533-539",
       "name": "require_auth",
       "parent_name": "",
+      "provenance": {
+        "citation": "src/rag/server.py:533-539 (require_auth)",
+        "collection": "repo_ragsystem",
+        "indexed_at": null,
+        "repository": "ragsystem",
+        "source": "ast_index"
+      },
       "repo": "ragsystem",
       "score": 1.0,
+      "source_bytes": 47,
       "token_estimate": 12,
+      "truncated": false,
       "why_included": "ast_index_symbol"
     }
   ],
+  "retrieval": {
+    "ast_index_requested": true,
+    "semantic_included": false,
+    "semantic_requested": true,
+    "sources_included": [
+      "ast_index"
+    ]
+  },
   "total": 1,
-  "total_source_tokens": 12
+  "total_source_bytes": 47,
+  "total_source_tokens": 12,
+  "truncated": false
 }
-

@@ -13,7 +13,7 @@
       "status": "not_found"
     }
   ],
-  "embedder_model": "Qwen/Qwen3-Embedding-4B",
+  "embedder_model": "qwen3-embedding:4b",
   "embedder_provider": "fake",
   "embedder_warm_ms": 0.0,
   "files_indexed": 0,
@@ -25,4 +25,3 @@
   "status": "running",
   "uptime_seconds": 0.0
 }
-

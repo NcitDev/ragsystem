@@ -65,7 +65,7 @@ enum Command {
     },
     Search(QueryArgs),
     SmartSearch(QuestionArgs),
-    ContextPack(QueryArgs),
+    ContextPack(ContextPackArgs),
     RepoAgent(QueryArgs),
     Resolve(SymbolArgs),
     CallTree(SymbolArgs),
@@ -180,6 +180,23 @@ struct QueryArgs {
     repo: Option<String>,
     #[arg(long, default_value_t = 20)]
     top_k: usize,
+}
+
+#[derive(Debug, Args)]
+struct ContextPackArgs {
+    query: String,
+    #[arg(long)]
+    repo: String,
+    #[arg(long, default_value_t = 8)]
+    max_slices: usize,
+    #[arg(long, default_value_t = 6_000)]
+    max_source_tokens: usize,
+    #[arg(long)]
+    max_source_bytes: Option<usize>,
+    #[arg(long)]
+    no_ast_index: bool,
+    #[arg(long)]
+    no_semantic: bool,
 }
 
 #[derive(Debug, Args)]
@@ -314,7 +331,20 @@ async fn execute(
         Command::Web { print_url } => open_web(&base_url, print_url)?,
         Command::Search(args) => emit(client.post("/search", query_body(args)).await?)?,
         Command::SmartSearch(args) => emit(client.post_with_timeout("/smart-search", question_body(args), 300).await?)?,
-        Command::ContextPack(args) => emit(client.post("/context-pack", query_body(args)).await?)?,
+        Command::ContextPack(args) => {
+            let mut body = json!({
+                "query": args.query,
+                "repo": args.repo,
+                "max_slices": args.max_slices,
+                "max_source_tokens": args.max_source_tokens,
+                "use_ast_index": !args.no_ast_index,
+                "include_semantic": !args.no_semantic,
+            });
+            if let Some(max_source_bytes) = args.max_source_bytes {
+                body["max_source_bytes"] = json!(max_source_bytes);
+            }
+            emit(client.post("/context-pack", body).await?)?
+        }
         Command::RepoAgent(args) | Command::Understand(args) => emit(client.post_with_timeout("/project-understand", query_body(args), 180).await?)?,
         Command::Resolve(args) => emit(client.post("/resolve", json!({"repo": args.repo, "symbols": [args.symbol], "limit": args.limit})).await?)?,
         Command::Node(args) => emit(client.post("/graph/node", symbol_body(args)).await?)?,
@@ -344,14 +374,22 @@ async fn execute(
         }
         Command::Repos => emit(client.get("/repos").await?)?,
         Command::Export { output, collection } => {
-            let value = client.post("/admin/export", json!({"collection": collection})).await?;
-            fs::write(&output, serde_json::to_vec_pretty(&value)?)?;
-            emit(json!({"output": output, "exported": value.get("exported").cloned().unwrap_or(json!(0))}))?;
+            let output = if output.is_absolute() {
+                output
+            } else {
+                std::env::current_dir()?.join(output)
+            };
+            emit(client.post_with_timeout(
+                "/admin/export",
+                json!({"collection": collection, "output": output}),
+                600,
+            ).await?)?;
         }
-        Command::Import { input, collection } => {
-            let records: Value = serde_json::from_slice(&fs::read(&input)?).context("import must be JSON")?;
-            emit(client.post("/admin/import", json!({"collection": collection, "records": records})).await?)?;
-        }
+        Command::Import { input, collection } => anyhow::bail!(
+            "import is not implemented safely (input {}, collection {}): exports omit vectors and are not backups",
+            input.display(),
+            collection.as_deref().unwrap_or("default")
+        ),
         Command::Diff { query, since, path } => emit(client.post("/diff", json!({"query": query, "since": since, "path": path})).await?)?,
         Command::Overview => emit(client.get("/overview").await?)?,
         Command::InstallClaude => emit(json!({"installed": false, "detail": "Claude command installation remains an explicit local integration"}))?,
@@ -517,7 +555,7 @@ const QDRANT_IMAGE: &str = "qdrant/qdrant:v1.18.2";
 
 fn qdrant_settings() -> anyhow::Result<(u16, std::path::PathBuf)> {
     let paths = RagPaths::from_env().context("RAG home unavailable")?;
-    let settings = rag_config::load_settings(&paths).unwrap_or_default();
+    let settings = rag_config::load_settings(&paths).context("invalid RAG configuration")?;
     let port = settings
         .qdrant
         .url
@@ -702,7 +740,8 @@ mod tests {
         ] {
             let mut args = vec!["rag-rs", command];
             match command {
-                "search" | "context-pack" => args.push("query"),
+                "search" => args.push("query"),
+                "context-pack" => args.extend(["query", "--repo", "repo"]),
                 "smart-search" => args.push("question"),
                 "resolve" => args.extend(["Symbol", "--repo", "repo"]),
                 _ => {}

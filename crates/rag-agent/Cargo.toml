@@ -7,7 +7,10 @@ rust-version.workspace = true
 [dependencies]
 async-trait = "0.1"
 nix = { version = "0.30", features = ["signal", "process"] }
-rig = { version = "=0.40.0", default-features = true, features = ["reqwest"] }
+# Depend on the provider-agnostic core directly. The umbrella `rig` crate locks
+# every optional provider backend (including AWS) even when those features are
+# disabled, which needlessly expands the audited supply-chain surface.
+rig = { package = "rig-core", version = "=0.40.0", default-features = false, features = ["derive", "reqwest", "rustls"] }
 schemars = { version = "1.2", features = ["derive"] }
 rag-contracts = { path = "../rag-contracts" }
 rag-retrieval = { path = "../rag-retrieval" }

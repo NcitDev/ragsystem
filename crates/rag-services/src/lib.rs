@@ -13,7 +13,7 @@
 pub mod ollama;
 pub mod qdrant;
 
-use std::time::Duration;
+use std::{net::IpAddr, time::Duration};
 
 use thiserror::Error;
 
@@ -85,6 +85,23 @@ pub enum ServiceError {
         #[source]
         source: reqwest::Error,
     },
+    /// JSON decoding failed after a bounded response was read.
+    #[error("{service} returned invalid JSON: {source}")]
+    Json {
+        /// Service name.
+        service: &'static str,
+        /// JSON parser error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// A remote response exceeded the client-side memory budget.
+    #[error("{service} response exceeded the {limit_bytes}-byte limit")]
+    ResponseTooLarge {
+        /// Service name.
+        service: &'static str,
+        /// Configured response limit.
+        limit_bytes: usize,
+    },
     /// A retry budget was exhausted.
     #[error("{service} retry budget exhausted after {attempts} attempt(s): {last_error}")]
     RetryBudget {
@@ -123,31 +140,90 @@ fn trim_base_url(value: &str, field: &str) -> Result<String, ServiceError> {
     Ok(trimmed)
 }
 
+fn validate_service_transport(base_url: &str, field: &str) -> Result<(), ServiceError> {
+    let url = reqwest::Url::parse(base_url)
+        .map_err(|error| ServiceError::InvalidConfig(format!("{field} is invalid: {error}")))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ServiceError::InvalidConfig(format!(
+            "{field} must not contain credentials"
+        )));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(ServiceError::InvalidConfig(format!(
+            "{field} must not contain a query or fragment"
+        )));
+    }
+    if url.scheme() == "https" {
+        return url
+            .host_str()
+            .map(|_| ())
+            .ok_or_else(|| ServiceError::InvalidConfig(format!("{field} must contain a host")));
+    }
+    if url.scheme() != "http" {
+        return Err(ServiceError::InvalidConfig(format!(
+            "{field} must use https://, or http:// for a loopback service"
+        )));
+    }
+    let is_loopback = match url.host_str() {
+        Some("localhost") => true,
+        Some(host) => host
+            .parse::<IpAddr>()
+            .map(|address| address.is_loopback())
+            .unwrap_or(false),
+        None => false,
+    };
+    if is_loopback {
+        Ok(())
+    } else {
+        Err(ServiceError::InvalidConfig(format!(
+            "remote {field} must use https:// so indexed content is not sent in plaintext"
+        )))
+    }
+}
+
 fn truncate_body(body: &str) -> String {
     const LIMIT: usize = 2048;
     if body.len() <= LIMIT {
         body.to_owned()
     } else {
-        format!("{}...", &body[..LIMIT])
+        let boundary = body
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= LIMIT)
+            .last()
+            .unwrap_or_default();
+        format!("{}...", &body[..boundary])
     }
 }
 
 async fn read_or_status<T: serde::de::DeserializeOwned>(
     service: &'static str,
-    response: reqwest::Response,
+    mut response: reqwest::Response,
 ) -> Result<T, ServiceError> {
+    const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
     let status = response.status();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|source| ServiceError::Transport { service, source })?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(ServiceError::ResponseTooLarge {
+                service,
+                limit_bytes: MAX_RESPONSE_BYTES,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     if status.is_success() {
-        response
-            .json::<T>()
-            .await
-            .map_err(|source| ServiceError::Transport { service, source })
+        serde_json::from_slice::<T>(&bytes).map_err(|source| ServiceError::Json { service, source })
     } else {
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes);
         Err(ServiceError::HttpStatus {
             service,
             status,
-            body: truncate_body(&body),
+            body: truncate_body(body.as_ref()),
         })
     }
 }
@@ -179,7 +255,28 @@ where
     let mut backoff = policy.initial_backoff;
     loop {
         attempt += 1;
-        match operation().await {
+        let remaining = policy
+            .budget
+            .checked_sub(started.elapsed())
+            .unwrap_or_default();
+        if remaining.is_zero() {
+            return Err(ServiceError::RetryBudget {
+                service,
+                attempts: attempt.saturating_sub(1),
+                last_error: "retry wall-clock budget elapsed".to_owned(),
+            });
+        }
+        let outcome = match tokio::time::timeout(remaining, operation()).await {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                return Err(ServiceError::RetryBudget {
+                    service,
+                    attempts: attempt,
+                    last_error: "operation exceeded the retry wall-clock budget".to_owned(),
+                });
+            }
+        };
+        match outcome {
             Ok(value) => return Ok(value),
             Err(error) if attempt < policy.max_attempts && is_retryable(&error) => {
                 let last_error = error.to_string();
@@ -197,5 +294,42 @@ where
             }
             Err(error) => return Err(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{retry_async, truncate_body, RetryPolicy, ServiceError};
+    use std::time::Duration;
+
+    #[test]
+    fn unicode_error_body_truncation_never_splits_a_code_point() {
+        let body = "é".repeat(2_000);
+        let truncated = truncate_body(&body);
+        assert!(truncated.ends_with("..."));
+        assert!(truncated.len() <= 2051);
+    }
+
+    #[tokio::test]
+    async fn retry_budget_is_a_hard_wall_clock_limit_for_one_hung_attempt() {
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            budget: Duration::from_millis(25),
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(2),
+        };
+        let started = tokio::time::Instant::now();
+        let error = retry_async("test", &policy, || async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok::<(), ServiceError>(())
+        })
+        .await
+        .expect_err("hung operation must time out");
+
+        assert!(matches!(
+            error,
+            ServiceError::RetryBudget { attempts: 1, .. }
+        ));
+        assert!(started.elapsed() < Duration::from_millis(250));
     }
 }

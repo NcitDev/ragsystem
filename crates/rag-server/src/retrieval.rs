@@ -16,6 +16,7 @@ use rag_services::ollama::{OllamaClient, OllamaConfig};
 use rag_services::qdrant::{PayloadValue, QdrantClient, QdrantConfig, QdrantFilter, ScoredPoint};
 use rag_storage::{RepoInfo, RepoRegistry};
 use serde_json::{json, Map, Value};
+use tokio::io::AsyncWriteExt as _;
 
 const SUMMARY_COLLECTION: &str = "module_summaries";
 const LOD_L0_COLLECTION: &str = "lod_l0";
@@ -73,8 +74,14 @@ impl RetrievalBackend {
             ..OllamaConfig::default()
         })
         .map_err(|error| error.to_string())?;
+        let qdrant_api_key = if settings.qdrant.api_key_env.is_empty() {
+            None
+        } else {
+            std::env::var(&settings.qdrant.api_key_env).ok()
+        };
         let qdrant = QdrantClient::new(QdrantConfig {
             base_url: settings.qdrant.url.clone(),
+            api_key: qdrant_api_key,
             ..QdrantConfig::default()
         })
         .map_err(|error| error.to_string())?;
@@ -200,7 +207,7 @@ impl RetrievalBackend {
                     .to_owned(),
             ),
         };
-        let changed = git_changed_since(&repo_path, since);
+        let changed = git_changed_since(&repo_path, since).await?;
         if changed.is_empty() {
             return Ok(json!({
                 "query": query, "results": [], "total": 0,
@@ -217,7 +224,7 @@ impl RetrievalBackend {
                 filters_to_qdrant(&filters).as_ref(),
             )
             .await
-            .unwrap_or_default();
+            .map_err(|error| error.to_string())?;
         let results: Vec<Value> = hits.iter().map(|hit| slim_result(hit, vec![0])).collect();
         Ok(json!({
             "query": query, "results": results, "total": results.len(),
@@ -233,30 +240,94 @@ impl RetrievalBackend {
     ) -> Result<Value, String> {
         let collection = self.collection_arg(paths, body);
         let output = super::required_string(body, "output")?;
-        let mut exported = 0usize;
-        let mut offset: Option<Value> = None;
-        let mut lines: Vec<String> = Vec::new();
-        loop {
-            let page = self
-                .qdrant
-                .scroll(&collection, 256, None, offset.as_ref())
+        let max_records = body
+            .get("max_records")
+            .and_then(Value::as_u64)
+            .unwrap_or(1_000_000)
+            .clamp(1, 1_000_000) as usize;
+        let output_path = std::path::PathBuf::from(output);
+        if let Some(parent) = output_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|error| error.to_string())?;
-            if page.points.is_empty() {
-                break;
-            }
-            for point in &page.points {
-                let payload: Value = serde_json::to_value(&point.payload).unwrap_or(json!({}));
-                lines.push(json!({"id": point.id, "payload": payload}).to_string());
-                exported += 1;
-            }
-            match page.next_page_offset {
-                Some(next) => offset = Some(next),
-                None => break,
-            }
         }
-        std::fs::write(output, lines.join("\n")).map_err(|error| error.to_string())?;
-        Ok(json!({"exported": exported, "collection": collection, "output": output}))
+        let temp_path = output_path.with_extension(format!("jsonl.{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        const MAX_EXPORT_BYTES: u64 = 1024 * 1024 * 1024;
+        let mut exported = 0usize;
+        let mut bytes_written = 0u64;
+        let mut offset: Option<Value> = None;
+        let mut truncated = false;
+        let write_result = async {
+            loop {
+                let page = self
+                    .qdrant
+                    .scroll(&collection, 256, None, offset.as_ref())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if page.points.is_empty() {
+                    break;
+                }
+                for point in &page.points {
+                    if exported >= max_records {
+                        truncated = true;
+                        break;
+                    }
+                    let payload: Value =
+                        serde_json::to_value(&point.payload).map_err(|error| error.to_string())?;
+                    let mut line = json!({"id": point.id, "payload": payload}).to_string();
+                    line.push('\n');
+                    let line_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
+                    if bytes_written.saturating_add(line_bytes) > MAX_EXPORT_BYTES {
+                        truncated = true;
+                        break;
+                    }
+                    file.write_all(line.as_bytes())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    exported += 1;
+                    bytes_written += line_bytes;
+                }
+                if truncated {
+                    break;
+                }
+                match page.next_page_offset {
+                    Some(next) => offset = Some(next),
+                    None => break,
+                }
+            }
+            file.sync_all().await.map_err(|error| error.to_string())
+        }
+        .await;
+        if let Err(error) = write_result {
+            drop(file);
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error);
+        }
+        drop(file);
+        if let Err(error) = tokio::fs::rename(&temp_path, &output_path).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error.to_string());
+        }
+        Ok(json!({
+            "exported": exported,
+            "collection": collection,
+            "output": output,
+            "format": "qdrant-payload-jsonl-v1",
+            "includes_vectors": false,
+            "truncated": truncated,
+            "max_records": max_records,
+            "bytes_written": bytes_written,
+            "max_bytes": MAX_EXPORT_BYTES,
+        }))
     }
 
     /// Python `/admin/verify`: detect orphaned SQLite chunks (present in the
@@ -1387,7 +1458,11 @@ fn slim_result(hit: &SearchHit, matched_queries: Vec<usize>) -> Value {
 
 /// Python `diff._parse_since` + `get_changed_files_since`: date strings use
 /// `git log --since`, refs use `git diff <ref>..HEAD`.
-fn git_changed_since(repo_path: &str, since: &str) -> Vec<String> {
+async fn git_changed_since(repo_path: &str, since: &str) -> Result<Vec<String>, String> {
+    use tokio::io::AsyncReadExt as _;
+
+    const MAX_GIT_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
+    const MAX_CHANGED_FILES: usize = 10_000;
     const DATE_WORDS: [&str; 11] = [
         "day", "days", "week", "weeks", "hour", "hours", "minute", "minutes", "month", "months",
         "ago",
@@ -1396,43 +1471,82 @@ fn git_changed_since(repo_path: &str, since: &str) -> Vec<String> {
     let is_date = lower
         .split_whitespace()
         .any(|token| DATE_WORDS.contains(&token));
-    let output = if is_date {
-        std::process::Command::new("git")
-            .args([
-                "-C",
-                repo_path,
-                "log",
-                "--since",
-                since,
-                "--name-only",
-                "--pretty=format:",
-            ])
-            .output()
+    let args: Vec<String> = if is_date {
+        [
+            "-C",
+            repo_path,
+            "log",
+            "--since",
+            since,
+            "--name-only",
+            "--pretty=format:",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     } else {
-        std::process::Command::new("git")
-            .args([
-                "-C",
-                repo_path,
-                "diff",
-                "--name-only",
-                &format!("{since}..HEAD"),
-            ])
-            .output()
+        [
+            "-C",
+            repo_path,
+            "diff",
+            "--name-only",
+            &format!("{since}..HEAD"),
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     };
-    match output {
-        Ok(output) if output.status.success() => {
-            let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_owned)
-                .collect();
-            files.sort();
-            files.dedup();
-            files
+    let mut command = tokio::process::Command::new("git");
+    command
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to start git diff: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture git diff output".to_owned())?;
+    let output = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_GIT_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|error| format!("failed to read git diff output: {error}"))?;
+        if bytes.len() as u64 > MAX_GIT_OUTPUT_BYTES {
+            let _ = child.kill().await;
+            return Err(format!(
+                "git changed-file output exceeded {MAX_GIT_OUTPUT_BYTES} bytes"
+            ));
         }
-        _ => Vec::new(),
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| format!("failed to wait for git diff: {error}"))?;
+        if !status.success() {
+            return Err(format!("git diff failed with status {status}"));
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|_| "git changed-file query exceeded its 10-second timeout".to_owned())??;
+    let mut files: Vec<String> = String::from_utf8_lossy(&output)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    files.sort();
+    files.dedup();
+    if files.len() > MAX_CHANGED_FILES {
+        return Err(format!(
+            "git changed-file query returned more than {MAX_CHANGED_FILES} files"
+        ));
     }
+    Ok(files)
 }
 
 /// Render a count map as a JSON object ordered by descending count.
@@ -1466,5 +1580,27 @@ fn line_field(payload: &Map<String, Value>, key: &str) -> String {
         Some(Value::Number(number)) => number.to_string(),
         Some(Value::String(text)) => text.clone(),
         _ => "?".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git_changed_since;
+
+    #[tokio::test]
+    async fn invalid_git_ref_is_an_error_not_an_empty_diff() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let error = git_changed_since(temp.path().to_str().unwrap(), "definitely-missing-ref")
+            .await
+            .expect_err("invalid ref cannot mean no changed files");
+
+        assert!(error.contains("git diff failed"));
     }
 }

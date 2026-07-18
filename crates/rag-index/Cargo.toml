@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 ignore = "0.4"
+libc = "0.2"
 regex = "1.11"
 rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
 serde.workspace = true

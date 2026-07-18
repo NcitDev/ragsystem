@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use http::StatusCode;
+use http::{HeaderMap, StatusCode};
 use rag_services::{
     ollama::{OllamaClient, OllamaConfig},
     qdrant::{
@@ -31,6 +31,9 @@ struct MockState {
     calls: Arc<Mutex<Vec<(String, Value)>>>,
     embed_calls: Arc<AtomicUsize>,
     fail_embeds: Arc<AtomicUsize>,
+    active_embeds: Arc<AtomicUsize>,
+    peak_embeds: Arc<AtomicUsize>,
+    embed_delay_ms: Arc<AtomicUsize>,
 }
 
 fn fast_retry() -> RetryPolicy {
@@ -62,6 +65,8 @@ async fn tags() -> impl IntoResponse {
 
 async fn embed(State(state): State<MockState>, Json(body): Json<Value>) -> impl IntoResponse {
     state.embed_calls.fetch_add(1, Ordering::SeqCst);
+    let active = state.active_embeds.fetch_add(1, Ordering::SeqCst) + 1;
+    state.peak_embeds.fetch_max(active, Ordering::SeqCst);
     state
         .calls
         .lock()
@@ -71,10 +76,16 @@ async fn embed(State(state): State<MockState>, Json(body): Json<Value>) -> impl 
     let remaining_failures = state.fail_embeds.load(Ordering::SeqCst);
     if remaining_failures > 0 {
         state.fail_embeds.fetch_sub(1, Ordering::SeqCst);
+        state.active_embeds.fetch_sub(1, Ordering::SeqCst);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "temporary"})),
         );
+    }
+
+    let delay_ms = state.embed_delay_ms.load(Ordering::SeqCst);
+    if delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;
     }
 
     let inputs = body["input"].as_array().expect("input array");
@@ -83,6 +94,7 @@ async fn embed(State(state): State<MockState>, Json(body): Json<Value>) -> impl 
         .enumerate()
         .map(|(idx, _)| json!([idx as f32, idx as f32 + 0.5]))
         .collect::<Vec<_>>();
+    state.active_embeds.fetch_sub(1, Ordering::SeqCst);
     (StatusCode::OK, Json(json!({ "embeddings": embeddings })))
 }
 
@@ -146,6 +158,72 @@ async fn ollama_model_verification_reports_missing_model() {
     assert!(matches!(err, ServiceError::ModelUnavailable { .. }));
 }
 
+#[tokio::test]
+async fn ollama_cache_is_bounded_and_evicts_old_inputs() {
+    let state = MockState::default();
+    let base_url = spawn(
+        Router::new()
+            .route("/api/embed", post(embed))
+            .with_state(state.clone()),
+    )
+    .await;
+    let client = OllamaClient::new(OllamaConfig {
+        base_url,
+        dim: 2,
+        batch_size: 1,
+        cache_capacity: 2,
+        retry: fast_retry(),
+        ..OllamaConfig::default()
+    })
+    .expect("client");
+
+    client
+        .embed_documents(&["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()])
+        .await
+        .expect("initial embeds");
+    assert_eq!(client.cache_len().await, 2);
+    assert_eq!(state.embed_calls.load(Ordering::SeqCst), 3);
+
+    client
+        .embed_documents(&["alpha".to_owned()])
+        .await
+        .expect("evicted input is re-embedded");
+    assert_eq!(state.embed_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(client.cache_len().await, 2);
+}
+
+#[tokio::test]
+async fn ollama_concurrency_limit_is_shared_across_simultaneous_calls() {
+    let state = MockState::default();
+    state.embed_delay_ms.store(25, Ordering::SeqCst);
+    let base_url = spawn(
+        Router::new()
+            .route("/api/embed", post(embed))
+            .with_state(state.clone()),
+    )
+    .await;
+    let client = OllamaClient::new(OllamaConfig {
+        base_url,
+        dim: 2,
+        batch_size: 1,
+        max_concurrency: 1,
+        cache_embeddings: false,
+        retry: fast_retry(),
+        ..OllamaConfig::default()
+    })
+    .expect("client");
+
+    let first_inputs = ["alpha".to_owned(), "beta".to_owned()];
+    let second_inputs = ["gamma".to_owned(), "delta".to_owned()];
+    let first = client.embed_documents(&first_inputs);
+    let second = client.embed_documents(&second_inputs);
+    let (first, second) = tokio::join!(first, second);
+    first.expect("first call");
+    second.expect("second call");
+
+    assert_eq!(state.peak_embeds.load(Ordering::SeqCst), 1);
+}
+
 async fn qdrant_collections() -> impl IntoResponse {
     Json(json!({"result": {"collections": [{"name": "code_chunks"}]}}))
 }
@@ -178,9 +256,9 @@ async fn qdrant_record(
         .await
         .push((format!("{collection}:{action}"), body));
     match action.as_str() {
-        "search" => {
-            Json(json!({"result": [{"id": "p1", "score": 0.91, "payload": {"file_path": "a.py"}}]}))
-        }
+        "query" => Json(
+            json!({"result": {"points": [{"id": "p1", "score": 0.91, "payload": {"file_path": "a.py"}}]}}),
+        ),
         "scroll" => Json(
             json!({"result": {"points": [{"id": "p1", "payload": {"name": "A"}}], "next_page_offset": "next"}}),
         ),
@@ -327,12 +405,88 @@ async fn qdrant_client_covers_collection_search_scroll_upsert_delete_count_and_m
     let calls = state.calls.lock().await;
     let search_body = calls
         .iter()
-        .find(|(name, _)| name == "code_chunks:search")
+        .find(|(name, _)| name == "code_chunks:query")
         .map(|(_, body)| body)
-        .expect("search call");
-    assert_eq!(search_body["vector"]["name"], "dense");
+        .expect("query call");
+    assert_eq!(search_body["using"], "dense");
+    assert_eq!(search_body["query"], json!([0.1, 0.2]));
     assert_eq!(search_body["filter"]["must"][0]["match"]["any"][0], "rust");
     assert_eq!(search_body["filter"]["must"][1]["range"]["gte"], 10.0);
+}
+
+async fn authenticated_collections(headers: HeaderMap) -> impl IntoResponse {
+    assert_eq!(
+        headers.get("api-key").and_then(|value| value.to_str().ok()),
+        Some("qdrant-test-secret")
+    );
+    Json(json!({"result": {"collections": []}}))
+}
+
+#[tokio::test]
+async fn qdrant_api_key_is_sent_without_being_exposed_by_debug_output() {
+    let base_url = spawn(Router::new().route("/collections", get(authenticated_collections))).await;
+    let config = QdrantConfig {
+        base_url,
+        api_key: Some("qdrant-test-secret".to_owned()),
+        retry: fast_retry(),
+        ..QdrantConfig::default()
+    };
+    let debug = format!("{config:?}");
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("qdrant-test-secret"));
+
+    let client = QdrantClient::new(config).expect("client");
+    assert!(client.collections().await.unwrap().is_empty());
+}
+
+#[test]
+fn qdrant_refuses_plaintext_transport_outside_loopback() {
+    let error = match QdrantClient::new(QdrantConfig {
+        base_url: "http://qdrant.example.com:6333".to_owned(),
+        ..QdrantConfig::default()
+    }) {
+        Ok(_) => panic!("remote plaintext must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, ServiceError::InvalidConfig(_)));
+
+    QdrantClient::new(QdrantConfig {
+        base_url: "https://qdrant.example.com".to_owned(),
+        ..QdrantConfig::default()
+    })
+    .expect("remote TLS is allowed");
+
+    for base_url in [
+        "ftp://127.0.0.1:6333",
+        "https://user:secret@qdrant.example.com",
+        "https://qdrant.example.com?api_key=secret",
+        "https://qdrant.example.com#fragment",
+    ] {
+        assert!(QdrantClient::new(QdrantConfig {
+            base_url: base_url.to_owned(),
+            ..QdrantConfig::default()
+        })
+        .is_err());
+    }
+}
+
+#[test]
+fn ollama_refuses_plaintext_transport_outside_loopback() {
+    assert!(OllamaClient::new(OllamaConfig {
+        base_url: "http://ollama.example.com:11434".to_owned(),
+        ..OllamaConfig::default()
+    })
+    .is_err());
+    OllamaClient::new(OllamaConfig {
+        base_url: "https://ollama.example.com".to_owned(),
+        ..OllamaConfig::default()
+    })
+    .expect("remote TLS is allowed");
+    assert!(OllamaClient::new(OllamaConfig {
+        base_url: "https://user:secret@ollama.example.com".to_owned(),
+        ..OllamaConfig::default()
+    })
+    .is_err());
 }
 
 #[test]
@@ -344,4 +498,41 @@ fn embedded_mode_contract_is_managed_local_server_not_python_local_files() {
     .expect("embedded mode");
     assert_eq!(mode.url, "http://127.0.0.1:6333");
     assert!(mode.storage_path.ends_with("rag-qdrant"));
+}
+
+#[tokio::test]
+async fn qdrant_filter_delete_is_idempotent_when_collection_is_absent() {
+    let base_url = spawn(Router::new().route(
+        "/collections/{collection}/points/delete",
+        post(|| async {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"status": {"error": "collection not found"}})),
+            )
+        }),
+    ))
+    .await;
+    let client = QdrantClient::new(QdrantConfig {
+        base_url,
+        retry: fast_retry(),
+        ..QdrantConfig::default()
+    })
+    .expect("client");
+
+    client
+        .delete_by_filter("missing_collection", &QdrantFilter::empty())
+        .await
+        .expect("missing collection already satisfies deletion");
+}
+
+#[tokio::test]
+async fn qdrant_rejects_collection_names_that_can_change_the_request_url() {
+    let client = QdrantClient::new(QdrantConfig::default()).expect("client");
+    for name in ["bad/name", "bad?wait=false", "bad#fragment", " spaced "] {
+        let error = client
+            .collection_metadata(name)
+            .await
+            .expect_err("unsafe collection name");
+        assert!(matches!(error, ServiceError::InvalidRequest(_)), "{name}");
+    }
 }

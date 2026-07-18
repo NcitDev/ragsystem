@@ -157,26 +157,92 @@ impl LexicalIndex {
         Ok(inserted)
     }
 
+    /// Atomically replace every lexical chunk for one file. This prevents
+    /// stale chunk IDs when edits change line ranges, while keeping the FTS
+    /// mirror and content table consistent on failure.
+    pub fn replace_code_chunks_for_file(
+        &mut self,
+        collection: &str,
+        file_path: &str,
+        docs: &[CodeDocument],
+    ) -> Result<usize, LexicalError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM code_index_fts WHERE collection = ? AND file_path = ?",
+            params![collection, file_path],
+        )?;
+        tx.execute(
+            "DELETE FROM code_index WHERE collection = ? AND file_path = ?",
+            params![collection, file_path],
+        )?;
+        let now = unix_now();
+        let mut inserted = 0;
+        for doc in docs {
+            if doc.chunk_id.is_empty() {
+                continue;
+            }
+            let token_estimate = token_estimate(&doc.code);
+            tx.execute(
+                "INSERT INTO code_index (
+                    chunk_id, collection, file_path, name, parent_name, chunk_type,
+                    language, start_line, end_line, code, token_estimate, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    doc.chunk_id,
+                    doc.collection,
+                    doc.file_path,
+                    doc.name,
+                    doc.parent_name,
+                    doc.chunk_type,
+                    doc.language,
+                    doc.start_line as i64,
+                    doc.end_line as i64,
+                    doc.code,
+                    token_estimate as i64,
+                    now
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO code_index_fts (
+                    chunk_id, collection, file_path, name, parent_name, chunk_type, language, code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    doc.chunk_id,
+                    doc.collection,
+                    doc.file_path,
+                    doc.name,
+                    doc.parent_name,
+                    doc.chunk_type,
+                    doc.language,
+                    doc.code
+                ],
+            )?;
+            inserted += 1;
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
     pub fn delete_code_chunks_by_file(
         &self,
         collection: &str,
         file_path: &str,
     ) -> Result<(), LexicalError> {
-        let ids = self
-            .conn
+        let tx = self.conn.unchecked_transaction()?;
+        let ids = tx
             .prepare("SELECT chunk_id FROM code_index WHERE collection = ? AND file_path = ?")?
             .query_map(params![collection, file_path], |row| {
                 row.get::<_, String>(0)
             })?
             .collect::<Result<Vec<_>, _>>()?;
         for id in ids {
-            self.conn
-                .execute("DELETE FROM code_index_fts WHERE chunk_id = ?", params![id])?;
+            tx.execute("DELETE FROM code_index_fts WHERE chunk_id = ?", params![id])?;
         }
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM code_index WHERE collection = ? AND file_path = ?",
             params![collection, file_path],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -187,26 +253,30 @@ impl LexicalIndex {
         collection: &str,
         language: &str,
     ) -> Result<(), LexicalError> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "DELETE FROM code_index WHERE collection = ? AND language = ?",
             params![collection, language],
         )?;
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM code_index_fts WHERE collection = ? AND language = ?",
             params![collection, language],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
     pub fn delete_code_chunks_by_collection(&self, collection: &str) -> Result<(), LexicalError> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "DELETE FROM code_index_fts WHERE collection = ?",
             params![collection],
         )?;
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM code_index WHERE collection = ?",
             params![collection],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

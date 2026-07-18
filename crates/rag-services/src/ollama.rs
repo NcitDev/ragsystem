@@ -1,11 +1,18 @@
 //! Bounded Ollama embedding client.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, Semaphore};
 
-use crate::{read_or_status, retry_async, trim_base_url, RetryPolicy, ServiceError};
+use crate::{
+    read_or_status, retry_async, trim_base_url, validate_service_transport, RetryPolicy,
+    ServiceError,
+};
 
 const SERVICE: &str = "ollama";
 const DOCUMENT_INSTRUCTION: &str = "Instruct: Retrieve code that is semantically similar\nQuery: ";
@@ -36,13 +43,15 @@ pub struct OllamaConfig {
     pub max_concurrency: usize,
     /// Whether to cache embeddings by fully-prefixed input text.
     pub cache_embeddings: bool,
+    /// Maximum vectors retained by the in-memory cache.
+    pub cache_capacity: usize,
 }
 
 impl Default for OllamaConfig {
     fn default() -> Self {
         Self {
             base_url: "http://localhost:11434".to_owned(),
-            model: "Qwen/Qwen3-Embedding-4B".to_owned(),
+            model: "qwen3-embedding:4b".to_owned(),
             dim: 2560,
             batch_size: 64,
             keep_alive: "30m".to_owned(),
@@ -50,6 +59,7 @@ impl Default for OllamaConfig {
             retry: RetryPolicy::default(),
             max_concurrency: 1,
             cache_embeddings: true,
+            cache_capacity: 1024,
         }
     }
 }
@@ -101,12 +111,52 @@ struct EmbedResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
+type EmbeddingBatchResult = (usize, Result<Vec<Vec<f32>>, ServiceError>);
+
 /// Bounded Ollama HTTP client.
 #[derive(Clone)]
 pub struct OllamaClient {
     config: OllamaConfig,
     client: reqwest::Client,
-    cache: Arc<RwLock<HashMap<String, Vec<f32>>>>,
+    cache: Arc<Mutex<EmbeddingCache>>,
+    concurrency: Arc<Semaphore>,
+}
+
+#[derive(Default)]
+struct EmbeddingCache {
+    values: HashMap<String, Vec<f32>>,
+    insertion_order: VecDeque<String>,
+    capacity: usize,
+}
+
+impl EmbeddingCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            ..Self::default()
+        }
+    }
+
+    fn insert(&mut self, key: String, value: Vec<f32>) {
+        if let Some(existing) = self.values.get_mut(&key) {
+            *existing = value;
+            return;
+        }
+        while self.values.len() >= self.capacity {
+            if let Some(oldest) = self.insertion_order.pop_front() {
+                self.values.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        self.insertion_order.push_back(key.clone());
+        self.values.insert(key, value);
+    }
+
+    fn clear(&mut self) {
+        self.values.clear();
+        self.insertion_order.clear();
+    }
 }
 
 impl OllamaClient {
@@ -119,6 +169,7 @@ impl OllamaClient {
     /// Create a client from explicit config.
     pub fn new(mut config: OllamaConfig) -> Result<Self, ServiceError> {
         config.base_url = trim_base_url(&config.base_url, "ollama.base_url")?;
+        validate_service_transport(&config.base_url, "ollama.base_url")?;
         if config.model.trim().is_empty() {
             return Err(ServiceError::InvalidConfig(
                 "ollama model must not be empty".to_owned(),
@@ -139,6 +190,11 @@ impl OllamaClient {
                 "max_concurrency must be greater than zero".to_owned(),
             ));
         }
+        if config.cache_embeddings && config.cache_capacity == 0 {
+            return Err(ServiceError::InvalidConfig(
+                "cache_capacity must be greater than zero when caching is enabled".to_owned(),
+            ));
+        }
         let client = reqwest::Client::builder()
             .timeout(config.request_timeout)
             .build()
@@ -146,10 +202,13 @@ impl OllamaClient {
                 service: SERVICE,
                 source,
             })?;
+        let cache_capacity = config.cache_capacity;
+        let max_concurrency = config.max_concurrency;
         Ok(Self {
             config,
             client,
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(Mutex::new(EmbeddingCache::with_capacity(cache_capacity))),
+            concurrency: Arc::new(Semaphore::new(max_concurrency)),
         })
     }
 
@@ -273,9 +332,9 @@ impl OllamaClient {
         let mut missing_texts = Vec::new();
 
         if self.config.cache_embeddings {
-            let cache = self.cache.read().await;
+            let cache = self.cache.lock().await;
             for (idx, text) in texts.iter().enumerate() {
-                if let Some(value) = cache.get(text) {
+                if let Some(value) = cache.values.get(text) {
                     output[idx] = Some(value.clone());
                 } else {
                     missing_positions.push(idx);
@@ -301,7 +360,7 @@ impl OllamaClient {
             }
 
             if self.config.cache_embeddings {
-                let mut cache = self.cache.write().await;
+                let mut cache = self.cache.lock().await;
                 for (text, vector) in missing_texts.iter().zip(embedded.iter()) {
                     cache.insert(text.clone(), vector.clone());
                 }
@@ -324,12 +383,12 @@ impl OllamaClient {
 
     /// Number of cached embedding vectors.
     pub async fn cache_len(&self) -> usize {
-        self.cache.read().await.len()
+        self.cache.lock().await.values.len()
     }
 
     /// Clear the in-memory embedding cache.
     pub async fn clear_cache(&self) {
-        self.cache.write().await.clear();
+        self.cache.lock().await.clear();
     }
 
     fn model_is_present(&self, models: &[OllamaModel]) -> bool {
@@ -350,34 +409,25 @@ impl OllamaClient {
             .chunks(self.config.batch_size)
             .map(<[String]>::to_vec)
             .collect::<Vec<_>>();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrency));
-        let mut handles = Vec::with_capacity(chunks.len());
-
-        for (idx, batch) in chunks.into_iter().enumerate() {
-            let permit =
-                semaphore
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| ServiceError::Contract {
-                        service: SERVICE,
-                        message: "embedding concurrency limiter closed".to_owned(),
-                    })?;
-            let client = self.clone();
-            handles.push(tokio::spawn(async move {
-                let result = client.embed_batch_request(&batch).await;
-                drop(permit);
-                (idx, result)
-            }));
+        let batch_count = chunks.len();
+        let mut chunks = chunks.into_iter().enumerate();
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..self.config.max_concurrency.min(batch_count) {
+            if let Some((idx, batch)) = chunks.next() {
+                self.spawn_embedding_batch(&mut tasks, idx, batch);
+            }
         }
 
-        let mut batches = Vec::with_capacity(handles.len());
-        for handle in handles {
-            let (idx, result) = handle.await.map_err(|error| ServiceError::Contract {
+        let mut batches = Vec::with_capacity(batch_count);
+        while let Some(joined) = tasks.join_next().await {
+            let (idx, result) = joined.map_err(|error| ServiceError::Contract {
                 service: SERVICE,
                 message: format!("embedding task join failed: {error}"),
             })?;
             batches.push((idx, result?));
+            if let Some((next_idx, batch)) = chunks.next() {
+                self.spawn_embedding_batch(&mut tasks, next_idx, batch);
+            }
         }
         batches.sort_by_key(|(idx, _)| *idx);
 
@@ -386,6 +436,26 @@ impl OllamaClient {
             output.extend(batch);
         }
         Ok(output)
+    }
+
+    fn spawn_embedding_batch(
+        &self,
+        tasks: &mut tokio::task::JoinSet<EmbeddingBatchResult>,
+        index: usize,
+        batch: Vec<String>,
+    ) {
+        let client = self.clone();
+        tasks.spawn(async move {
+            let permit = client.concurrency.clone().acquire_owned().await;
+            let result = match permit {
+                Ok(_permit) => client.embed_batch_request(&batch).await,
+                Err(_) => Err(ServiceError::Contract {
+                    service: SERVICE,
+                    message: "embedding concurrency limiter closed".to_owned(),
+                }),
+            };
+            (index, result)
+        });
     }
 
     async fn embed_batch_request(&self, batch: &[String]) -> Result<Vec<Vec<f32>>, ServiceError> {

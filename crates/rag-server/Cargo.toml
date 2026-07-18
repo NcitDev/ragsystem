@@ -16,6 +16,7 @@ rag-services = { path = "../rag-services" }
 rag-storage = { path = "../rag-storage" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 flate2 = "1"
+fs2 = "0.4"
 regex = "1.11"
 reqwest.workspace = true
 sha2 = "0.10"
@@ -24,11 +25,12 @@ uuid = { version = "1", features = ["v4", "v5"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 
 [dev-dependencies]
 tower.workspace = true
 tempfile = "3.20"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [lints]
 workspace = true

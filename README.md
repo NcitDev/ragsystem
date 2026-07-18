@@ -22,7 +22,9 @@ Three things, nothing else:
 2. **Qdrant** — vector database. `qdrant.mode = "server"` connects to a Docker
    container (`rag qdrant-up` manages `rag-qdrant` on `127.0.0.1:6333`);
    `qdrant.mode = "embedded"` makes the daemon host a pinned Qdrant binary
-   itself (auto-downloaded to `~/.rag/bin`), no Docker required.
+   itself (downloaded to `~/.rag/bin` with a pinned official SHA-256), no
+   Docker required. Embedded mode refuses to adopt an unknown process already
+   using its port.
 3. **Ollama** — local model server for embeddings (`qwen3-embedding`) and,
    optionally, the LLM planner and `/ask` generation (`qwen3:8b`).
 
@@ -33,7 +35,7 @@ Three things, nothing else:
 install -m 0755 dist/<target>/rag-rs ~/.local/bin/rag
 ```
 
-Building from source needs a Rust toolchain only:
+Building from source needs Rust 1.88 or newer (the workspace MSRV):
 
 ```bash
 cargo build --release -p rag-app      # produces target/release/rag-rs
@@ -42,7 +44,7 @@ cargo build --release -p rag-app      # produces target/release/rag-rs
 ## 30-second quickstart
 
 ```bash
-ollama pull qwen3-embedding:latest         # embeddings (set embeddings.model/dim to match)
+ollama pull qwen3-embedding:4b             # default embeddings model (dim 2560)
 ollama pull qwen3:8b                       # planner + /ask generation (optional)
 
 rag qdrant-up                 # start the Qdrant container (or set qdrant.mode=embedded)
@@ -56,8 +58,31 @@ First `rag start` bootstraps `~/.rag` (auth token with 0600 perms, default
 `config.toml`). The web dashboard is served at `http://127.0.0.1:7890/`.
 
 > **Note:** `embeddings.model` must be an exact tag that `ollama list` shows
-> (e.g. `qwen3-embedding:latest`), and `embeddings.dim` must match that model's
+> (the default is `qwen3-embedding:4b`), and `embeddings.dim` must match that model's
 > dimension — collections are created with that size at first index.
+
+For a secured or hosted Qdrant, set `qdrant.url` to an `https://` URL and put
+the key in the environment variable named by `qdrant.api_key_env` (default
+`QDRANT_API_KEY`). The key is sent as Qdrant's `api-key` header and is never
+stored in `config.toml`. Plaintext remote Qdrant URLs are rejected; loopback
+HTTP remains supported for local development.
+The same transport rule applies to `llm.ollama_url`, because embedding and
+generation requests can contain private source context.
+
+## Agent-safe context
+
+`rag context-pack` returns deterministic slices with explicit slice, token,
+and byte budgets, SHA-256 content digests, freshness, and per-slice provenance:
+
+```bash
+rag context-pack "authentication flow" --repo myrepo \
+  --max-slices 8 --max-source-tokens 6000 --max-source-bytes 65536
+curl http://127.0.0.1:7890/.well-known/rag-capabilities
+```
+
+The discovery document is public but exposes no indexed content or token. It
+advertises the native HTTP/OpenAPI capability; this release does not claim MCP
+or A2A protocol compatibility.
 
 ## AST navigation
 
@@ -95,15 +120,39 @@ embedded in the binary and served with the token injected.
 
 ```bash
 cargo test --workspace                                    # all tests
-cargo clippy --workspace --all-targets -- -D warnings     # lint
+cargo check --workspace --all-targets                     # compile every target
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --check                                         # format
 ```
+
+Operators should use `GET /live` for process liveness and `GET /ready` for the
+two-second Ollama/Qdrant readiness probe. `GET /health` remains available for
+backward compatibility. Protected work is bounded by `server.max_in_flight`
+(default 32); overload is rejected with HTTP 503 and `Retry-After: 1`. Every
+response includes `x-request-id`.
+
+Administrative mutations that are not safely implemented—live reload,
+automatic repair, payload import, and Qdrant-to-SQLite backfill—return HTTP 501
+instead of a success-shaped placeholder. Restart the supervised daemon to
+reload settings; use verified reindexing for repair. The current payload JSONL
+export omits vectors and is not a backup.
+Export is additionally capped at one million records or 1 GiB and reports
+truncation; `rag export` resolves relative output paths from the caller's
+working directory. Vocabulary JSONL input is capped at 64 MiB. Source indexing
+uses the configurable 4 MiB per-file default; AST attachment has a 4 MiB hard
+limit.
 
 ## Migration note
 
 This project was ported from Python to Rust; the parity audit and benchmark
 history are in `docs/python-parity-audit.md`,
 `docs/benchmark_full_matrix/summary.md`, and `docs/rust-migration-plan.md`. The
-Rust daemon matches or beats the former Python implementation on every
-retrieval mode at 1.5–3× lower latency, ~5× less memory, and a 16× faster cold
-start. No Python is required at build or run time.
+Historical migration benchmark snapshots report parity or better retrieval
+quality with lower latency and memory than the former Python implementation.
+Those results were not rerun by the production audit and are not a current
+release guarantee; see the reports for hardware, corpus, and methodology. No
+Python is required at build or run time.
+
+Production-hardening findings, verified limitations, and migration notes are
+in `docs/rust-production-audit.md`; product and deployment priorities are in
+`docs/product-and-production-roadmap.md`.

@@ -276,7 +276,13 @@ pub fn trim_to_token_budget(code: &str, token_budget: usize) -> (String, usize) 
             break;
         }
         if output.is_empty() && line.len() > max_chars {
-            output.push_str(&line[..max_chars]);
+            let boundary = line
+                .char_indices()
+                .map(|(index, _)| index)
+                .take_while(|index| *index <= max_chars)
+                .last()
+                .unwrap_or_default();
+            output.push_str(&line[..boundary]);
             break;
         }
         if !output.is_empty() {
@@ -643,6 +649,7 @@ mod tests {
     fn token_budget_and_query_expansion_match_oracle() {
         assert_eq!(estimate_tokens("12345"), 2);
         assert_eq!(trim_to_token_budget("abcd\nefgh\nijkl", 2).0, "abcd");
+        assert_eq!(trim_to_token_budget(&"é".repeat(20), 2).0, "é".repeat(4));
         assert!(expand_query("find auth").contains("authentication"));
         assert_eq!(decompose_query("auth and payment", 3), ["auth", "payment"]);
     }

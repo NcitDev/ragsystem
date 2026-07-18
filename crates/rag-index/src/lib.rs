@@ -14,7 +14,10 @@ pub mod lsp;
 pub mod records;
 
 pub use chunker::{chunk_code, supported_extensions, supported_languages, Chunk, ChunkType};
-pub use discovery::{diff_index_state, discover_files, file_hash, IndexDiff, IndexState};
+pub use discovery::{
+    diff_index_state, discover_files, file_hash, file_hash_bounded, read_file_bounded, source_hash,
+    IndexDiff, IndexState,
+};
 pub use graph::{
     AstDefinition, AstGraph, AstReference, AstUsage, CallTreeEdge, GraphNode, GraphRelation,
 };

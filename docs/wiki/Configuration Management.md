@@ -117,10 +117,11 @@ class Settings {
 class ServerSettings {
 +string host : "127.0.0.1"
 +int port : 7890 (1-65535)
++int max_in_flight : 32 (1-1024)
 +reject_wildcard_bind()
 }
 class EmbeddingSettings {
-+string model : "Qwen/Qwen3-Embedding-4B"
++string model : "qwen3-embedding:4b"
 +string provider : "ollama" (deprecated)
 +int dim : 2560 (32-8192)
 +int batch_size : 64 (1-512)
@@ -129,6 +130,7 @@ class EmbeddingSettings {
 class QdrantSettings {
 +string mode : "server"|"embedded"
 +string url : "http : //127.0.0.1 : 6333"
++string api_key_env : "QDRANT_API_KEY"
 +string path : "~/.rag/qdrant_data"
 +string code_collection : "code_chunks"
 +string docs_collection : "doc_chunks"
@@ -137,6 +139,7 @@ class QdrantSettings {
 }
 class IndexSettings {
 +int max_chunk_chars : 8000 (500-100000)
++int max_file_bytes : 4194304 (1024-1073741824)
 +int retrieval_top_k : 20 (1-500)
 +string[] skip_dirs
 }
@@ -560,20 +563,24 @@ Controls daemon network binding and service parameters.
 - `port`: TCP port number (default: 7890, range: 1-65535)
   - Development: 7890 (default)
   - Production: Non-standard port above 1024
+- `max_in_flight`: protected requests allowed to execute concurrently
+  (default: 32, range: 1-1024). Excess work receives HTTP 503 with
+  `Retry-After: 1`.
 
 **Examples:**
 ```toml
 [server]
 host = "127.0.0.1"
 port = 8080
+max_in_flight = 32
 ```
 
 ### Embedding Configuration
 Defines embedding model parameters for vector generation.
 
 **Parameters:**
-- `model`: Embedding model identifier (default: "Qwen/Qwen3-Embedding-4B")
-  - Format: "organization/model:variant"
+- `model`: exact Ollama model tag (default: `qwen3-embedding:4b`)
+  - Format: `model:variant`
   - Must match available Ollama models
 - `provider`: Deprecated field (default: "ollama")
   - Retained for backward compatibility
@@ -590,7 +597,7 @@ Defines embedding model parameters for vector generation.
 **Examples:**
 ```toml
 [embeddings]
-model = "Qwen/Qwen3-Embedding-4B"
+model = "qwen3-embedding:4b"
 dim = 2560
 batch_size = 64
 keep_alive = "30m"
@@ -604,8 +611,10 @@ Controls vector database connection and collection management.
   - "server": Remote Qdrant instance
   - "embedded": Local Qdrant process
 - `url`: Remote Qdrant endpoint (default: "http://127.0.0.1:6333")
-  - Must start with http:// or https://
-  - Include proper scheme and port
+  - Loopback development endpoints may use HTTP
+  - Remote endpoints must use HTTPS
+- `api_key_env`: environment variable containing the Qdrant API key (default:
+  `QDRANT_API_KEY`). The secret is never stored in TOML.
 - `path`: Local data directory (default: "~/.rag/qdrant_data")
   - User home expansion supported
   - Separate from application directory
@@ -657,7 +666,8 @@ Deprecated configuration retained for backward compatibility.
 Controls local LLM service integration.
 
 **Parameters:**
-- `ollama_url`: Ollama service endpoint (default: "http://localhost:11434")
+- `ollama_url`: Ollama service endpoint (default: "http://localhost:11434").
+  Plaintext HTTP is accepted only for loopback; remote endpoints require HTTPS.
   - Must start with http:// or https://
   - Include proper scheme and port
 - `agent_model`: Model for agent operations (default: "qwen3:8b")
@@ -756,7 +766,7 @@ host = "127.0.0.1"
 port = 7890
 
 [embeddings]
-model = "Qwen/Qwen3-Embedding-4B"
+model = "qwen3-embedding:4b"
 batch_size = 32
 
 [index]

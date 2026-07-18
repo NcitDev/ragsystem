@@ -390,6 +390,13 @@
             "title": "Max Slices",
             "type": "integer"
           },
+          "max_source_bytes": {
+            "default": 24000,
+            "maximum": 4194304.0,
+            "minimum": 64.0,
+            "title": "Max Source Bytes",
+            "type": "integer"
+          },
           "max_source_tokens": {
             "default": 6000,
             "maximum": 100000.0,
@@ -404,18 +411,15 @@
             "type": "string"
           },
           "repo": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Repo"
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
           },
           "strategy": {
             "default": "lod_drill",
+            "enum": [
+              "lod_drill"
+            ],
             "title": "Strategy",
             "type": "string"
           },
@@ -426,13 +430,24 @@
           }
         },
         "required": [
-          "query"
+          "query",
+          "repo"
         ],
         "title": "ContextPackRequest",
         "type": "object"
       },
       "ContextPackResponse": {
         "properties": {
+          "budget": {
+            "additionalProperties": true,
+            "title": "Budget",
+            "type": "object"
+          },
+          "freshness": {
+            "additionalProperties": true,
+            "title": "Freshness",
+            "type": "object"
+          },
           "latency_ms": {
             "title": "Latency Ms",
             "type": "number"
@@ -442,15 +457,13 @@
             "type": "string"
           },
           "repo": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Repo"
+            "title": "Repo",
+            "type": "string"
+          },
+          "retrieval": {
+            "additionalProperties": true,
+            "title": "Retrieval",
+            "type": "object"
           },
           "slices": {
             "items": {
@@ -463,16 +476,30 @@
             "title": "Total",
             "type": "integer"
           },
+          "total_source_bytes": {
+            "title": "Total Source Bytes",
+            "type": "integer"
+          },
           "total_source_tokens": {
             "title": "Total Source Tokens",
             "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "required": [
           "query",
+          "repo",
           "slices",
           "total",
+          "total_source_bytes",
           "total_source_tokens",
+          "truncated",
+          "budget",
+          "retrieval",
+          "freshness",
           "latency_ms"
         ],
         "title": "ContextPackResponse",
@@ -490,6 +517,10 @@
           },
           "code": {
             "title": "Code",
+            "type": "string"
+          },
+          "content_sha256": {
+            "title": "Content Sha256",
             "type": "string"
           },
           "file_path": {
@@ -512,6 +543,11 @@
             "title": "Parent Name",
             "type": "string"
           },
+          "provenance": {
+            "additionalProperties": true,
+            "title": "Provenance",
+            "type": "object"
+          },
           "repo": {
             "default": "",
             "title": "Repo",
@@ -521,9 +557,17 @@
             "title": "Score",
             "type": "number"
           },
+          "source_bytes": {
+            "title": "Source Bytes",
+            "type": "integer"
+          },
           "token_estimate": {
             "title": "Token Estimate",
             "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
           },
           "why_included": {
             "title": "Why Included",
@@ -539,8 +583,12 @@
           "lines",
           "code",
           "score",
+          "source_bytes",
           "token_estimate",
+          "content_sha256",
           "citation",
+          "provenance",
+          "truncated",
           "why_included"
         ],
         "title": "ContextSlice",
@@ -1799,24 +1847,9 @@
             "type": "integer"
           },
           "repo": {
-            "default": "",
+            "minLength": 1,
             "title": "Repo",
             "type": "string"
-          },
-          "repos": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 10,
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Repos"
           },
           "top_k": {
             "default": 15,
@@ -1834,7 +1867,8 @@
           }
         },
         "required": [
-          "question"
+          "question",
+          "repo"
         ],
         "title": "SmartSearchRequest",
         "type": "object"
@@ -2169,14 +2203,35 @@
     }
   },
   "info": {
+    "description": "Rust daemon API. Every response carries an `x-request-id`; a safe caller-supplied value is propagated, otherwise the daemon generates a UUID. `/live` is a process liveness check, `/ready` is a dependency readiness check, and `/health` remains the backward-compatible health summary.",
     "title": "RAG System",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/.well-known/rag-capabilities": {
+      "get": {
+        "description": "Stable unauthenticated discovery document for agent clients. It advertises supported budgets and provenance without exposing credentials or indexed content.",
+        "operationId": "rag_capabilities_well_known_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "RAG Agent Capability Discovery"
+      }
+    },
     "/admin/reload": {
       "post": {
-        "description": "Re-read config files and lazily reinitialize the embedder if\nits model changed. Refuses to swap the embedding model (which\nwould invalidate the index) unless ``force=true``.\n\nReranker reload was dropped when the reranker was removed.",
+        "description": "Reserved compatibility endpoint. The Rust daemon returns HTTP 501 rather than claiming to reload immutable runtime state. Restart the supervised daemon to apply validated settings.",
         "operationId": "admin_reload_admin_reload_post",
         "requestBody": {
           "content": {
@@ -2189,15 +2244,13 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "501": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReloadResponse"
-                }
+                "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Live reload is not implemented safely"
           },
           "422": {
             "content": {
@@ -2308,7 +2361,7 @@
     },
     "/context-pack": {
       "post": {
-        "description": "Return a token-bounded set of source slices for a query.\n\nThis endpoint is intentionally stricter than /search: it favors exact\nsymbol/file/string matches from SQLite and packs only code spans that fit\nthe requested source budget. Semantic retrieval fills gaps when needed.",
+        "description": "Return a deterministic token- and byte-bounded set of source slices for one repository.\n\nThe Rust endpoint combines AST-index candidates with SQLite FTS, includes citations, freshness, provenance, and content digests, and reports whether semantic retrieval was requested. Dense semantic results are not included in this release (`semantic_included` is false).",
         "operationId": "context_pack_context_pack_post",
         "requestBody": {
           "content": {
@@ -2755,6 +2808,59 @@
         "summary": "Health"
       }
     },
+    "/live": {
+      "get": {
+        "description": "Cheap process liveness check. It does not call Ollama or Qdrant.",
+        "operationId": "liveness_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "const": "ok",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Process is alive"
+          }
+        },
+        "summary": "Liveness"
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "Dependency readiness check. Ollama and Qdrant are probed within a two-second overall deadline.",
+        "operationId": "readiness_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "All required retrieval dependencies are ready"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "A required retrieval dependency is unavailable or timed out"
+          }
+        },
+        "summary": "Readiness"
+      }
+    },
     "/health/detail": {
       "get": {
         "operationId": "health_detail_health_detail_get",
@@ -2811,7 +2917,7 @@
     },
     "/index/backfill-code-index": {
       "post": {
-        "description": "Populate SQLite code_index from existing Qdrant payloads.\n\nUseful after upgrading to the lexical/context-pack index: it avoids a\nfull embedding pass by reusing stored ``content`` and metadata payloads.",
+        "description": "Reserved compatibility endpoint. The Rust daemon returns HTTP 501 rather than a false-success placeholder. Run a full verified reindex.",
         "operationId": "backfill_code_index_index_backfill_code_index_post",
         "requestBody": {
           "content": {
@@ -2824,15 +2930,13 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "501": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BackfillCodeIndexResponse"
-                }
+                "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Backfill is not implemented by the Rust server"
           },
           "422": {
             "content": {
@@ -3216,7 +3320,7 @@
     },
     "/smart-search": {
       "post": {
-        "description": "Agentic retrieval = the design: an LLM (agy) infers candidate symbols\nfrom the natural-language question, resolves them to exact definitions\n(and usages, for blast-radius questions) via the AST index, and\ncomplements with semantic vector search. Returns the golden DATA \u2014 not a\ngenerated answer \u2014 for the calling agent to use.\n\nBenchmarked: doubles coverage over plain /search (36.7% vs 15-18%) by\ncracking vague questions where embeddings bury the canonical file.\n\nCross-repo: pass ``repos`` (list of names, or ``[\"*\"]`` for all\nregistered repos) to fan out concurrently and get merged, repo-tagged\nbuckets. ``repo`` targets a single repo as before.",
+        "description": "Agentic retrieval for one repository: an LLM planner infers candidate symbols, resolves them to exact definitions and usages through the AST index, and can complement them with semantic vector search. Returns retrieved data rather than a generated answer. The Rust server rejects the Python-only `repos` fan-out field instead of silently ignoring it.",
         "operationId": "smart_search_smart_search_post",
         "requestBody": {
           "content": {

@@ -411,6 +411,8 @@ fn overlaps(candidate: &AstIndexHit, existing: &AstIndexHit) -> bool {
 
 /// Python `_attach_code`: read the file, compute symbol/usage bounds, and set
 /// `code`/`start_line`/`end_line`. Path-escape guarded to stay inside the repo.
+const MAX_ATTACHED_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
+
 fn attach_code(root: &Path, hit: &mut AstIndexHit) {
     let Ok(root_abs) = root.canonicalize() else {
         return;
@@ -421,7 +423,10 @@ fn attach_code(root: &Path, hit: &mut AstIndexHit) {
     if !path.starts_with(&root_abs) {
         return;
     }
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(bytes) = rag_index::read_file_bounded(&path, MAX_ATTACHED_SOURCE_BYTES) else {
+        return;
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
         return;
     };
     let lines: Vec<&str> = text.split('\n').collect();
@@ -801,7 +806,10 @@ pub fn related_files(
 
 #[cfg(test)]
 mod tests {
-    use super::{call_tree, callers, is_available, resolve_symbols};
+    use super::{
+        attach_code, call_tree, callers, is_available, resolve_symbols, AstIndexHit,
+        MAX_ATTACHED_SOURCE_BYTES,
+    };
     use crate::repo_agent::{compact_slice, infer_risks};
     use serde_json::json;
 
@@ -829,5 +837,30 @@ mod tests {
         let _ = callers(&root, "SearchPlan", 3);
         let risks = infer_risks("analytics event module move", true, &[], &[]);
         assert!(!risks.is_empty());
+    }
+
+    #[test]
+    fn source_attachment_refuses_files_over_its_memory_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.rs");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_ATTACHED_SOURCE_BYTES + 1).unwrap();
+        let mut hit = AstIndexHit {
+            file_path: "large.rs".to_owned(),
+            line: 1,
+            name: "large".to_owned(),
+            kind: "function".to_owned(),
+            signature: String::new(),
+            context: String::new(),
+            source: "symbol".to_owned(),
+            code: String::new(),
+            start_line: 1,
+            end_line: 1,
+            score: 1.0,
+        };
+
+        attach_code(temp.path(), &mut hit);
+
+        assert!(hit.code.is_empty());
     }
 }

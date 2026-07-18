@@ -1,10 +1,15 @@
 //! Qdrant server-mode HTTP client.
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, fmt, path::PathBuf, time::Duration};
+
+use reqwest::header::{HeaderMap, HeaderValue};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{read_or_status, retry_async, trim_base_url, RetryPolicy, ServiceError};
+use crate::{
+    read_or_status, retry_async, trim_base_url, validate_service_transport, RetryPolicy,
+    ServiceError,
+};
 
 const SERVICE: &str = "qdrant";
 
@@ -28,10 +33,12 @@ impl EmbeddedQdrantMode {
 }
 
 /// Qdrant client configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QdrantConfig {
     /// Qdrant server base URL, for example `http://127.0.0.1:6333`.
     pub base_url: String,
+    /// Optional Qdrant API key. Debug output always redacts this value.
+    pub api_key: Option<String>,
     /// Per-request timeout.
     pub request_timeout: Duration,
     /// Retry settings for mutating/search operations.
@@ -42,9 +49,22 @@ impl Default for QdrantConfig {
     fn default() -> Self {
         Self {
             base_url: "http://127.0.0.1:6333".to_owned(),
+            api_key: None,
             request_timeout: Duration::from_secs(30),
             retry: RetryPolicy::default(),
         }
+    }
+}
+
+impl fmt::Debug for QdrantConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QdrantConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("request_timeout", &self.request_timeout)
+            .field("retry", &self.retry)
+            .finish()
     }
 }
 
@@ -311,18 +331,19 @@ struct UpsertRequest<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct SearchRequest<'a> {
-    vector: NamedVector<'a>,
+struct QueryRequest<'a> {
+    query: &'a [f32],
+    using: &'a str,
     limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     filter: Option<&'a QdrantFilter>,
     with_payload: bool,
 }
 
-#[derive(Debug, Serialize)]
-struct NamedVector<'a> {
-    name: &'a str,
-    vector: &'a [f32],
+#[derive(Debug, Deserialize)]
+struct QueryResponse {
+    #[serde(default)]
+    points: Vec<ScoredPoint>,
 }
 
 #[derive(Debug, Serialize)]
@@ -391,7 +412,25 @@ impl QdrantClient {
     /// Create a Qdrant server-mode client.
     pub fn new(mut config: QdrantConfig) -> Result<Self, ServiceError> {
         config.base_url = trim_base_url(&config.base_url, "qdrant.base_url")?;
+        validate_qdrant_transport(&config.base_url)?;
+        let mut headers = HeaderMap::new();
+        if let Some(api_key) = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let mut value = HeaderValue::from_str(api_key).map_err(|_| {
+                ServiceError::InvalidConfig(
+                    "Qdrant API key contains characters that cannot be sent in an HTTP header"
+                        .to_owned(),
+                )
+            })?;
+            value.set_sensitive(true);
+            headers.insert("api-key", value);
+        }
         let client = reqwest::Client::builder()
+            .default_headers(headers)
             .timeout(config.request_timeout)
             .build()
             .map_err(|source| ServiceError::Transport {
@@ -575,11 +614,9 @@ impl QdrantClient {
         if top_k == 0 {
             return Ok(Vec::new());
         }
-        let body = SearchRequest {
-            vector: NamedVector {
-                name: "dense",
-                vector: dense,
-            },
+        let body = QueryRequest {
+            query: dense,
+            using: "dense",
             limit: top_k,
             filter,
             with_payload: true,
@@ -588,7 +625,7 @@ impl QdrantClient {
             let response = self
                 .client
                 .post(format!(
-                    "{}/collections/{collection}/points/search",
+                    "{}/collections/{collection}/points/query",
                     self.config.base_url
                 ))
                 .json(&body)
@@ -598,9 +635,8 @@ impl QdrantClient {
                     service: SERVICE,
                     source,
                 })?;
-            let envelope: QdrantEnvelope<Vec<ScoredPoint>> =
-                read_or_status(SERVICE, response).await?;
-            Ok(envelope.result)
+            let envelope: QdrantEnvelope<QueryResponse> = read_or_status(SERVICE, response).await?;
+            Ok(envelope.result.points)
         })
         .await
     }
@@ -690,6 +726,12 @@ impl QdrantClient {
                     service: SERVICE,
                     source,
                 })?;
+            // Deletion is idempotent: a missing collection already satisfies
+            // the requested postcondition (and is normal on a first scoped
+            // full index).
+            if response.status() == http::StatusCode::NOT_FOUND {
+                return Ok(());
+            }
             read_or_status::<serde_json::Value>(SERVICE, response)
                 .await
                 .map(|_| ())
@@ -718,11 +760,20 @@ impl QdrantClient {
     }
 
     fn validate_collection(&self, collection: &str) -> Result<(), ServiceError> {
-        if collection.trim().is_empty() || collection.contains('/') {
+        if collection.is_empty()
+            || collection.len() > 255
+            || !collection
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
             return Err(ServiceError::InvalidRequest(
-                "collection name must be non-empty and must not contain '/'".to_owned(),
+                "collection name must be 1..=255 ASCII letters, digits, '_', '-' or '.'".to_owned(),
             ));
         }
         Ok(())
     }
+}
+
+fn validate_qdrant_transport(base_url: &str) -> Result<(), ServiceError> {
+    validate_service_transport(base_url, "qdrant.base_url")
 }

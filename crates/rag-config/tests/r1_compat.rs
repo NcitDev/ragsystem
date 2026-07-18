@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rag_config::{
     get_or_create_token, load_env_files, load_settings, parse_bearer, verify_bearer_header,
-    RagPaths,
+    RagPaths, Settings,
 };
 
 fn fixture_home() -> PathBuf {
@@ -38,8 +38,17 @@ fn loads_packaged_defaults_deep_merged_with_python_user_toml() {
     assert_eq!(settings.embeddings.dim, 2560);
     assert_eq!(settings.index.retrieval_top_k, 7);
     assert_eq!(settings.qdrant.url, "http://127.0.0.1:6333");
+    assert_eq!(settings.qdrant.api_key_env, "QDRANT_API_KEY");
     assert_eq!(settings.qdrant.code_collection, "code_chunks");
     assert_eq!(settings.retrieval_agent.model, "Gemini 3.5 Flash (High)");
+}
+
+#[test]
+fn rejects_invalid_qdrant_api_key_environment_variable_names() {
+    let mut settings = Settings::default();
+    settings.qdrant.api_key_env = "QDRANT-API-KEY".to_owned();
+    let error = settings.validate().expect_err("invalid variable name");
+    assert!(error.to_string().contains("qdrant.api_key_env"));
 }
 
 #[test]
@@ -79,6 +88,58 @@ fn token_creation_uses_explicit_home_not_real_dot_rag() {
         fs::read_to_string(paths.token_path).expect("read token"),
         token
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_token_permissions_are_repaired_before_use() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = RagPaths::from_home(temp.path().join("rag-home"));
+    fs::create_dir_all(&paths.home).expect("home");
+    fs::write(&paths.token_path, "existing-secret").expect("token");
+    fs::set_permissions(&paths.token_path, fs::Permissions::from_mode(0o644))
+        .expect("make token public");
+
+    assert_eq!(get_or_create_token(&paths).unwrap(), "existing-secret");
+    let mode = fs::metadata(&paths.token_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn empty_token_is_rejected_instead_of_silently_rotated() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = RagPaths::from_home(temp.path().join("rag-home"));
+    fs::create_dir_all(&paths.home).expect("home");
+    fs::write(&paths.token_path, "\n").expect("empty token");
+
+    let error = get_or_create_token(&paths).expect_err("empty token must fail closed");
+
+    assert!(error.to_string().contains("token file is empty"));
+    assert_eq!(fs::read_to_string(&paths.token_path).unwrap(), "\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn token_path_symlink_is_rejected_without_touching_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = RagPaths::from_home(temp.path().join("rag-home"));
+    fs::create_dir_all(&paths.home).expect("home");
+    let target = temp.path().join("outside-secret");
+    fs::write(&target, "outside").expect("target");
+    symlink(&target, &paths.token_path).expect("symlink");
+
+    let error = get_or_create_token(&paths).expect_err("token symlink must fail closed");
+
+    assert!(error.to_string().contains("regular file"));
+    assert_eq!(fs::read_to_string(target).unwrap(), "outside");
 }
 
 #[test]

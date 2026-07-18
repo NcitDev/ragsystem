@@ -39,7 +39,7 @@ This guide helps you quickly install, start, and verify the RAG system. It cover
 
 Key configuration defaults:
 - The daemon listens on 127.0.0.1:7890 by default.
-- Embedding model defaults to Qwen/Qwen3-Embedding-4B.
+- Embedding model defaults to `qwen3-embedding:4b` (2560 dimensions).
 - Planner agent model defaults to qwen3:8b.
 - Qdrant runs locally by default (Docker Compose).
 

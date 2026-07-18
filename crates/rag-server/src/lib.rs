@@ -22,19 +22,24 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use http::{header, HeaderMap, StatusCode};
+use http::{header, HeaderMap, HeaderValue, StatusCode};
 use rag_config::{RagPaths, ServerConfig};
 use rag_contracts::{ErrorResponse, HealthResponse};
 use rag_storage::{CodeChunk, RagDatabase, RepoInfo, RepoRegistry};
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::net::TcpListener;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Python parity (`server.MAX_QUERY_LENGTH`): longer queries are rejected
 /// with a FastAPI-style 422, not silently accepted.
 const MAX_QUERY_LENGTH: usize = 2_000;
 const DEFAULT_RATE_LIMIT_PER_MINUTE: u32 = 120;
 const MAX_EVENTS: usize = 1_000;
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
+#[derive(Clone)]
+struct RequestId(String);
 
 /// Mutable process state shared by middleware and route handlers.
 #[derive(Clone)]
@@ -47,6 +52,7 @@ pub struct ServerState {
     contract_fixtures: bool,
     rag_paths: Option<RagPaths>,
     retrieval: Option<Arc<RetrievalBackend>>,
+    in_flight: Arc<Semaphore>,
 }
 
 impl Default for ServerState {
@@ -68,6 +74,7 @@ impl ServerState {
             contract_fixtures: false,
             rag_paths: RagPaths::from_env().ok(),
             retrieval: None,
+            in_flight: Arc::new(Semaphore::new(32)),
         }
     }
 
@@ -82,6 +89,13 @@ impl ServerState {
     #[must_use]
     pub fn with_rate_limit(mut self, requests_per_minute: u32) -> Self {
         self.rate_limit = requests_per_minute.max(1);
+        self
+    }
+
+    /// Override the protected-request concurrency budget.
+    #[must_use]
+    pub fn with_max_in_flight(mut self, maximum: usize) -> Self {
+        self.in_flight = Arc::new(Semaphore::new(maximum.max(1)));
         self
     }
 
@@ -171,11 +185,15 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             authenticate_and_limit,
-        ));
+        ))
+        .route_layer(middleware::from_fn_with_state(state.clone(), shed_overload));
 
     Router::new()
         .route("/", get(dashboard))
         .route("/health", get(health))
+        .route("/live", get(liveness))
+        .route("/ready", get(readiness))
+        .route("/.well-known/rag-capabilities", get(capabilities))
         .route("/openapi.json", get(openapi))
         .merge(protected)
         .layer(middleware::from_fn(csrf_guard))
@@ -184,7 +202,49 @@ pub fn router_with_state(state: ServerState) -> Router {
             record_request,
         ))
         .layer(middleware::from_fn(trusted_host))
+        .layer(middleware::from_fn(request_id))
         .with_state(state)
+}
+
+async fn request_id(mut request: Request, next: Next) -> Response {
+    let presented = request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value.bytes().all(|byte| byte.is_ascii_graphic())
+        });
+    let id = presented
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    request.extensions_mut().insert(RequestId(id.clone()));
+    let mut response = next.run(request).await;
+    if let Ok(value) = HeaderValue::from_str(&id) {
+        response.headers_mut().insert(REQUEST_ID_HEADER, value);
+    }
+    response
+}
+
+fn try_acquire_request_slot(state: &ServerState) -> Option<OwnedSemaphorePermit> {
+    Arc::clone(&state.in_flight).try_acquire_owned().ok()
+}
+
+async fn shed_overload(State(state): State<ServerState>, request: Request, next: Next) -> Response {
+    let Some(_permit) = try_acquire_request_slot(&state) else {
+        let mut response = api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server is at its concurrent request limit",
+            "OVERLOADED",
+        );
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        return response;
+    };
+    next.run(request).await
 }
 
 /// Python parity (`csrf_guard_middleware`): a non-safe request that carries a
@@ -234,81 +294,52 @@ async fn csrf_guard(request: Request, next: Next) -> Response {
 
 /// Serve until the process receives a termination signal or the server fails.
 pub async fn serve(config: &ServerConfig) -> Result<(), ServerError> {
+    // Authentication and configuration are startup invariants. Resolve them
+    // before binding so an unreadable home/token can never create a live,
+    // unauthenticated daemon.
+    let paths = RagPaths::from_env()?;
+    let persisted_token = bootstrap_rag_home(&paths)?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    rag_config::load_env_files(&paths, &cwd)?;
+    let token = std::env::var("RAG_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(persisted_token);
+    let settings = rag_config::load_settings(&paths)?;
+    let mut state = ServerState::new(Some(token))
+        .with_max_in_flight(usize::from(settings.server.max_in_flight));
+    // Client construction validates URLs, TLS policy, credentials, limits and
+    // headers without probing the services. Invalid external-service config is
+    // fatal; a temporarily offline valid service is represented by readiness.
+    let backend =
+        Arc::new(RetrievalBackend::from_settings(&settings).map_err(ServerError::Startup)?);
     let listener = TcpListener::bind((config.host.as_str(), config.port)).await?;
-    let paths = RagPaths::from_env().ok();
-    if let Some(paths) = paths.as_ref() {
-        bootstrap_rag_home(paths);
-        // Python parity: dotenv (`~/.rag/.env`, project `.env`) at startup.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let _ = rag_config::load_env_files(paths, &cwd);
-    }
 
-    // Python parity: RAG_TOKEN env wins, then the persisted ~/.rag/token.
-    let token = std::env::var("RAG_TOKEN").ok().or_else(|| {
-        paths.as_ref().and_then(|paths| {
-            std::fs::read_to_string(&paths.token_path)
-                .ok()
-                .map(|raw| raw.trim().to_owned())
-                .filter(|token| !token.is_empty())
-        })
-    });
-
-    let mut state = ServerState::new(token);
-    let settings = paths
-        .as_ref()
-        .ok_or_else(|| "RAG home is unavailable".to_owned())
-        .and_then(|paths| rag_config::load_settings(paths).map_err(|error| error.to_string()));
-    match settings {
-        Ok(settings) => {
-            // `embedded` hosts Qdrant as a managed child process; `server`
-            // connects to whatever serves qdrant.url (e.g. `rag qdrant-up`).
-            if settings.qdrant.mode == "embedded" {
-                if let Some(paths) = paths.as_ref() {
-                    if let Err(error) =
-                        qdrant_boot::ensure_local_qdrant(paths, &settings.qdrant.url).await
-                    {
-                        eprintln!("embedded qdrant unavailable: {error}");
-                    }
-                }
-            }
-            match RetrievalBackend::from_settings(&settings) {
-                Ok(backend) => {
-                    eprintln!("dense retrieval backend configured (Ollama + Qdrant)");
-                    let backend = Arc::new(backend);
-                    // Warm the embedding model in the background so the first
-                    // real query isn't the one that pays the ~6s VRAM load.
-                    let warm = Arc::clone(&backend);
-                    tokio::spawn(async move { warm.warm_up().await });
-                    state = state.with_retrieval(backend);
-                }
-                Err(error) => {
-                    eprintln!(
-                        "dense retrieval backend unavailable, staying on SQLite paths: {error}"
-                    );
-                    let mut fields = serde_json::Map::new();
-                    fields.insert("error".to_owned(), json!(error));
-                    log_daemon_event(paths.as_ref(), "error", "backend_unavailable", fields);
-                }
-            }
-        }
-        Err(error) => {
-            eprintln!("settings unavailable, staying on SQLite paths: {error}");
-            let mut fields = serde_json::Map::new();
-            fields.insert("error".to_owned(), json!(error));
-            log_daemon_event(paths.as_ref(), "error", "settings_unavailable", fields);
-        }
+    // `embedded` hosts Qdrant as a managed child process; `server`
+    // connects to whatever serves qdrant.url (e.g. `rag qdrant-up`).
+    if settings.qdrant.mode == "embedded" {
+        qdrant_boot::ensure_local_qdrant(&paths, &settings.qdrant.url)
+            .await
+            .map_err(ServerError::Startup)?;
     }
+    eprintln!("dense retrieval backend configured (Ollama + Qdrant)");
+    // Warm the embedding model in the background so the first real query is
+    // not the one that pays the model-load latency.
+    let warm = Arc::clone(&backend);
+    tokio::spawn(async move { warm.warm_up().await });
+    state = state.with_retrieval(backend);
     let mut fields = serde_json::Map::new();
     fields.insert("host".to_owned(), json!(config.host));
     fields.insert("port".to_owned(), json!(config.port));
-    log_daemon_event(paths.as_ref(), "info", "daemon_started", fields);
+    log_daemon_event(Some(&paths), "info", "daemon_started", fields);
 
     let served = axum::serve(listener, router_with_state(state))
         .with_graceful_shutdown(shutdown_signal())
         .await;
-    qdrant_boot::stop_managed();
+    qdrant_boot::stop_managed().await;
     log_daemon_event(
-        paths.as_ref(),
+        Some(&paths),
         "info",
         "daemon_stopped",
         serde_json::Map::new(),
@@ -320,74 +351,40 @@ pub async fn serve(config: &ServerConfig) -> Result<(), ServerError> {
 /// Fresh-machine bootstrap (Python `ensure_rag_home` parity): create the RAG
 /// home, a `secrets.token_urlsafe(32)`-style bearer token, and a default
 /// `config.toml` so a bare binary is fully self-sufficient.
-fn bootstrap_rag_home(paths: &RagPaths) {
-    let _ = std::fs::create_dir_all(&paths.home);
-    if !paths.token_path.exists() {
-        let token = generate_token();
-        if std::fs::write(&paths.token_path, &token).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &paths.token_path,
-                    std::fs::Permissions::from_mode(0o600),
-                );
-            }
-            eprintln!("created auth token at {}", paths.token_path.display());
-        }
+fn bootstrap_rag_home(paths: &RagPaths) -> Result<String, rag_config::ConfigError> {
+    let token_existed = paths.token_path.exists();
+    let token = rag_config::get_or_create_token(paths)?;
+    if !token_existed {
+        eprintln!("created auth token at {}", paths.token_path.display());
     }
-    if !paths.config_path.exists()
-        && std::fs::write(&paths.config_path, rag_config::PYTHON_DEFAULT_TOML).is_ok()
-    {
+    if !paths.config_path.exists() {
+        std::fs::write(&paths.config_path, rag_config::PYTHON_DEFAULT_TOML).map_err(|source| {
+            rag_config::ConfigError::Io {
+                context: "write default config",
+                source,
+            }
+        })?;
         eprintln!("created default config at {}", paths.config_path.display());
     }
-}
-
-/// URL-safe base64 of 32 random bytes, matching Python `secrets.token_urlsafe(32)`.
-fn generate_token() -> String {
-    let mut bytes = Vec::with_capacity(32);
-    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity(43);
-    for chunk in bytes.chunks(3) {
-        let buffer = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let value =
-            (u32::from(buffer[0]) << 16) | (u32::from(buffer[1]) << 8) | u32::from(buffer[2]);
-        let chars = [
-            (value >> 18) & 0x3f,
-            (value >> 12) & 0x3f,
-            (value >> 6) & 0x3f,
-            value & 0x3f,
-        ];
-        let keep = match chunk.len() {
-            1 => 2,
-            2 => 3,
-            _ => 4,
-        };
-        for encoded in chars.iter().take(keep) {
-            out.push(ALPHABET[*encoded as usize] as char);
-        }
-    }
-    out
+    Ok(token)
 }
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            eprintln!("Ctrl+C signal handler failed; shutting down safely: {error}");
+        }
     };
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                eprintln!("SIGTERM handler failed; shutting down safely: {error}");
+            }
+        }
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
@@ -401,13 +398,56 @@ async fn health(State(state): State<ServerState>) -> Json<HealthResponse> {
     let Some(backend) = state.retrieval.as_ref() else {
         return Json(HealthResponse::r0());
     };
-    let components = backend.component_health().await;
+    let components =
+        match tokio::time::timeout(Duration::from_secs(2), backend.component_health()).await {
+            Ok(components) => components,
+            Err(_) => return Json(HealthResponse::r0()),
+        };
     let healthy = components.get("ollama").map(String::as_str) == Some("ok")
         && components.get("qdrant").map(String::as_str) == Some("ok");
     Json(HealthResponse {
         status: if healthy { "ok" } else { "degraded" }.to_owned(),
         components,
     })
+}
+
+async fn liveness() -> Json<Value> {
+    Json(json!({"status": "ok"}))
+}
+
+async fn readiness(State(state): State<ServerState>) -> Response {
+    if state.contract_fixtures {
+        return (StatusCode::OK, Json(json!({"status": "ready"}))).into_response();
+    }
+    let Some(backend) = state.retrieval.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "not_ready", "reason": "backend_not_initialized"})),
+        )
+            .into_response();
+    };
+    match tokio::time::timeout(Duration::from_secs(2), backend.component_health()).await {
+        Ok(components)
+            if components.get("ollama").map(String::as_str) == Some("ok")
+                && components.get("qdrant").map(String::as_str) == Some("ok") =>
+        {
+            (
+                StatusCode::OK,
+                Json(json!({"status": "ready", "components": components})),
+            )
+                .into_response()
+        }
+        Ok(components) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "not_ready", "components": components})),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "not_ready", "reason": "probe_timeout"})),
+        )
+            .into_response(),
+    }
 }
 
 async fn status(State(state): State<ServerState>) -> Json<Value> {
@@ -455,6 +495,31 @@ async fn openapi() -> Json<Value> {
         serde_json::from_str(include_str!("../../../tests/contracts/openapi.json"))
             .expect("checked-in OpenAPI fixture is valid JSON"),
     )
+}
+
+async fn capabilities() -> Json<Value> {
+    Json(json!({
+        "schema_version": "1.0",
+        "service": "ragsystem",
+        "version": env!("CARGO_PKG_VERSION"),
+        "authentication": {"type": "http", "scheme": "bearer", "public_discovery": true},
+        "capabilities": {
+            "context_pack": {
+                "endpoint": "/context-pack",
+                "method": "POST",
+                "budgets": ["max_slices", "max_source_tokens", "max_source_bytes"],
+                "provenance": true,
+                "content_digests": "sha256",
+                "deterministic_order": true
+            },
+            "openapi": {"endpoint": "/openapi.json", "version": "3.1.0"},
+            "health": {
+                "liveness": "/live",
+                "readiness": "/ready",
+                "compatibility": "/health"
+            }
+        }
+    }))
 }
 
 async fn dashboard(State(state): State<ServerState>) -> Response {
@@ -518,6 +583,15 @@ async fn generic_post(State(state): State<ServerState>, request: Request) -> Res
                 "/smart-search" => Some(backend.smart_search_route(&paths, &body).await),
                 "/ask" => Some(backend.ask_route(&paths, &body).await),
                 "/index" => Some(indexing::index_route(&backend, &paths, &body).await),
+                "/index/start" => Some(indexing::index_route(&backend, &paths, &body).await.map(
+                    |result| {
+                        json!({
+                            "job_id": format!("completed-{}", uuid::Uuid::new_v4()),
+                            "status": "completed",
+                            "result": result,
+                        })
+                    },
+                )),
                 "/vocab/build" => Some(indexing::vocab_build_route(&backend, &paths, &body).await),
                 "/diff" => Some(backend.diff_route(&paths, &body).await),
                 "/admin/export" => Some(backend.admin_export_route(&paths, &body).await),
@@ -541,6 +615,13 @@ async fn generic_post(State(state): State<ServerState>, request: Request) -> Res
                     ),
                 };
             }
+        }
+        if path == "/index/start" {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Dense indexing requires the Ollama and Qdrant backend to be initialized",
+                "BACKEND_NOT_READY",
+            );
         }
         let live_path = path.clone();
         let live_body = body.clone();
@@ -849,29 +930,207 @@ fn live_context_pack(paths: &RagPaths, body: &Value) -> Result<Value, String> {
         .and_then(Value::as_u64)
         .unwrap_or(8)
         .clamp(1, 50) as usize;
-    let mut slices =
-        rag_retrieval::ast_index::retrieve_context(&repo.path, query, max_slices, true);
-    for slice in &mut slices {
-        if let Some(object) = slice.as_object_mut() {
-            object.insert("repo".to_owned(), json!(repo.name));
-            let tokens = object
-                .get("code")
-                .and_then(Value::as_str)
-                .map(rag_retrieval::estimate_tokens)
-                .unwrap_or(0);
-            object.insert("token_estimate".to_owned(), json!(tokens));
+    let max_source_tokens = body
+        .get("max_source_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(6_000)
+        .clamp(100, 100_000) as usize;
+    let max_source_bytes = body
+        .get("max_source_bytes")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or_else(|| max_source_tokens.saturating_mul(4))
+        .clamp(64, 4 * 1024 * 1024);
+    let use_ast_index = body
+        .get("use_ast_index")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let include_semantic = body
+        .get("include_semantic")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let candidate_limit = max_slices.saturating_mul(4).min(200);
+    let mut candidates = if use_ast_index {
+        rag_retrieval::ast_index::retrieve_context(&repo.path, query, candidate_limit, true)
+    } else {
+        Vec::new()
+    };
+
+    // The SQLite FTS mirror is a deterministic, locally available fallback
+    // when ast-index is absent, and supplements AST candidates when present.
+    let filters = body.get("filters").and_then(Value::as_object);
+    let lexical_hits = RagDatabase::open(paths)
+        .and_then(|database| {
+            database.search_code_chunks(query, Some(&repo.collection), candidate_limit, filters)
+        })
+        .map_err(|error| error.to_string())?;
+    for hit in lexical_hits {
+        let mut candidate = chunk_json(&repo.name, &hit.chunk, hit.score);
+        if let Some(object) = candidate.as_object_mut() {
+            object.insert("start_line".to_owned(), json!(hit.chunk.start_line));
+            object.insert("end_line".to_owned(), json!(hit.chunk.end_line));
+            object.insert("why_included".to_owned(), json!("sqlite_fts"));
         }
+        candidates.push(candidate);
     }
-    let total_source_tokens: usize = slices
-        .iter()
-        .filter_map(|slice| slice.get("token_estimate").and_then(Value::as_u64))
-        .map(|value| value as usize)
-        .sum();
-    Ok(
-        json!({"query": query, "repo": repo.name, "total": slices.len(), "slices": slices,
+
+    let mut seen = std::collections::BTreeSet::new();
+    candidates.retain(|candidate| {
+        let key = format!(
+            "{}:{}:{}:{}",
+            candidate["file_path"].as_str().unwrap_or_default(),
+            candidate["start_line"].as_u64().unwrap_or_default(),
+            candidate["end_line"].as_u64().unwrap_or_default(),
+            candidate["name"].as_str().unwrap_or_default()
+        );
+        seen.insert(key)
+    });
+
+    let candidate_count = candidates.len();
+    let mut slices = Vec::new();
+    let mut total_source_tokens = 0usize;
+    let mut total_source_bytes = 0usize;
+    let mut truncated = false;
+    let mut included_sources = std::collections::BTreeSet::new();
+    for mut candidate in candidates {
+        if slices.len() >= max_slices
+            || total_source_tokens >= max_source_tokens
+            || total_source_bytes >= max_source_bytes
+        {
+            truncated = true;
+            break;
+        }
+        let Some(object) = candidate.as_object_mut() else {
+            continue;
+        };
+        let code = object
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if code.is_empty() {
+            continue;
+        }
+        let remaining_tokens = max_source_tokens.saturating_sub(total_source_tokens);
+        let remaining_bytes = max_source_bytes.saturating_sub(total_source_bytes);
+        let (packed_code, token_estimate, was_truncated) =
+            trim_context_source(code, remaining_tokens, remaining_bytes);
+        if packed_code.is_empty() {
+            truncated = true;
+            break;
+        }
+        truncated |= was_truncated;
+        let source_bytes = packed_code.len();
+        let start_line = object
+            .get("start_line")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                object
+                    .get("lines")
+                    .and_then(Value::as_str)
+                    .and_then(|lines| lines.split('-').next())
+                    .and_then(|line| line.parse().ok())
+            })
+            .unwrap_or(1);
+        let line_count = packed_code.lines().count().max(1) as u64;
+        let end_line = start_line.saturating_add(line_count.saturating_sub(1));
+        let file_path = object
+            .get("file_path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let source = object
+            .get("why_included")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("ast_index"))
+            .map_or("sqlite_fts", |_| "ast_index");
+        included_sources.insert(source);
+        let citation = format!("{file_path}:{start_line}-{end_line} ({name})");
+        use sha2::Digest as _;
+        let digest = format!("{:x}", sha2::Sha256::digest(packed_code.as_bytes()));
+        object.insert("repo".to_owned(), json!(repo.name));
+        object.insert("code".to_owned(), json!(packed_code));
+        object.insert(
+            "lines".to_owned(),
+            json!(format!("{start_line}-{end_line}")),
+        );
+        object.insert("start_line".to_owned(), json!(start_line));
+        object.insert("end_line".to_owned(), json!(end_line));
+        object.insert("citation".to_owned(), json!(citation));
+        object.insert("token_estimate".to_owned(), json!(token_estimate));
+        object.insert("source_bytes".to_owned(), json!(source_bytes));
+        object.insert("content_sha256".to_owned(), json!(digest));
+        object.insert("truncated".to_owned(), json!(was_truncated));
+        object.insert(
+            "provenance".to_owned(),
+            json!({
+                "source": source,
+                "repository": repo.name,
+                "collection": repo.collection,
+                "citation": citation,
+                "indexed_at": repo.last_indexed,
+            }),
+        );
+        total_source_tokens += token_estimate;
+        total_source_bytes += source_bytes;
+        slices.push(candidate);
+    }
+    truncated |= slices.len() < candidate_count;
+    Ok(json!({
+        "query": query,
+        "repo": repo.name,
+        "total": slices.len(),
+        "slices": slices,
         "total_source_tokens": total_source_tokens,
-        "latency_ms": started.elapsed().as_secs_f64() * 1000.0}),
-    )
+        "total_source_bytes": total_source_bytes,
+        "truncated": truncated,
+        "budget": {
+            "max_slices": max_slices,
+            "max_source_tokens": max_source_tokens,
+            "max_source_bytes": max_source_bytes,
+        },
+        "retrieval": {
+            "ast_index_requested": use_ast_index,
+            "semantic_requested": include_semantic,
+            "semantic_included": false,
+            "sources_included": included_sources,
+        },
+        "freshness": {"indexed_at": repo.last_indexed},
+        "latency_ms": started.elapsed().as_secs_f64() * 1000.0,
+    }))
+}
+
+fn trim_context_source(
+    code: &str,
+    token_budget: usize,
+    byte_budget: usize,
+) -> (String, usize, bool) {
+    let (token_trimmed, _) = rag_retrieval::trim_to_token_budget(code, token_budget);
+    let mut output = token_trimmed;
+    if output.len() > byte_budget {
+        let boundary = output
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= byte_budget)
+            .last()
+            .unwrap_or_default();
+        output.truncate(boundary);
+        if let Some(last_newline) = output.rfind('\n') {
+            output.truncate(last_newline);
+        }
+        output = output.trim_end().to_owned();
+    }
+    let was_truncated = output.len() < code.len();
+    let tokens = if output.is_empty() {
+        0
+    } else {
+        rag_retrieval::estimate_tokens(&output)
+    };
+    (output, tokens, was_truncated)
 }
 
 fn live_relation(paths: &RagPaths, body: &Value, path: &str) -> Result<Value, String> {
@@ -1498,7 +1757,8 @@ fn live_index(paths: &RagPaths, body: &Value) -> Result<Value, String> {
         return Err("repository path is not a directory".to_owned());
     }
     std::fs::create_dir_all(&paths.home).map_err(|error| error.to_string())?;
-    let settings = rag_config::load_settings(paths).unwrap_or_default();
+    let settings = rag_config::load_settings(paths)
+        .map_err(|error| format!("configuration error: {error}"))?;
     let skip_dirs: Vec<_> = settings
         .index
         .skip_dirs
@@ -1536,12 +1796,47 @@ fn live_index(paths: &RagPaths, body: &Value) -> Result<Value, String> {
         .map(str::to_owned)
         .unwrap_or_else(|| format!("repo_{}", sanitize_name(&repo_name)));
     let full = body.get("full").and_then(Value::as_bool).unwrap_or(false);
+    if full {
+        let mut preflight_errors = Vec::new();
+        for file in &files {
+            let relative = file
+                .strip_prefix(&repo_path)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let language = rag_index::chunker::detect_language(&relative).unwrap_or("unknown");
+            if languages
+                .as_ref()
+                .is_some_and(|allowed| !allowed.contains(language))
+            {
+                continue;
+            }
+            if let Err(error) = rag_index::file_hash_bounded(file, settings.index.max_file_bytes) {
+                preflight_errors.push(format!("{relative}: {error}"));
+            }
+        }
+        if !preflight_errors.is_empty() {
+            return Err(format!(
+                "full lexical index aborted during file preflight: {}",
+                preflight_errors.join("; ")
+            ));
+        }
+    }
     let mut index = rag_index::LexicalIndex::open(paths.home.join("rag.db"))
         .map_err(|error| error.to_string())?;
     if full {
-        index
-            .delete_code_chunks_by_collection(&collection)
-            .map_err(|error| error.to_string())?;
+        match languages.as_ref() {
+            Some(languages) if !languages.is_empty() => {
+                for language in languages {
+                    index
+                        .delete_code_chunks_by_language(&collection, language)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            _ => index
+                .delete_code_chunks_by_collection(&collection)
+                .map_err(|error| error.to_string())?,
+        }
     }
     let mut files_processed = 0_usize;
     let mut files_skipped = 0_usize;
@@ -1561,8 +1856,8 @@ fn live_index(paths: &RagPaths, body: &Value) -> Result<Value, String> {
             files_skipped += 1;
             continue;
         }
-        let source = match std::fs::read_to_string(&file) {
-            Ok(source) => source,
+        let source = match rag_index::read_file_bounded(&file, settings.index.max_file_bytes) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(error) => {
                 errors.push(format!("{relative}: {error}"));
                 continue;
@@ -1590,23 +1885,32 @@ fn live_index(paths: &RagPaths, body: &Value) -> Result<Value, String> {
             })
             .collect();
         chunks_indexed += index
-            .upsert_code_chunks(&documents)
+            .replace_code_chunks_for_file(&collection, &relative, &documents)
             .map_err(|error| error.to_string())?;
         files_processed += 1;
     }
     let registry = RepoRegistry::open_writable(paths).map_err(|error| error.to_string())?;
+    let previous_indexed_at = registry
+        .get(&repo_name)
+        .map_err(|error| error.to_string())?
+        .and_then(|repo| repo.last_indexed);
     registry
         .upsert(&RepoInfo {
             name: repo_name,
             path: repo_path.to_string_lossy().to_string(),
             collection,
-            last_indexed: Some(unix_timestamp().to_string()),
+            last_indexed: if errors.is_empty() {
+                Some(unix_timestamp().to_string())
+            } else {
+                previous_indexed_at
+            },
             chunks_count: chunks_indexed as i64,
         })
         .map_err(|error| error.to_string())?;
     Ok(
         json!({"files_processed": files_processed, "chunks_indexed": chunks_indexed,
-        "files_skipped": files_skipped, "files_deleted": 0, "errors": errors}),
+        "files_skipped": files_skipped, "files_deleted": 0, "errors": errors,
+        "index_mode": "lexical_only", "dense_indexed": false}),
     )
 }
 
@@ -1636,16 +1940,10 @@ fn live_index_docs(paths: &RagPaths, body: &Value) -> Result<Value, String> {
         .unwrap_or("doc_chunks")
         .to_owned();
     let full = body.get("full").and_then(Value::as_bool).unwrap_or(false);
-    let mut index = rag_index::LexicalIndex::open(paths.home.join("rag.db"))
-        .map_err(|error| error.to_string())?;
-    if full {
-        index
-            .delete_code_chunks_by_collection(&collection)
-            .map_err(|error| error.to_string())?;
-    }
+    let settings = rag_config::load_settings(paths)
+        .map_err(|error| format!("configuration error: {error}"))?;
     let files = discover_docs(&docs_path)?;
-    let mut files_processed = 0_usize;
-    let mut chunks_indexed = 0_usize;
+    let mut sources = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
     for file in files {
         let relative = file
@@ -1653,14 +1951,37 @@ fn live_index_docs(paths: &RagPaths, body: &Value) -> Result<Value, String> {
             .unwrap_or(&file)
             .to_string_lossy()
             .replace('\\', "/");
-        let source = match std::fs::read_to_string(&file) {
-            Ok(source) => source,
+        let source = match rag_index::read_file_bounded(&file, settings.index.max_file_bytes) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(error) => {
                 errors.push(format!("{relative}: {error}"));
                 continue;
             }
         };
-        let chunks = rag_index::chunk_code(&source, &relative, Some("markdown"), 8_000);
+        sources.push((relative, source));
+    }
+    if full && !errors.is_empty() {
+        return Err(format!(
+            "full docs index aborted during file preflight: {}",
+            errors.join("; ")
+        ));
+    }
+    let mut index = rag_index::LexicalIndex::open(paths.home.join("rag.db"))
+        .map_err(|error| error.to_string())?;
+    if full {
+        index
+            .delete_code_chunks_by_collection(&collection)
+            .map_err(|error| error.to_string())?;
+    }
+    let mut files_processed = 0_usize;
+    let mut chunks_indexed = 0_usize;
+    for (relative, source) in sources {
+        let chunks = rag_index::chunk_code(
+            &source,
+            &relative,
+            Some("markdown"),
+            settings.index.max_chunk_chars as usize,
+        );
         let documents: Vec<_> = chunks
             .into_iter()
             .map(|chunk| rag_index::CodeDocument {
@@ -1677,7 +1998,7 @@ fn live_index_docs(paths: &RagPaths, body: &Value) -> Result<Value, String> {
             })
             .collect();
         chunks_indexed += index
-            .upsert_code_chunks(&documents)
+            .replace_code_chunks_for_file(&collection, &relative, &documents)
             .map_err(|error| error.to_string())?;
         files_processed += 1;
     }
@@ -1691,7 +2012,11 @@ fn discover_docs(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, Stri
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(path) = pending.pop() {
-        if path.is_file() {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_file() {
             let supported = path
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -1706,12 +2031,21 @@ fn discover_docs(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, Stri
             }
             continue;
         }
+        if !metadata.is_dir() {
+            continue;
+        }
         for entry in std::fs::read_dir(&path).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
             if entry.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
-            pending.push(entry.path());
+            if !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_symlink()
+            {
+                pending.push(entry.path());
+            }
         }
     }
     files.sort();
@@ -1955,6 +2289,30 @@ fn validation_422(field: &str, msg: &str, error_type: &str) -> Response {
 /// Python request-model parity: pydantic bounds that FastAPI enforces with a
 /// 422 before any handler runs. Rust previously clamped these silently.
 fn validate_request_contract(path: &str, body: &Value) -> Option<Response> {
+    if matches!(
+        path,
+        "/admin/import" | "/admin/reload" | "/admin/repair" | "/index/backfill-code-index"
+    ) {
+        let detail = match path {
+            "/admin/import" => {
+                "Import is disabled because the current export format omits vectors and is not a restorable backup"
+            }
+            "/admin/reload" => {
+                "Live configuration reload is not implemented; restart the supervised daemon to apply validated settings"
+            }
+            "/admin/repair" => {
+                "Automatic repair is not implemented safely; run verify and use an explicit reindex or snapshot restore"
+            }
+            _ => {
+                "Qdrant-to-SQLite backfill is not implemented by the Rust server; run a full verified reindex"
+            }
+        };
+        return Some(api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            detail,
+            "NOT_IMPLEMENTED",
+        ));
+    }
     for field in ["query", "question", "symbol"] {
         if let Some(text) = body.get(field).and_then(Value::as_str) {
             if text.chars().count() > MAX_QUERY_LENGTH {
@@ -2002,20 +2360,101 @@ fn validate_request_contract(path: &str, body: &Value) -> Option<Response> {
         }
     }
     if path == "/smart-search" {
+        if body.get("repos").is_some_and(|value| !value.is_null()) {
+            return Some(validation_422(
+                "repos",
+                "multi-repository smart search is not implemented by the Rust server; send one repo per request",
+                "value_error.unsupported",
+            ));
+        }
         let has_repo = body
             .get("repo")
             .and_then(Value::as_str)
             .is_some_and(|value| !value.trim().is_empty());
-        let has_repos = body
-            .get("repos")
-            .and_then(Value::as_array)
-            .is_some_and(|values| !values.is_empty());
-        if !has_repo && !has_repos {
+        if !has_repo {
+            return Some(validation_422("repo", "Provide repo", "value_error"));
+        }
+    }
+    if path == "/context-pack" {
+        for field in ["repo", "query"] {
+            if body
+                .get(field)
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Some(validation_422(
+                    field,
+                    "field required",
+                    "value_error.missing",
+                ));
+            }
+        }
+        for field in ["use_ast_index", "include_semantic"] {
+            if body.get(field).is_some_and(|value| !value.is_boolean()) {
+                return Some(validation_422(
+                    field,
+                    "value is not a valid boolean",
+                    "type_error.bool",
+                ));
+            }
+        }
+        if body
+            .get("filters")
+            .is_some_and(|value| !value.is_null() && !value.is_object())
+        {
             return Some(validation_422(
-                "repo",
-                "Provide repo or repos",
-                "value_error",
+                "filters",
+                "value is not a valid object",
+                "type_error.dict",
             ));
+        }
+        if let Some(strategy) = body.get("strategy") {
+            match strategy.as_str() {
+                Some("lod_drill") => {}
+                Some(_) => {
+                    return Some(validation_422(
+                        "strategy",
+                        "only the deterministic lod_drill strategy is implemented",
+                        "value_error.unsupported",
+                    ))
+                }
+                None => {
+                    return Some(validation_422(
+                        "strategy",
+                        "value is not a valid string",
+                        "type_error.string",
+                    ))
+                }
+            }
+        }
+        for (field, minimum, maximum) in [
+            ("max_slices", 1, 50),
+            ("max_source_tokens", 100, 100_000),
+            ("max_source_bytes", 64, 4 * 1024 * 1024),
+        ] {
+            if let Some(raw) = body.get(field) {
+                let Some(value) = raw.as_u64() else {
+                    return Some(validation_422(
+                        field,
+                        "value is not a valid integer",
+                        "type_error.integer",
+                    ));
+                };
+                if value < minimum {
+                    return Some(validation_422(
+                        field,
+                        &format!("ensure this value is greater than or equal to {minimum}"),
+                        "value_error.number.not_ge",
+                    ));
+                }
+                if value > maximum {
+                    return Some(validation_422(
+                        field,
+                        &format!("ensure this value is less than or equal to {maximum}"),
+                        "value_error.number.not_le",
+                    ));
+                }
+            }
         }
     }
     None
@@ -2077,6 +2516,11 @@ async fn record_request(
     request: Request,
     next: Next,
 ) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .map(|value| value.0.clone())
+        .unwrap_or_default();
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let started = Instant::now();
@@ -2089,6 +2533,7 @@ async fn record_request(
         "path": path,
         "status": status,
         "latency_ms": latency_ms,
+        "request_id": request_id,
         "ts": unix_timestamp(),
     }));
     // Python parity: requests also land in the durable structured log so the
@@ -2101,6 +2546,7 @@ async fn record_request(
         "latency_ms".to_owned(),
         json!((latency_ms * 10.0).round() / 10.0),
     );
+    fields.insert("request_id".to_owned(), json!(request_id));
     let level = if status >= 500 { "error" } else { "info" };
     log_daemon_event(state.rag_paths.as_ref(), level, "http_request", fields);
     response
@@ -2223,6 +2669,12 @@ pub enum ServerError {
     /// Socket bind or HTTP serving failure.
     #[error("Rust daemon server error: {0}")]
     Io(#[from] std::io::Error),
+    /// RAG home, token, dotenv, or settings initialization failed.
+    #[error("Rust daemon configuration error: {0}")]
+    Config(#[from] rag_config::ConfigError),
+    /// A requested managed dependency could not be started safely.
+    #[error("Rust daemon startup error: {0}")]
+    Startup(String),
 }
 
 #[cfg(test)]
@@ -2230,10 +2682,13 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use http::{header, Request, StatusCode};
     use rag_contracts::{ErrorResponse, HealthResponse};
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use tower::ServiceExt;
 
-    use super::{parse_bearer, router, router_with_state, ServerState};
+    use super::{
+        bootstrap_rag_home, live_context_pack, parse_bearer, router, router_with_state,
+        try_acquire_request_slot, ServerState, REQUEST_ID_HEADER,
+    };
 
     fn request(method: &str, uri: &str) -> http::request::Builder {
         Request::builder()
@@ -2254,6 +2709,17 @@ mod tests {
         assert_eq!(parse_bearer("Bearer"), None);
     }
 
+    #[test]
+    fn bootstrap_fails_when_the_rag_home_cannot_be_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("not-a-directory");
+        std::fs::write(&home, "occupied").unwrap();
+
+        let error = bootstrap_rag_home(&rag_config::RagPaths::from_home(home))
+            .expect_err("startup must fail closed");
+        assert!(error.to_string().contains("create RAG home"));
+    }
+
     #[tokio::test]
     async fn health_is_public_and_matches_contract() {
         let response = router()
@@ -2264,6 +2730,224 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let health: HealthResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(health, HealthResponse::r0());
+    }
+
+    #[tokio::test]
+    async fn capability_discovery_is_public_and_machine_readable() {
+        let response = router()
+            .oneshot(
+                request("GET", "/.well-known/rag-capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["capabilities"]["context_pack"]["provenance"], true);
+        assert_eq!(
+            body["capabilities"]["context_pack"]["content_digests"],
+            "sha256"
+        );
+    }
+
+    #[tokio::test]
+    async fn liveness_is_cheap_and_readiness_fails_without_backends() {
+        let live = router_with_state(ServerState::new(None))
+            .oneshot(request("GET", "/live").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(live.status(), StatusCode::OK);
+
+        let ready = router_with_state(ServerState::new(None))
+            .oneshot(request("GET", "/ready").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn request_ids_are_echoed_or_generated_on_every_response() {
+        let echoed = router()
+            .oneshot(
+                request("GET", "/health")
+                    .header(REQUEST_ID_HEADER, "agent-turn-42")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(echoed.headers()[REQUEST_ID_HEADER], "agent-turn-42");
+
+        let generated = router()
+            .oneshot(request("GET", "/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let id = generated.headers()[REQUEST_ID_HEADER].to_str().unwrap();
+        assert!(uuid::Uuid::parse_str(id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn smart_search_rejects_unsupported_multi_repo_instead_of_ignoring_it() {
+        let response = router()
+            .oneshot(
+                request("POST", "/smart-search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"question": "where is auth?", "repos": ["one", "two"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["detail"][0]["loc"][1], "repos");
+    }
+
+    #[tokio::test]
+    async fn import_is_rejected_instead_of_reporting_a_fake_success() {
+        let response = router()
+            .oneshot(
+                request("POST", "/admin/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"records": []}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let error: ErrorResponse =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(error.code, "NOT_IMPLEMENTED");
+    }
+
+    #[tokio::test]
+    async fn unimplemented_mutations_fail_explicitly_instead_of_claiming_success() {
+        for path in [
+            "/admin/reload",
+            "/admin/repair",
+            "/index/backfill-code-index",
+        ] {
+            let response = router()
+                .oneshot(
+                    request("POST", path)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{path}");
+        }
+    }
+
+    #[test]
+    fn protected_request_concurrency_is_bounded() {
+        let state = ServerState::new(None).with_max_in_flight(1);
+        let first = try_acquire_request_slot(&state).expect("first permit");
+        assert!(try_acquire_request_slot(&state).is_none());
+        drop(first);
+        assert!(try_acquire_request_slot(&state).is_some());
+    }
+
+    #[test]
+    fn context_pack_enforces_byte_budget_with_provenance_deterministically() {
+        use rag_index::{CodeDocument, LexicalIndex};
+        use rag_storage::{RepoInfo, RepoRegistry};
+
+        let temp = tempfile::tempdir().unwrap();
+        let paths = rag_config::RagPaths::from_home(temp.path().join("rag-home"));
+        std::fs::create_dir_all(&paths.home).unwrap();
+        let repo_path = temp.path().join("repo");
+        std::fs::create_dir(&repo_path).unwrap();
+        RepoRegistry::open_writable(&paths)
+            .unwrap()
+            .upsert(&RepoInfo {
+                name: "sample".to_owned(),
+                path: repo_path.to_string_lossy().into_owned(),
+                collection: "repo_sample".to_owned(),
+                last_indexed: Some("2026-07-18T10:00:00Z".to_owned()),
+                chunks_count: 2,
+            })
+            .unwrap();
+        let mut index = LexicalIndex::open(paths.home.join("rag.db")).unwrap();
+        index
+            .upsert_code_chunks(&[
+                CodeDocument {
+                    chunk_id: "auth-a".to_owned(),
+                    collection: "repo_sample".to_owned(),
+                    file_path: "src/auth.rs".to_owned(),
+                    name: "authenticate".to_owned(),
+                    parent_name: String::new(),
+                    chunk_type: "function".to_owned(),
+                    language: "rust".to_owned(),
+                    start_line: 10,
+                    end_line: 20,
+                    code: format!("fn authenticate() {{ {} }}", "verify_token(); ".repeat(40)),
+                },
+                CodeDocument {
+                    chunk_id: "auth-b".to_owned(),
+                    collection: "repo_sample".to_owned(),
+                    file_path: "src/session.rs".to_owned(),
+                    name: "session_authentication".to_owned(),
+                    parent_name: String::new(),
+                    chunk_type: "function".to_owned(),
+                    language: "rust".to_owned(),
+                    start_line: 1,
+                    end_line: 4,
+                    code: "fn session_authentication() { authenticate(); }".repeat(8),
+                },
+            ])
+            .unwrap();
+
+        let request = json!({
+            "repo": "sample",
+            "query": "authentication",
+            "max_slices": 2,
+            "max_source_tokens": 100,
+            "max_source_bytes": 128,
+            "use_ast_index": false,
+        });
+        let first = live_context_pack(&paths, &request).unwrap();
+        let second = live_context_pack(&paths, &request).unwrap();
+
+        assert!(first["total_source_bytes"].as_u64().unwrap() <= 128);
+        assert!(first["total_source_tokens"].as_u64().unwrap() <= 100);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["slices"], second["slices"]);
+        assert_eq!(first["slices"][0]["provenance"]["source"], "sqlite_fts");
+        assert_eq!(
+            first["slices"][0]["content_sha256"].as_str().unwrap().len(),
+            64
+        );
+    }
+
+    #[tokio::test]
+    async fn context_pack_rejects_non_integer_budgets() {
+        let response = router()
+            .oneshot(
+                request("POST", "/context-pack")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "repo": "sample",
+                            "query": "auth",
+                            "max_source_bytes": "unbounded"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
@@ -2320,6 +3004,35 @@ mod tests {
         } else {
             assert_eq!(value["code"], "BACKEND_NOT_READY");
         }
+    }
+
+    #[tokio::test]
+    async fn code_indexing_without_dense_backend_is_explicitly_lexical_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::write(repo.join("lib.rs"), "fn indexed() {}\n").unwrap();
+        let app =
+            router_with_state(ServerState::new(None).with_rag_home(temp.path().join("rag-home")));
+
+        let response = app
+            .oneshot(
+                request("POST", "/index")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"repo_path": repo.to_string_lossy()}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["index_mode"], "lexical_only");
+        assert_eq!(body["dense_indexed"], false);
     }
 
     #[tokio::test]

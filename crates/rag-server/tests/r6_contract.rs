@@ -3,6 +3,31 @@ use http::{header, Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
+fn materialize_python_fixture() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("temporary Python fixture home");
+    let home = temp.path();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/rust-compat/r1/python-rag-home");
+    std::fs::copy(source.join("config.toml"), home.join("config.toml"))
+        .expect("copy fixture config");
+    std::fs::copy(source.join("token"), home.join("token")).expect("copy fixture token");
+    for (name, sql) in [
+        (
+            "repos.db",
+            include_str!("../../../tests/rust-compat/r1/repos.sql"),
+        ),
+        (
+            "rag.db",
+            include_str!("../../../tests/rust-compat/r1/rag.sql"),
+        ),
+    ] {
+        rusqlite::Connection::open(home.join(name))
+            .and_then(|connection| connection.execute_batch(sql))
+            .unwrap_or_else(|error| panic!("materialize {name}: {error}"));
+    }
+    temp
+}
+
 #[tokio::test]
 async fn every_captured_python_route_exists_in_rust() {
     let contract: Value =
@@ -62,10 +87,10 @@ async fn dashboard_is_embedded_in_the_binary() {
 
 #[tokio::test]
 async fn live_search_reads_a_copied_python_created_database() {
-    let rag_home = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/rust-compat/r1/python-rag-home");
-    let app =
-        rag_server::router_with_state(rag_server::ServerState::new(None).with_rag_home(rag_home));
+    let fixture = materialize_python_fixture();
+    let app = rag_server::router_with_state(
+        rag_server::ServerState::new(None).with_rag_home(fixture.path()),
+    );
     let response = app
         .oneshot(
             Request::builder()
@@ -115,9 +140,13 @@ async fn rust_index_then_named_repo_search_needs_no_python() {
                 )))
                 .unwrap(),
         )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     assert_eq!(index.status(), StatusCode::OK);
+    let index_value: Value =
+        serde_json::from_slice(&to_bytes(index.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(index_value["index_mode"], "lexical_only");
+    assert_eq!(index_value["dense_indexed"], false);
 
     let search = app
         .clone()

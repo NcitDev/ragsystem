@@ -1,7 +1,7 @@
 //! Configuration, path, token, and auth compatibility for the Rust daemon.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read as _, Write as _};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
@@ -133,6 +133,8 @@ pub struct PythonServerSettings {
     pub host: String,
     /// Bind port.
     pub port: u16,
+    /// Maximum protected requests executing concurrently.
+    pub max_in_flight: u16,
 }
 
 impl Default for PythonServerSettings {
@@ -140,6 +142,7 @@ impl Default for PythonServerSettings {
         Self {
             host: "127.0.0.1".to_owned(),
             port: 7890,
+            max_in_flight: 32,
         }
     }
 }
@@ -163,7 +166,7 @@ pub struct EmbeddingSettings {
 impl Default for EmbeddingSettings {
     fn default() -> Self {
         Self {
-            model: "Qwen/Qwen3-Embedding-4B".to_owned(),
+            model: "qwen3-embedding:4b".to_owned(),
             provider: "ollama".to_owned(),
             dim: 2560,
             batch_size: 64,
@@ -202,6 +205,9 @@ pub struct QdrantSettings {
     pub mode: String,
     /// Server URL.
     pub url: String,
+    /// Environment variable containing the Qdrant API key. The secret itself
+    /// is deliberately never stored in the TOML configuration.
+    pub api_key_env: String,
     /// Embedded path.
     pub path: String,
     /// Default code collection.
@@ -215,6 +221,7 @@ impl Default for QdrantSettings {
         Self {
             mode: "server".to_owned(),
             url: "http://127.0.0.1:6333".to_owned(),
+            api_key_env: "QDRANT_API_KEY".to_owned(),
             path: "~/.rag/qdrant_data".to_owned(),
             code_collection: "code_chunks".to_owned(),
             docs_collection: "doc_chunks".to_owned(),
@@ -237,6 +244,8 @@ impl QdrantSettings {
 pub struct IndexSettings {
     /// Max chunk size in chars.
     pub max_chunk_chars: u32,
+    /// Maximum bytes read from any single source file.
+    pub max_file_bytes: u64,
     /// Default retrieval top-k.
     pub retrieval_top_k: u16,
     /// Directory names skipped during discovery.
@@ -247,6 +256,7 @@ impl Default for IndexSettings {
     fn default() -> Self {
         Self {
             max_chunk_chars: 8000,
+            max_file_bytes: 4 * 1024 * 1024,
             retrieval_top_k: 20,
             skip_dirs: [
                 ".git",
@@ -370,6 +380,7 @@ impl Settings {
             )));
         }
         self.server.host = host.to_owned();
+        ensure_range("server.max_in_flight", self.server.max_in_flight, 1, 1024)?;
 
         if !matches!(
             self.embeddings.provider.as_str(),
@@ -388,6 +399,12 @@ impl Settings {
             500,
             100_000,
         )?;
+        ensure_range(
+            "index.max_file_bytes",
+            self.index.max_file_bytes,
+            1024,
+            1024 * 1024 * 1024,
+        )?;
         ensure_range("index.retrieval_top_k", self.index.retrieval_top_k, 1, 500)?;
         ensure_range("lsp.timeout", self.lsp.timeout, 1000, 60_000)?;
         if !matches!(self.qdrant.mode.as_str(), "server" | "embedded") {
@@ -396,6 +413,14 @@ impl Settings {
             ));
         }
         self.qdrant.url = trim_url(&self.qdrant.url, "qdrant.url")?;
+        self.qdrant.api_key_env = self.qdrant.api_key_env.trim().to_owned();
+        if !self.qdrant.api_key_env.is_empty()
+            && !is_environment_variable_name(&self.qdrant.api_key_env)
+        {
+            return Err(ConfigError::InvalidSettings(
+                "qdrant.api_key_env must be empty or a valid environment variable name".to_owned(),
+            ));
+        }
         self.llm.ollama_url = trim_url(&self.llm.ollama_url, "ollama_url")?;
         if !matches!(
             self.retrieval_agent.provider.as_str(),
@@ -407,6 +432,12 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+fn is_environment_variable_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 /// Load packaged defaults merged with an explicit user home config.
@@ -451,27 +482,83 @@ pub fn load_env_files(paths: &RagPaths, cwd: &Path) -> Result<Vec<PathBuf>, Conf
     Ok(loaded)
 }
 
-/// Return an existing token or create one with best-effort `0600` mode.
+/// Return an existing token or create one and enforce private permissions.
 pub fn get_or_create_token(paths: &RagPaths) -> Result<String, ConfigError> {
     fs::create_dir_all(&paths.home).map_err(|source| ConfigError::Io {
         context: "create RAG home",
         source,
     })?;
     if paths.token_path.exists() {
-        if let Ok(existing) = fs::read_to_string(&paths.token_path) {
-            let trimmed = existing.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_owned());
-            }
-        }
+        return read_existing_token(&paths.token_path);
     }
     let token = generate_token_urlsafe_32()?;
-    fs::write(&paths.token_path, &token).map_err(|source| ConfigError::Io {
-        context: "write token",
+    let mut options = fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = match options.open(&paths.token_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            // Another concurrently starting daemon won creation. Always use
+            // the token that actually landed on disk.
+            return read_existing_token(&paths.token_path);
+        }
+        Err(source) => {
+            return Err(ConfigError::Io {
+                context: "create token",
+                source,
+            })
+        }
+    };
+    file.write_all(token.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|source| ConfigError::Io {
+            context: "write token",
+            source,
+        })?;
+    drop(file);
+    set_private_mode(&paths.token_path)?;
+    Ok(token)
+}
+
+fn read_existing_token(path: &Path) -> Result<String, ConfigError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| ConfigError::Io {
+        context: "inspect token",
         source,
     })?;
-    set_private_mode(&paths.token_path);
-    Ok(token)
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(ConfigError::InvalidSettings(
+            "token path must be a regular file, not a symlink or device".to_owned(),
+        ));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path).map_err(|source| ConfigError::Io {
+        context: "read token",
+        source,
+    })?;
+    let mut existing = String::new();
+    file.read_to_string(&mut existing)
+        .map_err(|source| ConfigError::Io {
+            context: "read token",
+            source,
+        })?;
+    let trimmed = existing.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::InvalidSettings(
+            "token file is empty; refusing to rotate credentials implicitly".to_owned(),
+        ));
+    }
+    set_private_mode(path)?;
+    Ok(trimmed.to_owned())
 }
 
 /// Verify an Authorization header against the daemon token.
@@ -549,6 +636,12 @@ fn load_dotenv_no_override(path: &Path) -> Result<(), ConfigError> {
     for line in text.lines() {
         if let Some((key, value)) = parse_env_line(line) {
             if std::env::var_os(&key).is_none() {
+                if key.contains(['\0', '=']) || value.contains('\0') {
+                    return Err(ConfigError::InvalidSettings(format!(
+                        "dotenv {} contains an invalid environment entry",
+                        path.display()
+                    )));
+                }
                 std::env::set_var(key, value);
             }
         }
@@ -593,42 +686,40 @@ fn generate_token_urlsafe_32() -> Result<String, ConfigError> {
 
 #[cfg(unix)]
 fn fill_random(bytes: &mut [u8]) -> Result<(), ConfigError> {
-    use std::io::Read as _;
-
-    let mut file = fs::File::open("/dev/urandom").map_err(|source| ConfigError::Io {
-        context: "open random source",
-        source,
-    })?;
-    file.read_exact(bytes).map_err(|source| ConfigError::Io {
+    getrandom::fill(bytes).map_err(|error| ConfigError::Io {
         context: "read random source",
-        source,
+        source: io::Error::other(error.to_string()),
     })
 }
 
 #[cfg(not(unix))]
 fn fill_random(bytes: &mut [u8]) -> Result<(), ConfigError> {
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        *byte = ((nanos >> ((index % 8) * 8)) & 0xff) as u8;
-    }
-    Ok(())
+    getrandom::fill(bytes).map_err(|error| ConfigError::Io {
+        context: "read random source",
+        source: io::Error::other(error.to_string()),
+    })
 }
 
 #[cfg(unix)]
-fn set_private_mode(path: &Path) {
+fn set_private_mode(path: &Path) -> Result<(), ConfigError> {
     use std::os::unix::fs::PermissionsExt as _;
 
-    if let Ok(metadata) = fs::metadata(path) {
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o600);
-        let _ = fs::set_permissions(path, permissions);
-    }
+    let metadata = fs::metadata(path).map_err(|source| ConfigError::Io {
+        context: "read token permissions",
+        source,
+    })?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(path, permissions).map_err(|source| ConfigError::Io {
+        context: "set token permissions",
+        source,
+    })
 }
 
 #[cfg(not(unix))]
-fn set_private_mode(_path: &Path) {}
+fn set_private_mode(_path: &Path) -> Result<(), ConfigError> {
+    Ok(())
+}
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {

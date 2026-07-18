@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use rag_index::{
     chunker::{language_config, ChunkType},
-    diff_index_state, discover_files, file_hash,
+    diff_index_state, discover_files, file_hash, file_hash_bounded,
     graph::GraphRelation,
     lexical::CodeDocument,
     AstGraph, GraphNode, IndexState, LexicalIndex, VocabRecord,
@@ -56,6 +56,33 @@ fn discovery_hash_and_diff_are_deterministic() {
     let diff = diff_index_state(&previous, &current);
     assert_eq!(diff.changed, vec!["src/lib.py"]);
     assert_eq!(diff.deleted, vec!["src/deleted.py"]);
+}
+
+#[test]
+fn bounded_hash_refuses_oversized_source_files() {
+    let repo = tempdir().expect("temp repo");
+    let path = repo.path().join("large.rs");
+    std::fs::write(&path, b"123456").expect("large fixture");
+
+    let error = file_hash_bounded(&path, 5).expect_err("limit must be enforced");
+    assert!(error.to_string().contains("5-byte limit"));
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_never_follows_source_symlinks_outside_the_repository() {
+    use std::os::unix::fs::symlink;
+
+    let repo = tempdir().expect("temp repo");
+    let outside = tempdir().expect("outside dir");
+    let secret = outside.path().join("secret.rs");
+    std::fs::write(&secret, "const API_KEY: &str = \"secret\";").expect("secret fixture");
+    symlink(&secret, repo.path().join("linked.rs")).expect("source symlink");
+    std::fs::write(repo.path().join("safe.rs"), "fn safe() {}").expect("safe source");
+
+    let files = discover_files(repo.path(), Some(&[".rs"]), &[]).expect("discover");
+    assert_eq!(files, vec![repo.path().join("safe.rs")]);
+    assert!(rag_index::read_file_bounded(repo.path().join("linked.rs"), 1024).is_err());
 }
 
 #[test]
@@ -156,6 +183,36 @@ fn lexical_sqlite_mirror_supports_upsert_search_and_delete() {
     assert_eq!(hits[0].chunk_id, "chunk-a");
     assert_eq!(hits[0].lines, "8-9");
     assert!(hits[0].citation.contains("src/sample.py:8-9"));
+
+    let replacement = vec![CodeDocument {
+        chunk_id: "chunk-b".to_owned(),
+        collection: "code_chunks".to_owned(),
+        file_path: "src/sample.py".to_owned(),
+        name: "render_message".to_owned(),
+        parent_name: String::new(),
+        chunk_type: "function".to_owned(),
+        language: "python".to_owned(),
+        start_line: 20,
+        end_line: 22,
+        code: "def render_message(name):\n    return name".to_owned(),
+    }];
+    assert_eq!(
+        index
+            .replace_code_chunks_for_file("code_chunks", "src/sample.py", &replacement)
+            .expect("replace"),
+        1
+    );
+    assert!(index
+        .search_code_chunks("build_message", Some("code_chunks"), 5)
+        .expect("old chunk removed")
+        .is_empty());
+    assert_eq!(
+        index
+            .search_code_chunks("render_message", Some("code_chunks"), 5)
+            .expect("replacement searchable")[0]
+            .chunk_id,
+        "chunk-b"
+    );
 
     index
         .delete_code_chunks_by_file("code_chunks", "src/sample.py")

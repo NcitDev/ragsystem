@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::Read as _,
     path::{Path, PathBuf},
 };
 
@@ -18,6 +19,10 @@ pub enum DiscoveryError {
         #[source]
         source: std::io::Error,
     },
+    #[error("file at {path} is larger than the configured {max_bytes}-byte limit")]
+    FileTooLarge { path: PathBuf, max_bytes: u64 },
+    #[error("source path is not a regular file: {path}")]
+    NotRegularFile { path: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -40,7 +45,81 @@ pub fn file_hash(path: impl AsRef<Path>) -> Result<String, DiscoveryError> {
         path: path.to_path_buf(),
         source,
     })?;
-    Ok(short_sha256(&bytes))
+    Ok(source_hash(&bytes))
+}
+
+/// Read at most `max_bytes` from a regular source file.
+///
+/// The extra byte makes the limit enforceable even when a file grows between
+/// discovery and processing, without ever buffering the whole oversized file.
+pub fn read_file_bounded(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<u8>, DiscoveryError> {
+    let path = path.as_ref();
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // Refuse a final-component symlink even if it replaces a discovered file
+    // between the walk and this open. Parent-directory races require stronger
+    // platform-specific openat semantics and remain a documented limitation.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(not(unix))]
+    {
+        let metadata = std::fs::symlink_metadata(path).map_err(|source| DiscoveryError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(DiscoveryError::NotRegularFile {
+                path: path.to_path_buf(),
+            });
+        }
+    }
+    let file = options.open(path).map_err(|source| DiscoveryError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !file
+        .metadata()
+        .map_err(|source| DiscoveryError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .is_file()
+    {
+        return Err(DiscoveryError::NotRegularFile {
+            path: path.to_path_buf(),
+        });
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| DiscoveryError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(DiscoveryError::FileTooLarge {
+            path: path.to_path_buf(),
+            max_bytes,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Hash a source file while enforcing the same byte budget as processing.
+pub fn file_hash_bounded(path: impl AsRef<Path>, max_bytes: u64) -> Result<String, DiscoveryError> {
+    read_file_bounded(path, max_bytes).map(|bytes| source_hash(&bytes))
+}
+
+/// Stable short SHA-256 used by persisted source-file index state.
+#[must_use]
+pub fn source_hash(bytes: &[u8]) -> String {
+    short_sha256(bytes)
 }
 
 pub fn state_dir_for(rag_home: impl AsRef<Path>, repo_path: impl AsRef<Path>) -> PathBuf {
@@ -87,7 +166,10 @@ pub fn discover_files(
             }
         };
         let path = entry.path();
-        if entry.file_type().is_some_and(|ty| ty.is_dir()) {
+        // `os.walk` never treats a symlink-to-file as a regular file. Keeping
+        // that property is also a security boundary: a repository symlink
+        // must not make the indexer read secrets outside the repository root.
+        if !entry.file_type().is_some_and(|ty| ty.is_file()) {
             continue;
         }
         if path

@@ -30,11 +30,29 @@ fn copy_dir(src: &Path, dst: &Path) {
     }
 }
 
+fn materialize_databases(rag_home: &Path) {
+    for (name, sql) in [
+        (
+            "repos.db",
+            include_str!("../../../tests/rust-compat/r1/repos.sql"),
+        ),
+        (
+            "rag.db",
+            include_str!("../../../tests/rust-compat/r1/rag.sql"),
+        ),
+    ] {
+        rusqlite::Connection::open(rag_home.join(name))
+            .and_then(|connection| connection.execute_batch(sql))
+            .unwrap_or_else(|error| panic!("materialize {name}: {error}"));
+    }
+}
+
 #[test]
 fn reads_python_repo_registry_read_only() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rag_home = temp.path().join("rag-home");
     copy_dir(&fixture_home(), &rag_home);
+    materialize_databases(&rag_home);
     let registry = RepoRegistry::open(&RagPaths::from_home(&rag_home)).expect("open registry");
 
     let repos = registry.list_repos().expect("list repos");
@@ -69,6 +87,7 @@ fn reads_python_rag_db_schema_and_rows() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rag_home = temp.path().join("rag-home");
     copy_dir(&fixture_home(), &rag_home);
+    materialize_databases(&rag_home);
     let db = RagDatabase::open(&RagPaths::from_home(&rag_home)).expect("open db");
 
     let tables = db.table_names().expect("tables");

@@ -12,7 +12,31 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> anyhow::Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        reqwest::Url::parse(&base_url).context("invalid daemon base URL")?;
+        let parsed = reqwest::Url::parse(&base_url).context("invalid daemon base URL")?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            bail!("daemon base URL must use HTTP or HTTPS");
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            bail!("daemon base URL must not contain credentials");
+        }
+        if parsed.query().is_some() || parsed.fragment().is_some() {
+            bail!("daemon base URL must not contain a query or fragment");
+        }
+        if parsed.scheme() == "http" {
+            let is_loopback = parsed.host_str().is_some_and(|host| {
+                let host = host
+                    .strip_prefix('[')
+                    .and_then(|value| value.strip_suffix(']'))
+                    .unwrap_or(host);
+                host.eq_ignore_ascii_case("localhost")
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|address| address.is_loopback())
+            });
+            if !is_loopback {
+                bail!("refusing plaintext HTTP daemon URL outside loopback; use HTTPS");
+            }
+        }
         Ok(Self {
             base_url,
             token,
@@ -69,12 +93,20 @@ impl ApiClient {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await.context("daemon request failed")?;
+        let mut response = request.send().await.context("daemon request failed")?;
         let status = response.status();
-        let bytes = response
-            .bytes()
+        const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .context("failed to read daemon response")?;
+            .context("failed to read daemon response")?
+        {
+            if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                bail!("daemon response exceeded {MAX_RESPONSE_BYTES} bytes");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         if status == StatusCode::NO_CONTENT {
             return Ok(Value::Null);
         }
@@ -102,11 +134,22 @@ fn normalized_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_path;
+    use super::{normalized_path, ApiClient};
 
     #[test]
     fn paths_are_normalized_once() {
         assert_eq!(normalized_path("status"), "/status");
         assert_eq!(normalized_path("/status"), "/status");
+    }
+
+    #[test]
+    fn plaintext_daemon_urls_are_limited_to_loopback() {
+        assert!(ApiClient::new("http://127.0.0.1:7890", None).is_ok());
+        assert!(ApiClient::new("http://[::1]:7890", None).is_ok());
+        assert!(ApiClient::new("https://rag.example.com", None).is_ok());
+        assert!(ApiClient::new("http://rag.example.com", Some("secret".to_owned())).is_err());
+        assert!(ApiClient::new("ftp://127.0.0.1:7890", None).is_err());
+        assert!(ApiClient::new("https://user:pass@rag.example.com", None).is_err());
+        assert!(ApiClient::new("https://rag.example.com?token=secret", None).is_err());
     }
 }

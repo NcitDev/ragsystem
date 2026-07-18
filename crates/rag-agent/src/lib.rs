@@ -1285,7 +1285,10 @@ fn terminate_process_tree(pid: u32) {
         sys::signal::{kill, killpg, Signal},
         unistd::Pid,
     };
-    let pid = Pid::from_raw(pid as i32);
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    let pid = Pid::from_raw(pid);
     let _ = killpg(pid, Signal::SIGKILL);
     let _ = kill(pid, Signal::SIGKILL);
 }

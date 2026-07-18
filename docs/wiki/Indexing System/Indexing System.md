@@ -802,7 +802,7 @@ Key settings impacting indexing performance and behavior:
 - `skip_dirs`: Directories to exclude from indexing (multiple defaults)
 
 **Embedding Settings:**
-- `model`: Ollama model for embeddings (default Qwen/Qwen3-Embedding-4B)
+- `model`: exact Ollama model tag for embeddings (default `qwen3-embedding:4b`)
 - `dim`: Embedding dimension (default 2560)
 - `batch_size`: Embedding batch size (default 64)
 - `keep_alive`: Model persistence duration (default 30m)

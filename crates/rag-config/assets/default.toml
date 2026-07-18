@@ -1,9 +1,12 @@
 [server]
 host = "127.0.0.1"
 port = 7890
+# Reject excess protected work immediately with 503 instead of allowing
+# unbounded request/task growth during indexing or model saturation.
+max_in_flight = 32
 
 [embeddings]
-model = "Qwen/Qwen3-Embedding-4B"
+model = "qwen3-embedding:4b"
 # `provider` is deprecated and ignored at runtime — Ollama is the only
 # supported embedder after FastEmbed was removed. Field retained for
 # user-config back-compat.
@@ -27,9 +30,13 @@ top_k = 5
 #              pinned qdrant binary to ~/.rag/bin/qdrant on first use, runs it
 #              as a child process on the `url` port with server-format storage
 #              at ~/.rag/qdrant_server, and stops it with the daemon. If the
-#              port already answers, the running instance is reused.
+#              port already answers without this process owning it, startup is
+#              refused; use "server" mode to reuse operator-managed Qdrant.
 mode = "server"
 url = "http://127.0.0.1:6333"
+# Optional authentication is loaded from this environment variable. Never put
+# the key itself in config.toml. Remote Qdrant URLs must use HTTPS.
+api_key_env = "QDRANT_API_KEY"
 # Legacy Python local-mode store location (pre-2026-07 embedded format).
 # The Rust daemon never reads it; kept for rollback tooling only.
 path = "~/.rag/qdrant_data"
@@ -38,10 +45,14 @@ docs_collection = "doc_chunks"
 
 [index]
 max_chunk_chars = 8000
+# Hard per-file read limit. Oversized files are reported and their last known
+# indexed version is retained rather than reading unbounded input into memory.
+max_file_bytes = 4194304
 retrieval_top_k = 20
 skip_dirs = [".git", "node_modules", ".venv", "venv", "__pycache__", "build", "dist", ".tox", ".mypy_cache", ".ruff_cache"]
 
 [llm]
+# Remote Ollama endpoints must use HTTPS; plaintext HTTP is loopback-only.
 ollama_url = "http://localhost:11434"
 agent_model = "qwen3:8b"
 # Generation model for /ask (RAG answer synthesis). Falls back to agent_model.

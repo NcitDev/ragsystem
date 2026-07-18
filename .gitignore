@@ -28,6 +28,10 @@ tmp_serena/
 
 # Claude
 .claude/plans/
+.claude/scheduled_tasks.lock
+
+# Local service bootstrap marker
+.qdrant-initialized
 
 # Benchmark / vocab experiment artifacts (results live in docs/ or bench/)
 /vocab_*.jsonl

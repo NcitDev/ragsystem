@@ -24,7 +24,7 @@ Use this guide to set up, initialize, and optimize the RAG codebase on the new P
    * Make sure **Ollama** is running with GPU acceleration enabled.
    * Pull the target embedding model:
      ```bash
-     ollama pull qwen3-embedding:latest
+     ollama pull qwen3-embedding:4b
      ```
    * Start the Qdrant vector database (either via docker or local binary). If using the default configuration, ensure it is listening on `http://127.0.0.1:6333`.
 
@@ -35,7 +35,7 @@ Use this guide to set up, initialize, and optimize the RAG codebase on the new P
 Update the configuration to take advantage of the GPU:
 ```toml
 [embeddings]
-model = "Qwen/Qwen3-Embedding-4B" # Ollama model name
+model = "qwen3-embedding:4b" # exact Ollama tag; 2560 dimensions
 provider = "ollama"
 dim = 2560
 batch_size = 128                  # Increase batch size for GPU parallelization
@@ -97,4 +97,3 @@ In `~/.rag/config.toml` (or `config/default.toml`), ensure the LSP section is en
 enabled = true          # Set to false to disable LSP indexing completely
 timeout = 5000          # LSP request timeout in milliseconds
 ```
-
