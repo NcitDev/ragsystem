@@ -62,6 +62,10 @@ def _saved_summary(data: dict, mode: str, target: str | None = None) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repeats", type=int, default=2)
+    ap.add_argument(
+        "--slow-repeats", type=int, default=1,
+        help="Repetitions for rag_llm/ask; defaults to one for historical parity.",
+    )
     ap.add_argument("--modes", type=str, default=",".join(MODES))
     ap.add_argument("--rust-url", default=RUST)
     ap.add_argument("--repo", default=REPO)
@@ -93,6 +97,8 @@ def main() -> None:
         raise SystemExit("No recognized benchmark modes selected")
     if args.repeats < 1:
         raise SystemExit("--repeats must be at least 1")
+    if args.slow_repeats < 1:
+        raise SystemExit("--slow-repeats must be at least 1")
 
     baseline = json.loads(args.python_baseline.read_text())
     previous = json.loads(args.previous_rust.read_text())
@@ -137,7 +143,7 @@ def main() -> None:
             "embedding_model": args.embedding_model or None,
             "scenario_count": len(SCENARIOS),
             "repeats": args.repeats,
-            "slow_mode_repeats": 1,
+            "slow_mode_repeats": args.slow_repeats,
             "modes": modes,
             "python_baseline_sha256": _sha256(args.python_baseline),
             "previous_rust_results_sha256": _sha256(args.previous_rust),
@@ -158,7 +164,7 @@ def main() -> None:
     }
     res_start = _proc_metrics(pid) if pid else {}
     for mode in modes:
-        repeats = 1 if mode in SLOW_MODES else args.repeats
+        repeats = args.slow_repeats if mode in SLOW_MODES else args.repeats
         cov_sum = prec_sum = 0.0
         lats: list[float] = []
         errors = 0
@@ -171,22 +177,45 @@ def main() -> None:
             ]
             ok = [r for r in runs if not r[2]]
             sample = ok[-1] if ok else runs[-1]
-            hits = _golden_hits(sample[0], sc.golden_files)
-            cov_sum += len(hits) / len(sc.golden_files) * 100
-            prec_sum += len(hits) / max(1, len(sample[0])) * 100
-            files_sum += len(sample[0])
+            outcomes = []
+            for run in ok:
+                run_hits = _golden_hits(run[0], sc.golden_files)
+                outcomes.append({
+                    "files": len(run[0]),
+                    "golden_hits": len(run_hits),
+                    "coverage_pct": len(run_hits) / len(sc.golden_files) * 100,
+                    "precision_pct": len(run_hits) / max(1, len(run[0])) * 100,
+                    "latency_ms": run[1],
+                    **run[3],
+                })
+            scenario_coverage = statistics.mean(
+                outcome["coverage_pct"] for outcome in outcomes
+            ) if outcomes else 0.0
+            scenario_precision = statistics.mean(
+                outcome["precision_pct"] for outcome in outcomes
+            ) if outcomes else 0.0
+            scenario_files = statistics.mean(
+                outcome["files"] for outcome in outcomes
+            ) if outcomes else 0.0
+            scenario_hits = statistics.mean(
+                outcome["golden_hits"] for outcome in outcomes
+            ) if outcomes else 0.0
+            cov_sum += scenario_coverage
+            prec_sum += scenario_precision
+            files_sum += scenario_files
             lats += [r[1] for r in ok]
             run_errors = [r[2] for r in runs if r[2]]
             errors += len(run_errors)
             scenarios.append({
                 "id": sc.id,
                 "symbol": SYMBOLS[sc.id],
-                "files": len(sample[0]),
-                "golden_hits": len(hits),
-                "coverage_pct": round(len(hits) / len(sc.golden_files) * 100, 1),
-                "precision_pct": round(len(hits) / max(1, len(sample[0])) * 100, 1),
+                "files": round(scenario_files, 1),
+                "golden_hits": round(scenario_hits, 1),
+                "coverage_pct": round(scenario_coverage, 1),
+                "precision_pct": round(scenario_precision, 1),
                 "latencies_ms": [round(r[1], 1) for r in ok],
                 "errors": run_errors,
+                "runs": outcomes,
                 **sample[3],
             })
         rs = {

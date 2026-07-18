@@ -223,12 +223,14 @@ assert byte/token ceilings and digests. Failed incremental paths now retry
 rather than silently claiming success, which can do more work but preserves
 retrieval correctness.
 
-The historical benchmark reports were reviewed but not rewritten. A concurrent
-benchmark in the original checkout was explicitly protected, so this audit did
-not run a competing live Qdrant/Ollama matrix or mutate its collections. Local
-services were probed as available; production-path behavior was exercised with
-focused mock-service and temporary-database tests. The inherited benchmark
-claims therefore remain historical, not new measurements from this audit.
+The initial acceptance run protected a concurrent benchmark in the original
+checkout and therefore used mocks. A subsequent user-requested benchmark ran
+the audited release with an isolated home and port against the same read-only
+46,121-point Signal-Android index and shared services. The full comparison,
+raw artifact hashes, controlled previous-binary A/B, and limitations are in
+[`docs/benchmark_rust_production_audit/summary.md`](benchmark_rust_production_audit/summary.md).
+Retrieval quality matched the saved Rust results. A 30-answer `/ask` run also
+matched saved coverage/precision, with 9.16 s mean and 18.33 s p95 latency.
 
 Final gate timings and a focused release-mode context-pack correctness check
 are recorded in the verification section. Timings on this host are not
@@ -356,13 +358,11 @@ cargo tree --locked --workspace --all-features --duplicates
 cargo audit
 ```
 
-Local read-only probes found Qdrant 1.18.2 and Ollama, but the installed Ollama
-model was only `qwen3-embedding:latest`, not the corrected 2560-dimensional
-default. The protected benchmark in the original checkout was still running,
-so this audit did not pull a model, mutate Qdrant, or execute a competing live
-end-to-end benchmark. Consequently, real Qdrant/Ollama indexing, readiness,
-shutdown, and retrieval quality were **not verified against live services** in
-this worktree. Their protocol and failure paths were exercised with bounded
-mock servers instead. No before/after latency or quality claim is made because
-the inherited baseline test was cold and failed, while the final run was warm;
-those measurements are not comparable.
+At initial acceptance, local read-only probes found Qdrant 1.18.2 and Ollama,
+but only the older `qwen3-embedding:latest`/4096 model was installed. Live
+indexing was not attempted and remains unverified. The later isolated benchmark
+used that existing model/index deliberately for comparison, exercised live
+Qdrant/Ollama retrieval, readiness, and graceful daemon shutdown, and left the
+collection count unchanged at 46,121. It did not pull a model or write/reset a
+collection. Its saved Python/previous-Rust comparison is separate from the
+non-comparable cold/warm Cargo gate timings above.

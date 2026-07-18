@@ -1,0 +1,1109 @@
+{
+  "schema_version": 2,
+  "captured": "2026-07-18T14:07:36.803304+00:00",
+  "provenance": {
+    "git_head": "e2b730ad15150a1196d82d106f6d1625aa893412",
+    "git_dirty": false,
+    "rust_url": "http://127.0.0.1:17890",
+    "server_pid": 264595,
+    "repo": "signal",
+    "corpus_revision": "d6871f8dc2d12a5b74ac0501bcf73ccec38064fd",
+    "index_points": 46121,
+    "qdrant_version": "1.18.2",
+    "embedding_model": "qwen3-embedding:latest",
+    "scenario_count": 10,
+    "repeats": 2,
+    "slow_mode_repeats": 1,
+    "modes": [
+      "vanilla",
+      "rag_llm",
+      "smart",
+      "ast",
+      "graph",
+      "ask"
+    ],
+    "python_baseline_sha256": "f70e0e6f59bbd287588ad8e75699125643b3eff7e1603f775a151c2f9f2ab3bc",
+    "previous_rust_results_sha256": "7aa4f2fc7ad967f8eb9a256d6462b77610639a23d2e6a126d4a8e25392b52c8d",
+    "rust_binary": "/home/nikita/orca/workspaces/ragsystem/rust-production-audit/target/release/rag-rs",
+    "rust_binary_sha256": "8cf60a3e237fa3781946b51de442dd546fa24cbe28c0c15180063ca160440d1d",
+    "rust_binary_bytes": 32012944,
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+    "logical_cpus": 12
+  },
+  "startup_ms": {
+    "live": 11.0,
+    "ready": 19.0,
+    "health": 27.0
+  },
+  "comparisons": {
+    "vanilla": {
+      "python": {
+        "coverage": 50.8,
+        "precision": 16.1,
+        "files": 10.3,
+        "latency_mean": 235.5,
+        "latency_p50": 184.9,
+        "latency_p95": 354.0,
+        "errors": 0,
+        "cpu_seconds": 0.65,
+        "rss_mb_after": 119.4
+      },
+      "previous_rust": {
+        "coverage": 50.8,
+        "precision": 16.1,
+        "files": 10.3,
+        "latency_mean": 122.7,
+        "latency_p50": 134.7,
+        "latency_p95": 334.7,
+        "errors": 0,
+        "cpu_seconds": 0.25,
+        "rss_mb_after": 24.0
+      },
+      "new_rust": {
+        "coverage": 50.8,
+        "precision": 16.1,
+        "files": 10.3,
+        "latency_mean": 114.6,
+        "latency_p50": 137.6,
+        "latency_p95": 312.2,
+        "errors": 0
+      }
+    },
+    "rag_llm": {
+      "python": {
+        "coverage": 13.3,
+        "precision": 4.0,
+        "files": 4.5,
+        "latency_mean": 16612.3,
+        "latency_p50": 16497.8,
+        "latency_p95": 19293.2,
+        "errors": 0,
+        "cpu_seconds": 3.35,
+        "rss_mb_after": 148.5
+      },
+      "previous_rust": {
+        "coverage": 33.3,
+        "precision": 8.5,
+        "files": 8.7,
+        "latency_mean": 16081.5,
+        "latency_p50": 15829.7,
+        "latency_p95": 17912.3,
+        "errors": 0,
+        "cpu_seconds": 0.45,
+        "rss_mb_after": 24.1
+      },
+      "new_rust": {
+        "coverage": 33.3,
+        "precision": 8.5,
+        "files": 8.7,
+        "latency_mean": 17509.1,
+        "latency_p50": 16075.5,
+        "latency_p95": 25078.8,
+        "errors": 0
+      }
+    },
+    "smart": {
+      "python": {
+        "coverage": 62.5,
+        "precision": 9.2,
+        "files": 21.7,
+        "latency_mean": 563.8,
+        "latency_p50": 581.0,
+        "latency_p95": 677.9,
+        "errors": 0,
+        "cpu_seconds": 1.22,
+        "rss_mb_after": 148.9
+      },
+      "previous_rust": {
+        "coverage": 67.5,
+        "precision": 9.7,
+        "files": 21.5,
+        "latency_mean": 211.1,
+        "latency_p50": 241.0,
+        "latency_p95": 330.9,
+        "errors": 0,
+        "cpu_seconds": 0.26,
+        "rss_mb_after": 24.6
+      },
+      "new_rust": {
+        "coverage": 67.5,
+        "precision": 9.7,
+        "files": 21.5,
+        "latency_mean": 479.9,
+        "latency_p50": 495.2,
+        "latency_p95": 755.9,
+        "errors": 0
+      }
+    },
+    "ast": {
+      "python": {
+        "coverage": 53.3,
+        "precision": 23.3,
+        "files": 17.6,
+        "latency_mean": 73.3,
+        "latency_p50": 69.5,
+        "latency_p95": 126.7,
+        "errors": 0,
+        "cpu_seconds": 0.24,
+        "rss_mb_after": 148.9
+      },
+      "previous_rust": {
+        "coverage": 54.2,
+        "precision": 23.2,
+        "files": 9.6,
+        "latency_mean": 26.1,
+        "latency_p50": 17.8,
+        "latency_p95": 83.1,
+        "errors": 0,
+        "cpu_seconds": 0.08,
+        "rss_mb_after": 24.6
+      },
+      "new_rust": {
+        "coverage": 54.2,
+        "precision": 23.2,
+        "files": 9.6,
+        "latency_mean": 83.6,
+        "latency_p50": 76.2,
+        "latency_p95": 134.8,
+        "errors": 0
+      }
+    },
+    "graph": {
+      "python": {
+        "coverage": 50.8,
+        "precision": 18.3,
+        "files": 31.8,
+        "latency_mean": 244.4,
+        "latency_p50": 234.3,
+        "latency_p95": 345.2,
+        "errors": 0,
+        "cpu_seconds": 1.65,
+        "rss_mb_after": 153.9
+      },
+      "previous_rust": {
+        "coverage": 56.7,
+        "precision": 19.1,
+        "files": 34.4,
+        "latency_mean": 158.8,
+        "latency_p50": 163.0,
+        "latency_p95": 210.6,
+        "errors": 0,
+        "cpu_seconds": 1.1,
+        "rss_mb_after": 30.5
+      },
+      "new_rust": {
+        "coverage": 56.7,
+        "precision": 19.1,
+        "files": 34.2,
+        "latency_mean": 259.0,
+        "latency_p50": 250.7,
+        "latency_p95": 380.2,
+        "errors": 0
+      }
+    },
+    "ask": {
+      "python": {
+        "coverage": 55.8,
+        "precision": 26.9,
+        "files": 5.9,
+        "latency_mean": 14241.2,
+        "latency_p50": 14534.4,
+        "latency_p95": 16211.8,
+        "errors": 0,
+        "cpu_seconds": 0.41,
+        "rss_mb_after": 153.9
+      },
+      "previous_rust": {
+        "coverage": 55.8,
+        "precision": 26.9,
+        "files": 5.9,
+        "latency_mean": 7012.6,
+        "latency_p50": 4240.0,
+        "latency_p95": 17145.7,
+        "errors": 0,
+        "cpu_seconds": 0.01,
+        "rss_mb_after": 30.6
+      },
+      "new_rust": {
+        "coverage": 49.2,
+        "precision": 22.9,
+        "files": 5.4,
+        "latency_mean": 6549.3,
+        "latency_p50": 6911.3,
+        "latency_p95": 11832.9,
+        "errors": 0
+      }
+    }
+  },
+  "modes": {
+    "vanilla": {
+      "summary": {
+        "coverage": 50.8,
+        "precision": 16.1,
+        "files": 10.3,
+        "latency_mean": 114.6,
+        "latency_p50": 137.6,
+        "latency_p95": 312.2,
+        "errors": 0
+      },
+      "scenarios": [
+        {
+          "id": 1,
+          "symbol": "StickerPackInstallEvent",
+          "files": 9,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 22.2,
+          "latencies_ms": [
+            154.3,
+            13.2
+          ],
+          "errors": []
+        },
+        {
+          "id": 2,
+          "symbol": "SignalDatabaseMigration",
+          "files": 13,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 15.4,
+          "latencies_ms": [
+            305.2,
+            23.5
+          ],
+          "errors": []
+        },
+        {
+          "id": 3,
+          "symbol": "StickerManagementRepository",
+          "files": 9,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 11.1,
+          "latencies_ms": [
+            140.0,
+            14.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 4,
+          "symbol": "FullBackupExporter",
+          "files": 4,
+          "golden_hits": 1,
+          "coverage_pct": 50.0,
+          "precision_pct": 25.0,
+          "latencies_ms": [
+            149.1,
+            19.2
+          ],
+          "errors": []
+        },
+        {
+          "id": 5,
+          "symbol": "DeprecatedJobMigration",
+          "files": 14,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 14.3,
+          "latencies_ms": [
+            137.6,
+            11.5
+          ],
+          "errors": []
+        },
+        {
+          "id": 6,
+          "symbol": "Job",
+          "files": 13,
+          "golden_hits": 1,
+          "coverage_pct": 25.0,
+          "precision_pct": 7.7,
+          "latencies_ms": [
+            146.5,
+            17.3
+          ],
+          "errors": []
+        },
+        {
+          "id": 7,
+          "symbol": "SignalDatabaseMigration",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            317.9,
+            19.4
+          ],
+          "errors": []
+        },
+        {
+          "id": 8,
+          "symbol": "Recipient",
+          "files": 14,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 7.1,
+          "latencies_ms": [
+            164.3,
+            19.7
+          ],
+          "errors": []
+        },
+        {
+          "id": 9,
+          "symbol": "BackupPassphrase",
+          "files": 10,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 10.0,
+          "latencies_ms": [
+            279.9,
+            17.9
+          ],
+          "errors": []
+        },
+        {
+          "id": 10,
+          "symbol": "FcmReceiveService",
+          "files": 12,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 8.3,
+          "latencies_ms": [
+            312.2,
+            29.3
+          ],
+          "errors": []
+        }
+      ]
+    },
+    "rag_llm": {
+      "summary": {
+        "coverage": 33.3,
+        "precision": 8.5,
+        "files": 8.7,
+        "latency_mean": 17509.1,
+        "latency_p50": 16075.5,
+        "latency_p95": 25078.8,
+        "errors": 0
+      },
+      "scenarios": [
+        {
+          "id": 1,
+          "symbol": "StickerPackInstallEvent",
+          "files": 7,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latencies_ms": [
+            25078.8
+          ],
+          "errors": []
+        },
+        {
+          "id": 2,
+          "symbol": "SignalDatabaseMigration",
+          "files": 12,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 16.7,
+          "latencies_ms": [
+            20183.1
+          ],
+          "errors": []
+        },
+        {
+          "id": 3,
+          "symbol": "StickerManagementRepository",
+          "files": 8,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            16581.4
+          ],
+          "errors": []
+        },
+        {
+          "id": 4,
+          "symbol": "FullBackupExporter",
+          "files": 1,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latencies_ms": [
+            15239.7
+          ],
+          "errors": []
+        },
+        {
+          "id": 5,
+          "symbol": "DeprecatedJobMigration",
+          "files": 14,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 14.3,
+          "latencies_ms": [
+            15593.6
+          ],
+          "errors": []
+        },
+        {
+          "id": 6,
+          "symbol": "Job",
+          "files": 1,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latencies_ms": [
+            17741.6
+          ],
+          "errors": []
+        },
+        {
+          "id": 7,
+          "symbol": "SignalDatabaseMigration",
+          "files": 9,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 22.2,
+          "latencies_ms": [
+            16072.2
+          ],
+          "errors": []
+        },
+        {
+          "id": 8,
+          "symbol": "Recipient",
+          "files": 15,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 6.7,
+          "latencies_ms": [
+            17007.4
+          ],
+          "errors": []
+        },
+        {
+          "id": 9,
+          "symbol": "BackupPassphrase",
+          "files": 8,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            15518.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 10,
+          "symbol": "FcmReceiveService",
+          "files": 12,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latencies_ms": [
+            16075.5
+          ],
+          "errors": []
+        }
+      ]
+    },
+    "smart": {
+      "summary": {
+        "coverage": 67.5,
+        "precision": 9.7,
+        "files": 21.5,
+        "latency_mean": 479.9,
+        "latency_p50": 495.2,
+        "latency_p95": 755.9,
+        "errors": 0
+      },
+      "scenarios": [
+        {
+          "id": 1,
+          "symbol": "StickerPackInstallEvent",
+          "files": 16,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            875.3,
+            498.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 2,
+          "symbol": "SignalDatabaseMigration",
+          "files": 18,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 11.1,
+          "latencies_ms": [
+            664.1,
+            483.8
+          ],
+          "errors": []
+        },
+        {
+          "id": 3,
+          "symbol": "StickerManagementRepository",
+          "files": 16,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            172.9,
+            160.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 4,
+          "symbol": "FullBackupExporter",
+          "files": 16,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            310.9,
+            278.3
+          ],
+          "errors": []
+        },
+        {
+          "id": 5,
+          "symbol": "DeprecatedJobMigration",
+          "files": 22,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 9.1,
+          "latencies_ms": [
+            495.2,
+            490.3
+          ],
+          "errors": []
+        },
+        {
+          "id": 6,
+          "symbol": "Job",
+          "files": 44,
+          "golden_hits": 3,
+          "coverage_pct": 75.0,
+          "precision_pct": 6.8,
+          "latencies_ms": [
+            592.8,
+            507.6
+          ],
+          "errors": []
+        },
+        {
+          "id": 7,
+          "symbol": "SignalDatabaseMigration",
+          "files": 15,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 13.3,
+          "latencies_ms": [
+            410.0,
+            270.7
+          ],
+          "errors": []
+        },
+        {
+          "id": 8,
+          "symbol": "Recipient",
+          "files": 31,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 3.2,
+          "latencies_ms": [
+            755.9,
+            557.7
+          ],
+          "errors": []
+        },
+        {
+          "id": 9,
+          "symbol": "BackupPassphrase",
+          "files": 23,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 8.7,
+          "latencies_ms": [
+            672.5,
+            530.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 10,
+          "symbol": "FcmReceiveService",
+          "files": 14,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 7.1,
+          "latencies_ms": [
+            494.6,
+            376.9
+          ],
+          "errors": []
+        }
+      ]
+    },
+    "ast": {
+      "summary": {
+        "coverage": 54.2,
+        "precision": 23.2,
+        "files": 9.6,
+        "latency_mean": 83.6,
+        "latency_p50": 76.2,
+        "latency_p95": 134.8,
+        "errors": 0
+      },
+      "scenarios": [
+        {
+          "id": 1,
+          "symbol": "StickerPackInstallEvent",
+          "files": 4,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 25.0,
+          "latencies_ms": [
+            71.7,
+            77.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 2,
+          "symbol": "SignalDatabaseMigration",
+          "files": 21,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 9.5,
+          "latencies_ms": [
+            77.1,
+            77.3
+          ],
+          "errors": []
+        },
+        {
+          "id": 3,
+          "symbol": "StickerManagementRepository",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            76.2,
+            74.8
+          ],
+          "errors": []
+        },
+        {
+          "id": 4,
+          "symbol": "FullBackupExporter",
+          "files": 8,
+          "golden_hits": 1,
+          "coverage_pct": 50.0,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            93.2,
+            90.6
+          ],
+          "errors": []
+        },
+        {
+          "id": 5,
+          "symbol": "DeprecatedJobMigration",
+          "files": 2,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 50.0,
+          "latencies_ms": [
+            73.6,
+            76.2
+          ],
+          "errors": []
+        },
+        {
+          "id": 6,
+          "symbol": "Job",
+          "files": 6,
+          "golden_hits": 1,
+          "coverage_pct": 25.0,
+          "precision_pct": 16.7,
+          "latencies_ms": [
+            72.1,
+            76.8
+          ],
+          "errors": []
+        },
+        {
+          "id": 7,
+          "symbol": "SignalDatabaseMigration",
+          "files": 21,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 9.5,
+          "latencies_ms": [
+            73.3,
+            72.7
+          ],
+          "errors": []
+        },
+        {
+          "id": 8,
+          "symbol": "Recipient",
+          "files": 15,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 6.7,
+          "latencies_ms": [
+            80.4,
+            75.5
+          ],
+          "errors": []
+        },
+        {
+          "id": 9,
+          "symbol": "BackupPassphrase",
+          "files": 9,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 22.2,
+          "latencies_ms": [
+            72.7,
+            70.8
+          ],
+          "errors": []
+        },
+        {
+          "id": 10,
+          "symbol": "FcmReceiveService",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            134.8,
+            156.0
+          ],
+          "errors": []
+        }
+      ]
+    },
+    "graph": {
+      "summary": {
+        "coverage": 56.7,
+        "precision": 19.1,
+        "files": 34.2,
+        "latency_mean": 259.0,
+        "latency_p50": 250.7,
+        "latency_p95": 380.2,
+        "errors": 0
+      },
+      "scenarios": [
+        {
+          "id": 1,
+          "symbol": "StickerPackInstallEvent",
+          "files": 4,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 25.0,
+          "latencies_ms": [
+            267.5,
+            238.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 2,
+          "symbol": "SignalDatabaseMigration",
+          "files": 52,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 3.8,
+          "latencies_ms": [
+            242.9,
+            252.3
+          ],
+          "errors": []
+        },
+        {
+          "id": 3,
+          "symbol": "StickerManagementRepository",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            244.0,
+            243.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 4,
+          "symbol": "FullBackupExporter",
+          "files": 59,
+          "golden_hits": 1,
+          "coverage_pct": 50.0,
+          "precision_pct": 1.7,
+          "latencies_ms": [
+            264.0,
+            256.1
+          ],
+          "errors": []
+        },
+        {
+          "id": 5,
+          "symbol": "DeprecatedJobMigration",
+          "files": 2,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 50.0,
+          "latencies_ms": [
+            250.7,
+            257.7
+          ],
+          "errors": []
+        },
+        {
+          "id": 6,
+          "symbol": "Job",
+          "files": 69,
+          "golden_hits": 2,
+          "coverage_pct": 50.0,
+          "precision_pct": 2.9,
+          "latencies_ms": [
+            204.7,
+            207.1
+          ],
+          "errors": []
+        },
+        {
+          "id": 7,
+          "symbol": "SignalDatabaseMigration",
+          "files": 52,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 3.8,
+          "latencies_ms": [
+            265.6,
+            245.9
+          ],
+          "errors": []
+        },
+        {
+          "id": 8,
+          "symbol": "Recipient",
+          "files": 85,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 1.2,
+          "latencies_ms": [
+            246.4,
+            205.0
+          ],
+          "errors": []
+        },
+        {
+          "id": 9,
+          "symbol": "BackupPassphrase",
+          "files": 9,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 22.2,
+          "latencies_ms": [
+            239.9,
+            274.5
+          ],
+          "errors": []
+        },
+        {
+          "id": 10,
+          "symbol": "FcmReceiveService",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            394.3,
+            380.2
+          ],
+          "errors": []
+        }
+      ]
+    },
+    "ask": {
+      "summary": {
+        "coverage": 49.2,
+        "precision": 22.9,
+        "files": 5.4,
+        "latency_mean": 6549.3,
+        "latency_p50": 6911.3,
+        "latency_p95": 11832.9,
+        "errors": 0
+      },
+      "scenarios": [
+        {
+          "id": 1,
+          "symbol": "StickerPackInstallEvent",
+          "files": 8,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 25.0,
+          "latencies_ms": [
+            10248.5
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 1212
+        },
+        {
+          "id": 2,
+          "symbol": "SignalDatabaseMigration",
+          "files": 6,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 33.3,
+          "latencies_ms": [
+            3365.0
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 488
+        },
+        {
+          "id": 3,
+          "symbol": "StickerManagementRepository",
+          "files": 4,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 25.0,
+          "latencies_ms": [
+            6915.5
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 808
+        },
+        {
+          "id": 4,
+          "symbol": "FullBackupExporter",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            6914.3
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 1216
+        },
+        {
+          "id": 5,
+          "symbol": "DeprecatedJobMigration",
+          "files": 7,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 28.6,
+          "latencies_ms": [
+            2947.1
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 289
+        },
+        {
+          "id": 6,
+          "symbol": "Job",
+          "files": 7,
+          "golden_hits": 1,
+          "coverage_pct": 25.0,
+          "precision_pct": 14.3,
+          "latencies_ms": [
+            4245.2
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 583
+        },
+        {
+          "id": 7,
+          "symbol": "SignalDatabaseMigration",
+          "files": 0,
+          "golden_hits": 0,
+          "coverage_pct": 0.0,
+          "precision_pct": 0.0,
+          "latencies_ms": [
+            11832.9
+          ],
+          "errors": [],
+          "insufficient": true,
+          "answer_chars": 103
+        },
+        {
+          "id": 8,
+          "symbol": "Recipient",
+          "files": 8,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            6911.3
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 458
+        },
+        {
+          "id": 9,
+          "symbol": "BackupPassphrase",
+          "files": 3,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 33.3,
+          "latencies_ms": [
+            6950.4
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 1181
+        },
+        {
+          "id": 10,
+          "symbol": "FcmReceiveService",
+          "files": 6,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 16.7,
+          "latencies_ms": [
+            5162.2
+          ],
+          "errors": [],
+          "insufficient": false,
+          "answer_chars": 585
+        }
+      ]
+    }
+  },
+  "resources": {
+    "rss_mb": 23.1,
+    "peak_rss_mb": 23.1,
+    "cpu_seconds_total": 2.02,
+    "threads": 14,
+    "open_fds": 11,
+    "cold_start_ms": 27.0,
+    "binary_mb": 30.5,
+    "gpu": "7610 MiB, 12288 MiB",
+    "benchmark_wall_seconds": 259.61
+  }
+}

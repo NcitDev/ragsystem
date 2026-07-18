@@ -1,0 +1,544 @@
+{
+  "schema_version": 2,
+  "captured": "2026-07-18T15:21:33.519717+00:00",
+  "provenance": {
+    "git_head": "e2b730ad15150a1196d82d106f6d1625aa893412",
+    "git_dirty": true,
+    "rust_url": "http://127.0.0.1:17890",
+    "server_pid": 51040,
+    "repo": "signal",
+    "corpus_revision": "d6871f8dc2d12a5b74ac0501bcf73ccec38064fd",
+    "index_points": 46121,
+    "qdrant_version": "1.18.2",
+    "embedding_model": "qwen3-embedding:latest",
+    "scenario_count": 10,
+    "repeats": 2,
+    "slow_mode_repeats": 3,
+    "modes": [
+      "ask"
+    ],
+    "python_baseline_sha256": "f70e0e6f59bbd287588ad8e75699125643b3eff7e1603f775a151c2f9f2ab3bc",
+    "previous_rust_results_sha256": "7aa4f2fc7ad967f8eb9a256d6462b77610639a23d2e6a126d4a8e25392b52c8d",
+    "rust_binary": "/home/nikita/orca/workspaces/ragsystem/rust-production-audit/target/release/rag-rs",
+    "rust_binary_sha256": "8cf60a3e237fa3781946b51de442dd546fa24cbe28c0c15180063ca160440d1d",
+    "rust_binary_bytes": 32012944,
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+    "logical_cpus": 12
+  },
+  "startup_ms": {
+    "live": null,
+    "ready": null,
+    "health": null
+  },
+  "comparisons": {
+    "ask": {
+      "python": {
+        "coverage": 55.8,
+        "precision": 26.9,
+        "files": 5.9,
+        "latency_mean": 14241.2,
+        "latency_p50": 14534.4,
+        "latency_p95": 16211.8,
+        "errors": 0,
+        "cpu_seconds": 0.41,
+        "rss_mb_after": 153.9
+      },
+      "previous_rust": {
+        "coverage": 55.8,
+        "precision": 26.9,
+        "files": 5.9,
+        "latency_mean": 7012.6,
+        "latency_p50": 4240.0,
+        "latency_p95": 17145.7,
+        "errors": 0,
+        "cpu_seconds": 0.01,
+        "rss_mb_after": 30.6
+      },
+      "new_rust": {
+        "coverage": 55.8,
+        "precision": 26.9,
+        "files": 5.9,
+        "latency_mean": 9164.1,
+        "latency_p50": 6507.1,
+        "latency_p95": 18327.8,
+        "errors": 0
+      }
+    }
+  },
+  "modes": {
+    "ask": {
+      "summary": {
+        "coverage": 55.8,
+        "precision": 26.9,
+        "files": 5.9,
+        "latency_mean": 9164.1,
+        "latency_p50": 6507.1,
+        "latency_p95": 18327.8,
+        "errors": 0
+      },
+      "scenarios": [
+        {
+          "id": 1,
+          "symbol": "StickerPackInstallEvent",
+          "files": 8,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 25.0,
+          "latencies_ms": [
+            18404.2,
+            5654.3,
+            5058.5
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 8,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 25.0,
+              "latency_ms": 18404.1848,
+              "insufficient": false,
+              "answer_chars": 954
+            },
+            {
+              "files": 8,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 25.0,
+              "latency_ms": 5654.3362,
+              "insufficient": false,
+              "answer_chars": 1262
+            },
+            {
+              "files": 8,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 25.0,
+              "latency_ms": 5058.4572,
+              "insufficient": false,
+              "answer_chars": 1073
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 1073
+        },
+        {
+          "id": 2,
+          "symbol": "SignalDatabaseMigration",
+          "files": 6,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 33.3,
+          "latencies_ms": [
+            16331.2,
+            3804.8,
+            3668.8
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 6,
+              "golden_hits": 2,
+              "coverage_pct": 100.0,
+              "precision_pct": 33.33333333333333,
+              "latency_ms": 16331.248,
+              "insufficient": false,
+              "answer_chars": 510
+            },
+            {
+              "files": 6,
+              "golden_hits": 2,
+              "coverage_pct": 100.0,
+              "precision_pct": 33.33333333333333,
+              "latency_ms": 3804.8009,
+              "insufficient": false,
+              "answer_chars": 464
+            },
+            {
+              "files": 6,
+              "golden_hits": 2,
+              "coverage_pct": 100.0,
+              "precision_pct": 33.33333333333333,
+              "latency_ms": 3668.7643,
+              "insufficient": false,
+              "answer_chars": 433
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 433
+        },
+        {
+          "id": 3,
+          "symbol": "StickerManagementRepository",
+          "files": 4,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 25.0,
+          "latencies_ms": [
+            14839.1,
+            3896.9,
+            8402.5
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 4,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 25.0,
+              "latency_ms": 14839.0801,
+              "insufficient": false,
+              "answer_chars": 477
+            },
+            {
+              "files": 4,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 25.0,
+              "latency_ms": 3896.9348,
+              "insufficient": false,
+              "answer_chars": 628
+            },
+            {
+              "files": 4,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 25.0,
+              "latency_ms": 8402.4842,
+              "insufficient": false,
+              "answer_chars": 923
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 923
+        },
+        {
+          "id": 4,
+          "symbol": "FullBackupExporter",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 100.0,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            18327.8,
+            6150.5,
+            6445.6
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 5,
+              "golden_hits": 2,
+              "coverage_pct": 100.0,
+              "precision_pct": 40.0,
+              "latency_ms": 18327.7722,
+              "insufficient": false,
+              "answer_chars": 1331
+            },
+            {
+              "files": 5,
+              "golden_hits": 2,
+              "coverage_pct": 100.0,
+              "precision_pct": 40.0,
+              "latency_ms": 6150.5494,
+              "insufficient": false,
+              "answer_chars": 1229
+            },
+            {
+              "files": 5,
+              "golden_hits": 2,
+              "coverage_pct": 100.0,
+              "precision_pct": 40.0,
+              "latency_ms": 6445.5657,
+              "insufficient": false,
+              "answer_chars": 1275
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 1275
+        },
+        {
+          "id": 5,
+          "symbol": "DeprecatedJobMigration",
+          "files": 7,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 28.6,
+          "latencies_ms": [
+            13494.3,
+            2820.3,
+            3389.7
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 7,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 28.57142857142857,
+              "latency_ms": 13494.3494,
+              "insufficient": false,
+              "answer_chars": 352
+            },
+            {
+              "files": 7,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 28.57142857142857,
+              "latency_ms": 2820.3468,
+              "insufficient": false,
+              "answer_chars": 359
+            },
+            {
+              "files": 7,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 28.57142857142857,
+              "latency_ms": 3389.6854,
+              "insufficient": false,
+              "answer_chars": 438
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 438
+        },
+        {
+          "id": 6,
+          "symbol": "Job",
+          "files": 7,
+          "golden_hits": 1,
+          "coverage_pct": 25.0,
+          "precision_pct": 14.3,
+          "latencies_ms": [
+            14734.6,
+            5173.3,
+            4451.4
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 7,
+              "golden_hits": 1,
+              "coverage_pct": 25.0,
+              "precision_pct": 14.285714285714285,
+              "latency_ms": 14734.6179,
+              "insufficient": false,
+              "answer_chars": 824
+            },
+            {
+              "files": 7,
+              "golden_hits": 1,
+              "coverage_pct": 25.0,
+              "precision_pct": 14.285714285714285,
+              "latency_ms": 5173.3227,
+              "insufficient": false,
+              "answer_chars": 831
+            },
+            {
+              "files": 7,
+              "golden_hits": 1,
+              "coverage_pct": 25.0,
+              "precision_pct": 14.285714285714285,
+              "latency_ms": 4451.3631,
+              "insufficient": false,
+              "answer_chars": 681
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 681
+        },
+        {
+          "id": 7,
+          "symbol": "SignalDatabaseMigration",
+          "files": 5,
+          "golden_hits": 2,
+          "coverage_pct": 66.7,
+          "precision_pct": 40.0,
+          "latencies_ms": [
+            16290.8,
+            7103.7,
+            5266.9
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 5,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 40.0,
+              "latency_ms": 16290.8077,
+              "insufficient": false,
+              "answer_chars": 801
+            },
+            {
+              "files": 5,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 40.0,
+              "latency_ms": 7103.6743,
+              "insufficient": false,
+              "answer_chars": 1183
+            },
+            {
+              "files": 5,
+              "golden_hits": 2,
+              "coverage_pct": 66.66666666666666,
+              "precision_pct": 40.0,
+              "latency_ms": 5266.9011,
+              "insufficient": false,
+              "answer_chars": 696
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 696
+        },
+        {
+          "id": 8,
+          "symbol": "Recipient",
+          "files": 8,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 12.5,
+          "latencies_ms": [
+            16163.1,
+            6993.9,
+            6815.2
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 8,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 12.5,
+              "latency_ms": 16163.0803,
+              "insufficient": false,
+              "answer_chars": 529
+            },
+            {
+              "files": 8,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 12.5,
+              "latency_ms": 6993.8854,
+              "insufficient": false,
+              "answer_chars": 458
+            },
+            {
+              "files": 8,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 12.5,
+              "latency_ms": 6815.2229,
+              "insufficient": false,
+              "answer_chars": 754
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 754
+        },
+        {
+          "id": 9,
+          "symbol": "BackupPassphrase",
+          "files": 3,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 33.3,
+          "latencies_ms": [
+            17183.2,
+            6507.1,
+            6438.6
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 3,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 33.33333333333333,
+              "latency_ms": 17183.192,
+              "insufficient": false,
+              "answer_chars": 1453
+            },
+            {
+              "files": 3,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 33.33333333333333,
+              "latency_ms": 6507.0689,
+              "insufficient": false,
+              "answer_chars": 1142
+            },
+            {
+              "files": 3,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 33.33333333333333,
+              "latency_ms": 6438.6243,
+              "insufficient": false,
+              "answer_chars": 1195
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 1195
+        },
+        {
+          "id": 10,
+          "symbol": "FcmReceiveService",
+          "files": 6,
+          "golden_hits": 1,
+          "coverage_pct": 33.3,
+          "precision_pct": 16.7,
+          "latencies_ms": [
+            17850.7,
+            5739.0,
+            7524.4
+          ],
+          "errors": [],
+          "runs": [
+            {
+              "files": 6,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 16.666666666666664,
+              "latency_ms": 17850.7411,
+              "insufficient": false,
+              "answer_chars": 1202
+            },
+            {
+              "files": 6,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 16.666666666666664,
+              "latency_ms": 5738.9885,
+              "insufficient": false,
+              "answer_chars": 863
+            },
+            {
+              "files": 6,
+              "golden_hits": 1,
+              "coverage_pct": 33.33333333333333,
+              "precision_pct": 16.666666666666664,
+              "latency_ms": 7524.3817,
+              "insufficient": false,
+              "answer_chars": 1235
+            }
+          ],
+          "insufficient": false,
+          "answer_chars": 1235
+        }
+      ]
+    }
+  },
+  "resources": {
+    "rss_mb": 10.6,
+    "peak_rss_mb": 16.5,
+    "cpu_seconds_total": 0.06,
+    "threads": 14,
+    "open_fds": 11,
+    "cold_start_ms": null,
+    "binary_mb": 30.5,
+    "gpu": "8747 MiB, 12288 MiB",
+    "benchmark_wall_seconds": 275.1
+  }
+}

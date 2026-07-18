@@ -149,9 +149,11 @@ history are in `docs/python-parity-audit.md`,
 `docs/benchmark_full_matrix/summary.md`, and `docs/rust-migration-plan.md`.
 Historical migration benchmark snapshots report parity or better retrieval
 quality with lower latency and memory than the former Python implementation.
-Those results were not rerun by the production audit and are not a current
-release guarantee; see the reports for hardware, corpus, and methodology. No
-Python is required at build or run time.
+The production audit reran the same ten-scenario matrix against the audited
+binary and preserved the saved Rust quality; see
+`docs/benchmark_rust_production_audit/summary.md` for raw hashes, current
+measurements, and limitations. These local results are not a release-wide
+performance guarantee. No Python is required at build or run time.
 
 Production-hardening findings, verified limitations, and migration notes are
 in `docs/rust-production-audit.md`; product and deployment priorities are in
