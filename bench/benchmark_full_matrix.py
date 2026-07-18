@@ -150,15 +150,15 @@ def _files_from(items) -> list[str]:
     return out
 
 
-def run_mode(mode: str, base: str, token: str, sc, symbol: str):
+def run_mode(mode: str, base: str, token: str, sc, symbol: str, repo: str = REPO):
     if mode in ("vanilla", "rag_llm"):
         planner = "fallback" if mode == "vanilla" else "llm"
         data, wall, err = _post(base, "/search", {
-            "query": sc.question, "repo": REPO, "top_k": 15, "planner": planner}, token)
+            "query": sc.question, "repo": repo, "top_k": 15, "planner": planner}, token)
         return (_files_from(data.get("results")), float(data.get("latency_ms", wall)), err, {})
     if mode == "smart":
         data, wall, err = _post(base, "/smart-search", {
-            "question": sc.question, "repo": REPO, "top_k": 15}, token)
+            "question": sc.question, "repo": repo, "top_k": 15}, token)
         files: list[str] = []
         for bucket in ("definitions", "usages", "semantic", "related", "vocab_files", "candidates"):
             for fp in _files_from(data.get(bucket)):
@@ -167,7 +167,7 @@ def run_mode(mode: str, base: str, token: str, sc, symbol: str):
         return (files, float(data.get("latency_ms", wall)), err, {})
     if mode == "ast":
         data, wall, err = _post(base, "/resolve", {
-            "repo": REPO, "symbols": [symbol], "definitions_limit": 20, "usages_limit": 20}, token)
+            "repo": repo, "symbols": [symbol], "definitions_limit": 20, "usages_limit": 20}, token)
         files = _files_from(data.get("definitions"))
         for fp in _files_from(data.get("usages")):
             if fp not in files:
@@ -175,7 +175,7 @@ def run_mode(mode: str, base: str, token: str, sc, symbol: str):
         return (files, float(data.get("latency_ms", wall)), err, {})
     if mode == "graph":
         data, wall, err = _post(base, "/graph/impact", {
-            "repo": REPO, "symbol": symbol, "limit": 50}, token)
+            "repo": repo, "symbol": symbol, "limit": 50}, token)
         files = []
         for bucket in ("definitions", "usages", "callers", "affected_files", "tests"):
             for fp in _files_from(data.get(bucket)):
@@ -184,7 +184,7 @@ def run_mode(mode: str, base: str, token: str, sc, symbol: str):
         return (files, float(data.get("latency_ms", wall)), err, {})
     if mode == "ask":
         data, wall, err = _post(base, "/ask", {
-            "question": sc.question, "repo": REPO, "top_k": 8}, token)
+            "question": sc.question, "repo": repo, "top_k": 8}, token)
         files = _files_from(data.get("citations"))
         extra = {"insufficient": bool(data.get("insufficient_context", False)),
                  "answer_chars": len(data.get("answer", "") or "")}
