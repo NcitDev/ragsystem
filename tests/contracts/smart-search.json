@@ -1,0 +1,47 @@
+{
+  "candidates": [
+    {
+      "file_path": "src/rag/server.py",
+      "lines": "533-539",
+      "name": "require_auth",
+      "repo": "ragsystem",
+      "source": "definition",
+      "summary": ""
+    }
+  ],
+  "candidates_total": 1,
+  "definitions": [
+    {
+      "chunk_type": "function",
+      "citation": "src/rag/server.py:533-539 (require_auth)",
+      "code": "def require_auth(request: Request) -> None: ...",
+      "file_path": "src/rag/server.py",
+      "language": "python",
+      "lines": "533-539",
+      "name": "require_auth",
+      "parent_name": "",
+      "repo": "ragsystem",
+      "score": 1.0,
+      "token_estimate": 12,
+      "why_included": "ast_index_symbol"
+    }
+  ],
+  "grounded_symbols": [
+    "require_auth"
+  ],
+  "inferred_symbols": [
+    "require_auth"
+  ],
+  "latency_ms": 0.0,
+  "question": "where is bearer auth handled?",
+  "related": [],
+  "repos_searched": [
+    "ragsystem"
+  ],
+  "semantic": [],
+  "symbol_inference_ms": 0.0,
+  "usages": [],
+  "vocab_anchors": [],
+  "vocab_files": []
+}
+

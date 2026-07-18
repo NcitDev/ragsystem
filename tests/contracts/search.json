@@ -1,0 +1,30 @@
+{
+  "latency_ms": 0.0,
+  "plan": {
+    "filters": {},
+    "queries": [
+      "bearer auth"
+    ],
+    "strategy": "hybrid"
+  },
+  "query": "bearer auth",
+  "results": [
+    {
+      "chunk_type": "function",
+      "citation": "src/rag/server.py:533-539 (require_auth)",
+      "code": "def require_auth(request: Request) -> None: ...",
+      "file_path": "src/rag/server.py",
+      "language": "python",
+      "lines": "533-539",
+      "matched_queries": [
+        0
+      ],
+      "name": "require_auth",
+      "parent_name": "",
+      "repo": "ragsystem",
+      "score": 1.0
+    }
+  ],
+  "total": 1
+}
+

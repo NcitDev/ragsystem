@@ -1,0 +1,38 @@
+# RAG System Guidelines
+
+## Code Context First
+
+Before editing any file, always retrieve code context via the RAG repo-agent:
+
+```bash
+uv run rag repo-agent --repo <repo-name> --json "<task>"
+```
+
+Parse the JSON evidence bundle before opening files:
+- `evidence_bundle.top_files` — most relevant files
+- `evidence_bundle.symbols` — extracted symbol names
+- `evidence_bundle.callers` — call tree data
+- `evidence_bundle.tests` — related test files
+- `evidence_bundle.modules` — module boundaries
+- `evidence_bundle.docs` — project knowledge (events, DI maps)
+- `resolve.usages` vs `resolve.usages_raw` — filtered vs total blast radius
+
+## Repo Names
+
+- Signal-Android: `signal` (not `signal-android`)
+
+## Narrow Lookups
+
+For specific symbol lookups, use graph tools directly:
+
+```bash
+uv run rag node <SymbolName> --repo <repo-name> --json
+uv run rag callers <SymbolName> --repo <repo-name> --json
+uv run rag impact <SymbolName> --repo <repo-name> --json
+```
+
+## Config
+
+- Default config: `config/default.toml`
+- User config: `~/.rag/config.toml`
+- Retrieval LLM is configurable via `[retrieval_agent]` section (gemini, openai, anthropic, ollama)

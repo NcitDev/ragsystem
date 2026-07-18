@@ -1,0 +1,24 @@
+[package]
+name = "rag-services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+http.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+axum.workspace = true
+tower.workspace = true
+
+[[test]]
+name = "r2_external_services"
+path = "../../tests/rust-compat/r2/external_services.rs"
+
+[lints]
+workspace = true

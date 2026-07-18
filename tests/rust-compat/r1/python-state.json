@@ -1,0 +1,7 @@
+{
+  "last_commit": "abc123fixture",
+  "file_hashes": {
+    "src/lib.rs": "1111222233334444",
+    "tests/test_config.py": "aaaabbbbccccdddd"
+  }
+}

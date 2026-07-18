@@ -1,0 +1,24 @@
+{
+  "latency_ms": 0.0,
+  "query": "bearer auth",
+  "repo": "ragsystem",
+  "slices": [
+    {
+      "chunk_type": "function",
+      "citation": "src/rag/server.py:533-539 (require_auth)",
+      "code": "def require_auth(request: Request) -> None: ...",
+      "file_path": "src/rag/server.py",
+      "language": "python",
+      "lines": "533-539",
+      "name": "require_auth",
+      "parent_name": "",
+      "repo": "ragsystem",
+      "score": 1.0,
+      "token_estimate": 12,
+      "why_included": "ast_index_symbol"
+    }
+  ],
+  "total": 1,
+  "total_source_tokens": 12
+}
+

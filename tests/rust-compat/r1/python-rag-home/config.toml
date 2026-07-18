@@ -1,0 +1,17 @@
+[server]
+host = "192.168.1.10"
+port = 8080
+
+[qdrant]
+url = "http://127.0.0.1:6333/"
+path = "~/.rag/qdrant_fixture"
+
+[index]
+retrieval_top_k = 7
+
+[retrieval_agent]
+provider = "agy"
+model = "Gemini 3.5 Flash (High)"
+
+[sparse]
+legacy_user_config = true

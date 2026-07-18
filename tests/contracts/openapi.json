@@ -1,0 +1,3348 @@
+{
+  "components": {
+    "schemas": {
+      "AskRequest": {
+        "properties": {
+          "max_chunk_chars": {
+            "default": 1200,
+            "maximum": 4000.0,
+            "minimum": 200.0,
+            "title": "Max Chunk Chars",
+            "type": "integer"
+          },
+          "question": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "top_k": {
+            "default": 8,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "AskResponse": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "generation_ms": {
+            "title": "Generation Ms",
+            "type": "number"
+          },
+          "insufficient_context": {
+            "default": false,
+            "title": "Insufficient Context",
+            "type": "boolean"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "retrieval_ms": {
+            "title": "Retrieval Ms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "question",
+          "answer",
+          "citations",
+          "model",
+          "retrieval_ms",
+          "generation_ms",
+          "latency_ms"
+        ],
+        "title": "AskResponse",
+        "type": "object"
+      },
+      "BackfillCodeIndexRequest": {
+        "properties": {
+          "clear": {
+            "default": true,
+            "title": "Clear",
+            "type": "boolean"
+          },
+          "collection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection"
+          },
+          "page_size": {
+            "default": 256,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          }
+        },
+        "title": "BackfillCodeIndexRequest",
+        "type": "object"
+      },
+      "BackfillCodeIndexResponse": {
+        "properties": {
+          "chunks_indexed": {
+            "title": "Chunks Indexed",
+            "type": "integer"
+          },
+          "chunks_skipped": {
+            "title": "Chunks Skipped",
+            "type": "integer"
+          },
+          "collection": {
+            "title": "Collection",
+            "type": "string"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "collection",
+          "chunks_indexed",
+          "chunks_skipped",
+          "latency_ms"
+        ],
+        "title": "BackfillCodeIndexResponse",
+        "type": "object"
+      },
+      "CallTreeNode": {
+        "properties": {
+          "chunk_type": {
+            "title": "Chunk Type",
+            "type": "string"
+          },
+          "citation": {
+            "title": "Citation",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "depth": {
+            "default": 0,
+            "title": "Depth",
+            "type": "integer"
+          },
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "lines": {
+            "title": "Lines",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_name": {
+            "title": "Parent Name",
+            "type": "string"
+          },
+          "repo": {
+            "default": "",
+            "title": "Repo",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "token_estimate": {
+            "title": "Token Estimate",
+            "type": "integer"
+          },
+          "why_included": {
+            "title": "Why Included",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "name",
+          "parent_name",
+          "chunk_type",
+          "language",
+          "lines",
+          "code",
+          "score",
+          "token_estimate",
+          "citation",
+          "why_included"
+        ],
+        "title": "CallTreeNode",
+        "type": "object"
+      },
+      "CallTreeRequest": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
+          },
+          "symbol": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "symbol"
+        ],
+        "title": "CallTreeRequest",
+        "type": "object"
+      },
+      "CallTreeResponse": {
+        "properties": {
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/CallTreeNode"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "symbol",
+          "nodes",
+          "total",
+          "latency_ms"
+        ],
+        "title": "CallTreeResponse",
+        "type": "object"
+      },
+      "Candidate": {
+        "description": "A token-light candidate LINK (no code) for the paginated 'show more' list.\n\nThe caller scans these across turns (via candidate_offset) and reads full\nbodies only for the files it decides it needs.",
+        "properties": {
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "lines": {
+            "default": "",
+            "title": "Lines",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "repo": {
+            "default": "",
+            "title": "Repo",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "name",
+          "source"
+        ],
+        "title": "Candidate",
+        "type": "object"
+      },
+      "Citation": {
+        "properties": {
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "lines": {
+            "title": "Lines",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "file_path",
+          "lines",
+          "name",
+          "score"
+        ],
+        "title": "Citation",
+        "type": "object"
+      },
+      "ContextPackRequest": {
+        "properties": {
+          "filters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filters"
+          },
+          "include_semantic": {
+            "default": true,
+            "title": "Include Semantic",
+            "type": "boolean"
+          },
+          "max_slices": {
+            "default": 8,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Slices",
+            "type": "integer"
+          },
+          "max_source_tokens": {
+            "default": 6000,
+            "maximum": 100000.0,
+            "minimum": 100.0,
+            "title": "Max Source Tokens",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "strategy": {
+            "default": "lod_drill",
+            "title": "Strategy",
+            "type": "string"
+          },
+          "use_ast_index": {
+            "default": true,
+            "title": "Use Ast Index",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "ContextPackRequest",
+        "type": "object"
+      },
+      "ContextPackResponse": {
+        "properties": {
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "slices": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Slices",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "total_source_tokens": {
+            "title": "Total Source Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query",
+          "slices",
+          "total",
+          "total_source_tokens",
+          "latency_ms"
+        ],
+        "title": "ContextPackResponse",
+        "type": "object"
+      },
+      "ContextSlice": {
+        "properties": {
+          "chunk_type": {
+            "title": "Chunk Type",
+            "type": "string"
+          },
+          "citation": {
+            "title": "Citation",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "lines": {
+            "title": "Lines",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_name": {
+            "title": "Parent Name",
+            "type": "string"
+          },
+          "repo": {
+            "default": "",
+            "title": "Repo",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "token_estimate": {
+            "title": "Token Estimate",
+            "type": "integer"
+          },
+          "why_included": {
+            "title": "Why Included",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "name",
+          "parent_name",
+          "chunk_type",
+          "language",
+          "lines",
+          "code",
+          "score",
+          "token_estimate",
+          "citation",
+          "why_included"
+        ],
+        "title": "ContextSlice",
+        "type": "object"
+      },
+      "DocsSearchRequest": {
+        "properties": {
+          "filters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filters"
+          },
+          "query": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "DocsSearchRequest",
+        "type": "object"
+      },
+      "EnumerateRequest": {
+        "description": "Exhaustive metadata enumeration via Qdrant scroll. No vector search.\nMatches payload filters directly and pages through ALL results up to limit.",
+        "properties": {
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "title": "Filters",
+            "type": "object"
+          },
+          "limit": {
+            "default": 500,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "EnumerateRequest",
+        "type": "object"
+      },
+      "EnumerateResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "title": "Filters",
+            "type": "object"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "count",
+          "filters",
+          "results",
+          "truncated"
+        ],
+        "title": "EnumerateResponse",
+        "type": "object"
+      },
+      "GraphAffectedRequest": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
+          },
+          "since": {
+            "default": "HEAD",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Since",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "title": "GraphAffectedRequest",
+        "type": "object"
+      },
+      "GraphAffectedResponse": {
+        "properties": {
+          "affected_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "metrics": {
+            "additionalProperties": true,
+            "title": "Metrics",
+            "type": "object"
+          },
+          "modules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "risks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Risks",
+            "type": "array"
+          },
+          "tests": {
+            "items": {
+              "$ref": "#/components/schemas/GraphFileItem"
+            },
+            "title": "Tests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "repo",
+          "changed_files",
+          "affected_files",
+          "tests",
+          "modules",
+          "risks",
+          "metrics",
+          "latency_ms"
+        ],
+        "title": "GraphAffectedResponse",
+        "type": "object"
+      },
+      "GraphFileItem": {
+        "properties": {
+          "chunk_count": {
+            "default": 0,
+            "title": "Chunk Count",
+            "type": "integer"
+          },
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "language": {
+            "default": "",
+            "title": "Language",
+            "type": "string"
+          },
+          "score": {
+            "default": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "symbol_count": {
+            "default": 0,
+            "title": "Symbol Count",
+            "type": "integer"
+          },
+          "symbols": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "updated_at": {
+            "default": 0.0,
+            "title": "Updated At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "GraphFileItem",
+        "type": "object"
+      },
+      "GraphFilesRequest": {
+        "properties": {
+          "limit": {
+            "default": 100,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Query",
+            "type": "string"
+          },
+          "repo": {
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
+          },
+          "tests_only": {
+            "default": false,
+            "title": "Tests Only",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "title": "GraphFilesRequest",
+        "type": "object"
+      },
+      "GraphFilesResponse": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/GraphFileItem"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "files",
+          "total",
+          "latency_ms"
+        ],
+        "title": "GraphFilesResponse",
+        "type": "object"
+      },
+      "GraphImpactResponse": {
+        "properties": {
+          "affected_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "callers": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Callers",
+            "type": "array"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "metrics": {
+            "additionalProperties": true,
+            "title": "Metrics",
+            "type": "object"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "risks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Risks",
+            "type": "array"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "tests": {
+            "items": {
+              "$ref": "#/components/schemas/GraphFileItem"
+            },
+            "title": "Tests",
+            "type": "array"
+          },
+          "usages": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Usages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "repo",
+          "symbol",
+          "definitions",
+          "usages",
+          "callers",
+          "affected_files",
+          "tests",
+          "risks",
+          "metrics",
+          "latency_ms"
+        ],
+        "title": "GraphImpactResponse",
+        "type": "object"
+      },
+      "GraphNodeResponse": {
+        "properties": {
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "provenance": {
+            "default": "ast_index",
+            "title": "Provenance",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "total_definitions": {
+            "title": "Total Definitions",
+            "type": "integer"
+          },
+          "total_usages": {
+            "title": "Total Usages",
+            "type": "integer"
+          },
+          "usages": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Usages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "repo",
+          "symbol",
+          "definitions",
+          "usages",
+          "total_definitions",
+          "total_usages",
+          "latency_ms"
+        ],
+        "title": "GraphNodeResponse",
+        "type": "object"
+      },
+      "GraphRelationResponse": {
+        "properties": {
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          },
+          "relation_source": {
+            "default": "ast_index",
+            "title": "Relation Source",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "symbol",
+          "relation",
+          "nodes",
+          "total",
+          "latency_ms"
+        ],
+        "title": "GraphRelationResponse",
+        "type": "object"
+      },
+      "GraphSymbolRequest": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
+          },
+          "symbol": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "symbol"
+        ],
+        "title": "GraphSymbolRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "components": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Components",
+            "type": "object"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "components"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "IndexDocsRequest": {
+        "properties": {
+          "collection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection"
+          },
+          "doc_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Types"
+          },
+          "docs_path": {
+            "minLength": 1,
+            "title": "Docs Path",
+            "type": "string"
+          },
+          "full": {
+            "default": false,
+            "title": "Full",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "docs_path"
+        ],
+        "title": "IndexDocsRequest",
+        "type": "object"
+      },
+      "IndexRequest": {
+        "properties": {
+          "collection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection"
+          },
+          "full": {
+            "default": false,
+            "title": "Full",
+            "type": "boolean"
+          },
+          "languages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Languages"
+          },
+          "repo_path": {
+            "minLength": 1,
+            "title": "Repo Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_path"
+        ],
+        "title": "IndexRequest",
+        "type": "object"
+      },
+      "IndexResponse": {
+        "properties": {
+          "chunks_indexed": {
+            "title": "Chunks Indexed",
+            "type": "integer"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "files_deleted": {
+            "title": "Files Deleted",
+            "type": "integer"
+          },
+          "files_processed": {
+            "title": "Files Processed",
+            "type": "integer"
+          },
+          "files_skipped": {
+            "title": "Files Skipped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files_processed",
+          "chunks_indexed",
+          "files_skipped",
+          "files_deleted",
+          "errors"
+        ],
+        "title": "IndexResponse",
+        "type": "object"
+      },
+      "ProjectModule": {
+        "properties": {
+          "file_count": {
+            "default": 0,
+            "title": "File Count",
+            "type": "integer"
+          },
+          "kinds": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Kinds",
+            "type": "object"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "score": {
+            "default": 0.0,
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "ProjectModule",
+        "type": "object"
+      },
+      "ProjectSymbol": {
+        "properties": {
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
+          "line": {
+            "default": 0,
+            "title": "Line",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "signature": {
+            "default": "",
+            "title": "Signature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProjectSymbol",
+        "type": "object"
+      },
+      "ProjectUnderstandRequest": {
+        "properties": {
+          "max_modules": {
+            "default": 8,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Modules",
+            "type": "integer"
+          },
+          "max_slices": {
+            "default": 8,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Slices",
+            "type": "integer"
+          },
+          "max_source_tokens": {
+            "default": 6000,
+            "maximum": 100000.0,
+            "minimum": 100.0,
+            "title": "Max Source Tokens",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "repo": {
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "query"
+        ],
+        "title": "ProjectUnderstandRequest",
+        "type": "object"
+      },
+      "ProjectUnderstandResponse": {
+        "properties": {
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectModule"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "slices": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Slices",
+            "type": "array"
+          },
+          "symbols": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectSymbol"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "total_source_tokens": {
+            "title": "Total Source Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "query",
+          "modules",
+          "symbols",
+          "slices",
+          "total_source_tokens",
+          "latency_ms"
+        ],
+        "title": "ProjectUnderstandResponse",
+        "type": "object"
+      },
+      "RelatedLink": {
+        "description": "A structurally-related file returned as a LINK (no code) to save tokens.\n\nThe caller fetches the body on demand (e.g. via /resolve or read) only for\nthe ones it actually needs.",
+        "properties": {
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "lines": {
+            "title": "Lines",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          },
+          "repo": {
+            "default": "",
+            "title": "Repo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "name",
+          "lines",
+          "relation"
+        ],
+        "title": "RelatedLink",
+        "type": "object"
+      },
+      "ReloadRequest": {
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "title": "ReloadRequest",
+        "type": "object"
+      },
+      "ReloadResponse": {
+        "properties": {
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "embedder_reinitialized": {
+            "title": "Embedder Reinitialized",
+            "type": "boolean"
+          },
+          "reloaded": {
+            "title": "Reloaded",
+            "type": "boolean"
+          },
+          "reranker_reinitialized": {
+            "default": false,
+            "title": "Reranker Reinitialized",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reloaded",
+          "embedder_reinitialized"
+        ],
+        "title": "ReloadResponse",
+        "type": "object"
+      },
+      "ResolveRequest": {
+        "properties": {
+          "definitions_limit": {
+            "default": 20,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Definitions Limit",
+            "type": "integer"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "repo": {
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
+          },
+          "symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "usages_limit": {
+            "default": 20,
+            "maximum": 200.0,
+            "minimum": 0.0,
+            "title": "Usages Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "title": "ResolveRequest",
+        "type": "object"
+      },
+      "ResolveResponse": {
+        "properties": {
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "total_definitions": {
+            "title": "Total Definitions",
+            "type": "integer"
+          },
+          "total_usages": {
+            "title": "Total Usages",
+            "type": "integer"
+          },
+          "usages": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Usages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "repo",
+          "symbols",
+          "definitions",
+          "usages",
+          "total_definitions",
+          "total_usages",
+          "latency_ms"
+        ],
+        "title": "ResolveResponse",
+        "type": "object"
+      },
+      "SearchPlanInfo": {
+        "properties": {
+          "filters": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Filters",
+            "type": "object"
+          },
+          "queries": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Queries",
+            "type": "array"
+          },
+          "strategy": {
+            "title": "Strategy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "strategy",
+          "queries"
+        ],
+        "title": "SearchPlanInfo",
+        "type": "object"
+      },
+      "SearchRequest": {
+        "properties": {
+          "filters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filters"
+          },
+          "planner": {
+            "default": "auto",
+            "pattern": "^(auto|llm|fallback)$",
+            "title": "Planner",
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "rerank": {
+            "default": true,
+            "title": "Rerank",
+            "type": "boolean"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "maximum": 200.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "type": "object"
+      },
+      "SearchResponse": {
+        "properties": {
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchPlanInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultItem"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "results",
+          "query",
+          "total",
+          "latency_ms"
+        ],
+        "title": "SearchResponse",
+        "type": "object"
+      },
+      "SearchResultItem": {
+        "properties": {
+          "chunk_type": {
+            "title": "Chunk Type",
+            "type": "string"
+          },
+          "citation": {
+            "default": "",
+            "title": "Citation",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "lines": {
+            "title": "Lines",
+            "type": "string"
+          },
+          "matched_queries": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Matched Queries",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_name": {
+            "title": "Parent Name",
+            "type": "string"
+          },
+          "repo": {
+            "default": "",
+            "title": "Repo",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "file_path",
+          "name",
+          "parent_name",
+          "chunk_type",
+          "language",
+          "lines",
+          "code",
+          "score"
+        ],
+        "title": "SearchResultItem",
+        "type": "object"
+      },
+      "SmartSearchRequest": {
+        "description": "Agentic retrieval: LLM infers symbols \u2192 exact /resolve + semantic.",
+        "properties": {
+          "candidate_limit": {
+            "default": 25,
+            "maximum": 200.0,
+            "minimum": 0.0,
+            "title": "Candidate Limit",
+            "type": "integer"
+          },
+          "candidate_offset": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Candidate Offset",
+            "type": "integer"
+          },
+          "definitions_limit": {
+            "default": 20,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Definitions Limit",
+            "type": "integer"
+          },
+          "include_bodies": {
+            "default": true,
+            "title": "Include Bodies",
+            "type": "boolean"
+          },
+          "include_related": {
+            "default": true,
+            "title": "Include Related",
+            "type": "boolean"
+          },
+          "include_semantic": {
+            "default": true,
+            "title": "Include Semantic",
+            "type": "boolean"
+          },
+          "include_vocab": {
+            "default": true,
+            "title": "Include Vocab",
+            "type": "boolean"
+          },
+          "question": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "related_limit": {
+            "default": 40,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Related Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "default": "",
+            "title": "Repo",
+            "type": "string"
+          },
+          "repos": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 10,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repos"
+          },
+          "top_k": {
+            "default": 15,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          },
+          "usages_limit": {
+            "default": 0,
+            "maximum": 200.0,
+            "minimum": 0.0,
+            "title": "Usages Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "SmartSearchRequest",
+        "type": "object"
+      },
+      "SmartSearchResponse": {
+        "properties": {
+          "candidates": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "candidates_total": {
+            "default": 0,
+            "title": "Candidates Total",
+            "type": "integer"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "grounded_symbols": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Grounded Symbols",
+            "type": "array"
+          },
+          "inferred_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inferred Symbols",
+            "type": "array"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "related": {
+            "items": {
+              "$ref": "#/components/schemas/RelatedLink"
+            },
+            "title": "Related",
+            "type": "array"
+          },
+          "repos_searched": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Repos Searched",
+            "type": "array"
+          },
+          "semantic": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultItem"
+            },
+            "title": "Semantic",
+            "type": "array"
+          },
+          "symbol_inference_ms": {
+            "title": "Symbol Inference Ms",
+            "type": "number"
+          },
+          "usages": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSlice"
+            },
+            "title": "Usages",
+            "type": "array"
+          },
+          "vocab_anchors": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Vocab Anchors",
+            "type": "array"
+          },
+          "vocab_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/VocabFile"
+            },
+            "title": "Vocab Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "question",
+          "inferred_symbols",
+          "definitions",
+          "usages",
+          "related",
+          "semantic",
+          "symbol_inference_ms",
+          "latency_ms"
+        ],
+        "title": "SmartSearchResponse",
+        "type": "object"
+      },
+      "StatusResponse": {
+        "properties": {
+          "collections": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Collections",
+            "type": "array"
+          },
+          "embedder_model": {
+            "title": "Embedder Model",
+            "type": "string"
+          },
+          "embedder_provider": {
+            "title": "Embedder Provider",
+            "type": "string"
+          },
+          "embedder_warm_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedder Warm Ms"
+          },
+          "files_indexed": {
+            "default": 0,
+            "title": "Files Indexed",
+            "type": "integer"
+          },
+          "gen_ctx_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gen Ctx Size"
+          },
+          "gen_model": {
+            "default": "",
+            "title": "Gen Model",
+            "type": "string"
+          },
+          "reranker_enabled": {
+            "default": false,
+            "title": "Reranker Enabled",
+            "type": "boolean"
+          },
+          "reranker_model": {
+            "default": "disabled",
+            "title": "Reranker Model",
+            "type": "string"
+          },
+          "restart_count": {
+            "default": 0,
+            "title": "Restart Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uptime_seconds": {
+            "title": "Uptime Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "status",
+          "embedder_provider",
+          "embedder_model",
+          "collections",
+          "uptime_seconds"
+        ],
+        "title": "StatusResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VocabBuildRequest": {
+        "description": "Build/refresh the project-vocabulary collection from a summaries JSONL.\n\nThe JSONL ({file: rel-path, summary: text}) lives on the daemon's host;\nupsert runs through the daemon so it shares the embedded-Qdrant lock.",
+        "properties": {
+          "batch_size": {
+            "default": 64,
+            "maximum": 256.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "jsonl_path": {
+            "minLength": 1,
+            "title": "Jsonl Path",
+            "type": "string"
+          },
+          "repo": {
+            "minLength": 1,
+            "title": "Repo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "jsonl_path"
+        ],
+        "title": "VocabBuildRequest",
+        "type": "object"
+      },
+      "VocabBuildResponse": {
+        "properties": {
+          "collection": {
+            "title": "Collection",
+            "type": "string"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "records": {
+            "title": "Records",
+            "type": "integer"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "upserted": {
+            "title": "Upserted",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "collection",
+          "records",
+          "upserted",
+          "latency_ms"
+        ],
+        "title": "VocabBuildResponse",
+        "type": "object"
+      },
+      "VocabFile": {
+        "description": "A file surfaced by the vocab (summary) layer \u2014 the concept\u2192symbol anchor.\n\nReturned with its summary + path directly so the caller can use it even when\nexact symbol-resolve (ast-index) is unavailable.",
+        "properties": {
+          "file_path": {
+            "title": "File Path",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "repo": {
+            "default": "",
+            "title": "Repo",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "name",
+          "summary",
+          "score"
+        ],
+        "title": "VocabFile",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "RAG System",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/admin/reload": {
+      "post": {
+        "description": "Re-read config files and lazily reinitialize the embedder if\nits model changed. Refuses to swap the embedding model (which\nwould invalidate the index) unless ``force=true``.\n\nReranker reload was dropped when the reranker was removed.",
+        "operationId": "admin_reload_admin_reload_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReloadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Reload"
+      }
+    },
+    "/ask": {
+      "post": {
+        "description": "Retrieval-Augmented Generation: search the index, then ground an\nOllama LLM answer in the retrieved chunks with citations.",
+        "operationId": "ask_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask"
+      }
+    },
+    "/call-tree": {
+      "post": {
+        "operationId": "call_tree_call_tree_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallTreeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallTreeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Call Tree"
+      }
+    },
+    "/collections": {
+      "get": {
+        "operationId": "collections_list_collections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Collections List"
+      }
+    },
+    "/context-pack": {
+      "post": {
+        "description": "Return a token-bounded set of source slices for a query.\n\nThis endpoint is intentionally stricter than /search: it favors exact\nsymbol/file/string matches from SQLite and packs only code spans that fit\nthe requested source budget. Semantic retrieval fills gaps when needed.",
+        "operationId": "context_pack_context_pack_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContextPackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextPackResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Context Pack"
+      }
+    },
+    "/docs-search": {
+      "post": {
+        "description": "Search indexed docs/specs, including generated event catalogs.",
+        "operationId": "docs_search_docs_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocsSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Docs Search"
+      }
+    },
+    "/enumerate": {
+      "post": {
+        "description": "Return ALL chunks matching payload filters. No vector search,\nno top-k cutoff. Pages through Qdrant via scroll. Use this for\nquestions like 'list every suspend function' or 'every @Singleton class'\nwhere exhaustiveness matters more than ranking.",
+        "operationId": "enumerate_chunks_enumerate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnumerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnumerateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enumerate Chunks"
+      }
+    },
+    "/events/recent": {
+      "get": {
+        "operationId": "events_recent_events_recent_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_ts",
+            "required": false,
+            "schema": {
+              "default": 0.0,
+              "title": "After Ts",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Events Recent"
+      }
+    },
+    "/files/recent": {
+      "get": {
+        "operationId": "files_recent_files_recent_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Files Recent"
+      }
+    },
+    "/graph/affected": {
+      "post": {
+        "operationId": "graph_affected_graph_affected_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphAffectedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphAffectedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Graph Affected"
+      }
+    },
+    "/graph/callees": {
+      "post": {
+        "operationId": "graph_callees_graph_callees_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphSymbolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphRelationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Graph Callees"
+      }
+    },
+    "/graph/callers": {
+      "post": {
+        "operationId": "graph_callers_graph_callers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphSymbolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphRelationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Graph Callers"
+      }
+    },
+    "/graph/files": {
+      "post": {
+        "operationId": "graph_files_graph_files_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphFilesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphFilesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Graph Files"
+      }
+    },
+    "/graph/impact": {
+      "post": {
+        "operationId": "graph_impact_graph_impact_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphSymbolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphImpactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Graph Impact"
+      }
+    },
+    "/graph/node": {
+      "post": {
+        "operationId": "graph_node_graph_node_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphSymbolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphNodeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Graph Node"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/health/detail": {
+      "get": {
+        "operationId": "health_detail_health_detail_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Detail"
+      }
+    },
+    "/index": {
+      "post": {
+        "operationId": "index_index_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Index"
+      }
+    },
+    "/index/backfill-code-index": {
+      "post": {
+        "description": "Populate SQLite code_index from existing Qdrant payloads.\n\nUseful after upgrading to the lexical/context-pack index: it avoids a\nfull embedding pass by reusing stored ``content`` and metadata payloads.",
+        "operationId": "backfill_code_index_index_backfill_code_index_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackfillCodeIndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackfillCodeIndexResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backfill Code Index"
+      }
+    },
+    "/index/docs": {
+      "post": {
+        "operationId": "index_docs_index_docs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexDocsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Index Docs"
+      }
+    },
+    "/index/jobs": {
+      "get": {
+        "operationId": "index_jobs_index_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Index Jobs"
+      }
+    },
+    "/index/progress/{job_id}": {
+      "get": {
+        "operationId": "index_progress_index_progress__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Index Progress"
+      }
+    },
+    "/index/start": {
+      "post": {
+        "operationId": "index_start_index_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Index Start"
+      }
+    },
+    "/overview": {
+      "get": {
+        "description": "Aggregate codebase metadata: languages, patterns, complexity stats.\n\nPrefers the materialized counters in SQLite (populated incrementally\nby the indexer); falls back to a full Qdrant scroll if those are\nempty (e.g. the index pre-dates the counter table) and seeds them\nfrom the scroll so subsequent calls stay cheap.",
+        "operationId": "overview_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Overview"
+      }
+    },
+    "/overview/tui": {
+      "get": {
+        "operationId": "overview_tui_overview_tui_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Overview Tui"
+      }
+    },
+    "/plugins": {
+      "get": {
+        "operationId": "plugins_list_plugins_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Plugins List"
+      }
+    },
+    "/project-understand": {
+      "post": {
+        "operationId": "project_understand_project_understand_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectUnderstandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectUnderstandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Project Understand"
+      }
+    },
+    "/queries/recent": {
+      "get": {
+        "operationId": "queries_recent_queries_recent_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queries Recent"
+      }
+    },
+    "/queries/stats": {
+      "get": {
+        "operationId": "queries_stats_queries_stats_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Window",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queries Stats"
+      }
+    },
+    "/resolve": {
+      "post": {
+        "operationId": "resolve_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve"
+      }
+    },
+    "/search": {
+      "post": {
+        "operationId": "search_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search"
+      }
+    },
+    "/smart-search": {
+      "post": {
+        "description": "Agentic retrieval = the design: an LLM (agy) infers candidate symbols\nfrom the natural-language question, resolves them to exact definitions\n(and usages, for blast-radius questions) via the AST index, and\ncomplements with semantic vector search. Returns the golden DATA \u2014 not a\ngenerated answer \u2014 for the calling agent to use.\n\nBenchmarked: doubles coverage over plain /search (36.7% vs 15-18%) by\ncracking vague questions where embeddings bury the canonical file.\n\nCross-repo: pass ``repos`` (list of names, or ``[\"*\"]`` for all\nregistered repos) to fan out concurrently and get merged, repo-tagged\nbuckets. ``repo`` targets a single repo as before.",
+        "operationId": "smart_search_smart_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SmartSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmartSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Smart Search"
+      }
+    },
+    "/stack": {
+      "get": {
+        "description": "Ollama/Docker/Qdrant/LSP/launchd health via the TUI's StackMonitor,\nso the browser dashboard renders the same service cards. The daemon\ncard is built client-side from /health + /status (this route answering\nalready proves the daemon is up).",
+        "operationId": "stack_status_stack_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stack Status"
+      }
+    },
+    "/stack/qdrant/start": {
+      "post": {
+        "description": "Start the Qdrant container \u2014 same action as the TUI's U key.",
+        "operationId": "stack_qdrant_start_stack_qdrant_start_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stack Qdrant Start"
+      }
+    },
+    "/status": {
+      "get": {
+        "operationId": "status_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Status"
+      }
+    },
+    "/vocab/build": {
+      "post": {
+        "description": "Embed per-file summaries into the repo's vocab collection.\n\nIdempotent: chunk_ids are deterministic per (repo, rel-path), so a re-run\nwith an updated JSONL upserts in place rather than duplicating.",
+        "operationId": "vocab_build_vocab_build_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VocabBuildRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VocabBuildResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Vocab Build"
+      }
+    }
+  }
+}

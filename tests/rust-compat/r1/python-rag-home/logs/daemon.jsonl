@@ -1,0 +1,9 @@
+{"event":"http_request","latency_ms":9.3,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-17T15:18:01.976198Z"}
+{"event":"http_request","latency_ms":4.7,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-17T15:18:12.329878Z"}
+{"event":"http_request","latency_ms":7.8,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-17T15:39:56.853306Z"}
+{"event":"http_request","latency_ms":15.1,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-17T17:13:05.697003Z"}
+{"event":"http_request","latency_ms":5.9,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-17T17:15:34.762466Z"}
+{"event":"http_request","latency_ms":5.1,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-17T17:19:13.844938Z"}
+{"event":"http_request","latency_ms":8.3,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-17T17:29:17.295453Z"}
+{"event":"http_request","latency_ms":5.8,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-18T06:19:38.149503Z"}
+{"event":"http_request","latency_ms":4.1,"level":"info","method":"POST","path":"/search","status":200,"timestamp":"2026-07-18T06:22:15.980609Z"}

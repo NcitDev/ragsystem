@@ -1,0 +1,7 @@
+{
+  "language": "dart",
+  "python_loader": "tree_sitter_language_pack",
+  "rust_status": "resolved",
+  "selected_crate": "tree-sitter-dart 0.2.0",
+  "reason": "The maintained crates.io release tree-sitter-dart 0.2.0 provides a Rust Dart grammar on the same tree-sitter line used by the crate, so the R3 decision is to treat Dart as supported rather than blocked."
+}
