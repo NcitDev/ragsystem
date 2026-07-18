@@ -146,7 +146,7 @@ limit.
 
 This project was ported from Python to Rust; the parity audit and benchmark
 history are in `docs/python-parity-audit.md`,
-`docs/benchmark_full_matrix/summary.md`, and `docs/rust-migration-plan.md`. The
+`docs/benchmark_full_matrix/summary.md`, and `docs/rust-migration-plan.md`.
 Historical migration benchmark snapshots report parity or better retrieval
 quality with lower latency and memory than the former Python implementation.
 Those results were not rerun by the production audit and are not a current
