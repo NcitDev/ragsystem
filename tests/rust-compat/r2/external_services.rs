@@ -216,6 +216,33 @@ async fn qdrant_record(
     }
 }
 
+/// `POST /collections/{c}/points` — fetch payloads for explicit ids. Returns
+/// only the ids it knows about, so the test can assert that a miss is an
+/// absent record rather than an error.
+async fn qdrant_retrieve(
+    State(state): State<MockState>,
+    Path(collection): Path<String>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    state
+        .calls
+        .lock()
+        .await
+        .push((format!("{collection}:retrieve"), body.clone()));
+    let known = ["p1", "p2"];
+    let result: Vec<Value> = body["ids"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| known.contains(id))
+                .map(|id| json!({"id": id, "payload": {"file_path": format!("{id}.py")}}))
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(json!({ "result": result }))
+}
+
 async fn qdrant_create_or_upsert(
     State(state): State<MockState>,
     Path(collection): Path<String>,
@@ -258,13 +285,57 @@ fn qdrant_router(state: MockState) -> Router {
         .route("/collections/{collection}/index", put(qdrant_index))
         .route(
             "/collections/{collection}/points",
-            put(qdrant_create_or_upsert),
+            put(qdrant_create_or_upsert).post(qdrant_retrieve),
         )
         .route(
             "/collections/{collection}/points/{action}",
             post(qdrant_record),
         )
         .with_state(state)
+}
+
+/// Payload hydration for lexically-promoted hits: those are rebuilt from the
+/// SQLite mirror, which stores no enrichment, so without this they score 0.0
+/// on recency/patterns/quality while dense hits carry the full payload.
+#[tokio::test]
+async fn qdrant_retrieves_payloads_by_id_and_tolerates_missing_ids() {
+    let state = MockState::default();
+    let base_url = spawn(qdrant_router(state.clone())).await;
+    let client = QdrantClient::new(QdrantConfig {
+        base_url,
+        retry: fast_retry(),
+        ..QdrantConfig::default()
+    })
+    .expect("client");
+
+    // An empty request must not touch the network at all.
+    assert!(client
+        .retrieve("code_chunks", &[])
+        .await
+        .expect("empty retrieve")
+        .is_empty());
+    assert!(state.calls.lock().await.is_empty());
+
+    let ids = ["p1".to_owned(), "absent".to_owned(), "p2".to_owned()];
+    let records = client
+        .retrieve("code_chunks", &ids)
+        .await
+        .expect("retrieve");
+
+    // A miss is an absent record, not an error — the caller keeps the
+    // un-hydrated hit rather than losing it.
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].id, json!("p1"));
+    assert_eq!(
+        records[0].payload.get("file_path"),
+        Some(&rag_services::qdrant::PayloadValue::String("p1.py".into()))
+    );
+
+    let calls = state.calls.lock().await;
+    let (route, body) = &calls[0];
+    assert_eq!(route, "code_chunks:retrieve");
+    assert_eq!(body["with_payload"], json!(true));
+    assert_eq!(body["ids"], json!(["p1", "absent", "p2"]));
 }
 
 #[tokio::test]

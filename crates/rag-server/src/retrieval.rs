@@ -519,6 +519,12 @@ impl RetrievalBackend {
             .and_then(Value::as_u64)
             .unwrap_or(20)
             .clamp(1, 100) as usize;
+        // NOTE: this also removes semantic entries from `candidates` and
+        // shrinks `candidates_total`, so it silently changes pagination — two
+        // requests differing only in this flag do not page over the same pool.
+        // A caller that wants "links, not bodies" wants `include_bodies:
+        // false`, which is pagination-stable; this flag is for dropping the
+        // dense channel entirely.
         let include_semantic = body
             .get("include_semantic")
             .and_then(Value::as_bool)
@@ -1305,6 +1311,9 @@ impl RetrievalBackend {
         .unwrap_or_default();
 
         let mut seen: HashSet<_> = hits.iter().map(|hit| result_key(&hit.payload)).collect();
+        // (index into `hits`, Qdrant point id) for each promoted lexical hit,
+        // so their enrichment can be hydrated in one round trip below.
+        let mut promoted: Vec<(usize, String)> = Vec::new();
         for lexical_hit in lexical {
             let chunk = lexical_hit.chunk;
             let mut payload = Map::new();
@@ -1321,6 +1330,7 @@ impl RetrievalBackend {
                 continue;
             }
             seen.insert(key);
+            promoted.push((hits.len(), super::indexing::point_id_for(&chunk.chunk_id)));
             hits.push(SearchHit {
                 point_id: format!("lex:{}", chunk.chunk_id),
                 content: chunk.code,
@@ -1328,7 +1338,67 @@ impl RetrievalBackend {
                 payload,
             });
         }
+
+        self.hydrate_lexical_payloads(code_collection, &mut hits, &promoted)
+            .await;
         hits
+    }
+
+    /// Fill in the enrichment a lexical hit cannot carry.
+    ///
+    /// Promoted hits are rebuilt from the SQLite mirror, whose `code_index`
+    /// table stores only structural columns — no `git_last_modified`, no
+    /// `patterns`, none of the quality flags. `score_hits` then scored every
+    /// FTS hit 0.0 on recency, pattern and quality while dense hits carried the
+    /// full Qdrant payload, systematically under-ranking exact-symbol evidence
+    /// by up to the sum of those three weights (0.30) — wider than a typical
+    /// top-10 result band.
+    ///
+    /// Point ids are deterministic, so one `retrieve` covers the whole batch.
+    /// Best-effort throughout: a Qdrant failure leaves the hits exactly as they
+    /// were rather than dropping them, which is the pre-existing behavior.
+    async fn hydrate_lexical_payloads(
+        &self,
+        collection: &str,
+        hits: &mut [SearchHit],
+        promoted: &[(usize, String)],
+    ) {
+        if promoted.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = promoted.iter().map(|(_, id)| id.clone()).collect();
+        let Ok(records) = self.qdrant.retrieve(collection, &ids).await else {
+            return;
+        };
+        let by_id: BTreeMap<String, Value> = records
+            .into_iter()
+            .map(|record| {
+                let id = match record.id {
+                    Value::String(text) => text,
+                    other => other.to_string(),
+                };
+                (
+                    id,
+                    serde_json::to_value(&record.payload).unwrap_or(json!({})),
+                )
+            })
+            .collect();
+        for (index, point_id) in promoted {
+            let Some(Value::Object(full)) = by_id.get(point_id) else {
+                continue;
+            };
+            let Some(hit) = hits.get_mut(*index) else {
+                continue;
+            };
+            // `or_insert`: the SQLite-derived structural fields stay
+            // authoritative (they are what dedup keyed on), and everything the
+            // mirror could not supply is added.
+            for (key, value) in full {
+                hit.payload
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+        }
     }
 }
 

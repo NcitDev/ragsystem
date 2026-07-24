@@ -336,6 +336,12 @@ struct ScrollRequest<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct RetrieveRequest<'a> {
+    ids: &'a [String],
+    with_payload: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct CountRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     filter: Option<&'a QdrantFilter>,
@@ -635,6 +641,51 @@ impl QdrantClient {
                     source,
                 })?;
             let envelope: QdrantEnvelope<ScrollPage> = read_or_status(SERVICE, response).await?;
+            Ok(envelope.result)
+        })
+        .await
+    }
+
+    /// Fetch payloads for explicit point ids.
+    ///
+    /// Lexically-promoted search hits are built from the SQLite mirror, which
+    /// stores only the structural columns (`file_path`, `name`, lines, …) and
+    /// none of the enrichment the ranker scores on. Without a way to hydrate
+    /// them, every FTS hit scored 0.0 on recency, patterns and quality while
+    /// dense hits carried the full payload — systematically under-ranking
+    /// exact-symbol evidence. Point ids are deterministic
+    /// (`uuid5(NAMESPACE_DNS, chunk_id)`), so the caller can ask for exactly
+    /// the ids it needs in one round trip.
+    ///
+    /// Missing ids are simply absent from the result; this is not an error.
+    pub async fn retrieve(
+        &self,
+        collection: &str,
+        ids: &[String],
+    ) -> Result<Vec<Record>, ServiceError> {
+        self.validate_collection(collection)?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = RetrieveRequest {
+            ids,
+            with_payload: true,
+        };
+        retry_async(SERVICE, &self.config.retry, || async {
+            let response = self
+                .client
+                .post(format!(
+                    "{}/collections/{collection}/points",
+                    self.config.base_url
+                ))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|source| ServiceError::Transport {
+                    service: SERVICE,
+                    source,
+                })?;
+            let envelope: QdrantEnvelope<Vec<Record>> = read_or_status(SERVICE, response).await?;
             Ok(envelope.result)
         })
         .await
