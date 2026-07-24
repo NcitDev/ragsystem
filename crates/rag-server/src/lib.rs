@@ -600,6 +600,11 @@ async fn generic_get(State(state): State<ServerState>, request: Request) -> Resp
                 return Json(stack::stack_status_json(paths).await).into_response();
             }
         }
+        if path == "/diagnose" {
+            if let Some(paths) = state.rag_paths.as_ref() {
+                return Json(diagnose_json(paths).await).into_response();
+            }
+        }
         if let Some(backend) = state.retrieval.as_ref() {
             match path.as_str() {
                 "/overview" => return Json(backend.overview_route().await).into_response(),
@@ -657,23 +662,7 @@ async fn generic_post(State(state): State<ServerState>, request: Request) -> Res
             if let Some(result) = handled {
                 return match result {
                     Ok(value) => Json(value).into_response(),
-                    Err(error) if error.starts_with("missing required field") => {
-                        let field = error.rsplit(": ").next().unwrap_or("body");
-                        validation_422(field, "field required", "value_error.missing")
-                    }
-                    Err(error) if error.starts_with("unknown repo") => {
-                        api_error(StatusCode::NOT_FOUND, &error, "HTTP_ERROR")
-                    }
-                    // A destination outside `~/.rag/exports` is a bad request,
-                    // not a backend outage — keep it off the 5xx path.
-                    Err(error) if error.starts_with("invalid output path") => {
-                        api_error(StatusCode::BAD_REQUEST, &error, "HTTP_ERROR")
-                    }
-                    Err(_) => api_error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Live retrieval backend is unavailable",
-                        "BACKEND_NOT_READY",
-                    ),
+                    Err(error) => route_error_response(&error),
                 };
             }
         }
@@ -687,7 +676,10 @@ async fn generic_post(State(state): State<ServerState>, request: Request) -> Res
         {
             Ok(Ok(Some(value))) => return Json(value).into_response(),
             Ok(Ok(None)) => {}
-            Ok(Err(_)) | Err(_) => {
+            Ok(Err(error)) => return route_error_response(&error),
+            // A JoinError is a panic in the blocking worker: a real failure of
+            // this daemon, never something the caller asked for.
+            Err(_) => {
                 return api_error(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "Live retrieval backend is unavailable",
@@ -739,6 +731,67 @@ async fn index_progress(Path(job_id): Path<String>) -> Json<Value> {
         "files_processed": 0,
         "chunks_indexed": 0,
     }))
+}
+
+/// `/diagnose`: the CLI-facing health summary.
+///
+/// This route used to return a hard-coded `{"status":"degraded","checks":[]}`
+/// on every call — so `rag diagnose` always claimed the stack was degraded and
+/// never named a reason, and the README told users to run it to check whether
+/// `ast-index` was installed. `/stack` already performs the real probes for
+/// the dashboards; this projects them into a flat, scriptable check list.
+async fn diagnose_json(paths: &RagPaths) -> Value {
+    let stack = stack::stack_status_json(paths).await;
+    let mut checks = Vec::new();
+    let mut degraded = false;
+
+    for key in ["ollama", "qdrant", "docker", "ast_index"] {
+        let Some(card) = stack.get(key) else { continue };
+        let state = card
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        // `warn`/`error` both mean "a human should look at this"; docker is
+        // informational because `qdrant.mode = "embedded"` needs no Docker.
+        if key != "docker" && state != "ok" {
+            degraded = true;
+        }
+        checks.push(json!({
+            "name": key,
+            "state": state,
+            "detail": card.get("headline").cloned().unwrap_or(json!("")),
+            "hint": card.get("hint").cloned().unwrap_or(json!("")),
+        }));
+    }
+
+    // Config sanity: the class of misconfiguration that presents as a service
+    // outage. An embeddings.model that is not an Ollama tag makes the daemon
+    // report `ollama: unavailable` while Ollama is perfectly healthy.
+    if let Ok(settings) = rag_config::load_settings(paths) {
+        let model = settings.embeddings.model.clone();
+        let looks_like_hf_path = model.contains('/');
+        if looks_like_hf_path {
+            degraded = true;
+        }
+        checks.push(json!({
+            "name": "config.embeddings.model",
+            "state": if looks_like_hf_path { "warn" } else { "ok" },
+            "detail": model.clone(),
+            "hint": if looks_like_hf_path {
+                format!("{model:?} looks like a HuggingFace repo path, not an Ollama tag. \
+                         Ollama is matched against the tags `ollama list` prints, so this \
+                         never matches and the daemon reports `ollama: unavailable` even \
+                         when Ollama is healthy.")
+            } else {
+                String::new()
+            },
+        }));
+    }
+
+    json!({
+        "status": if degraded { "degraded" } else { "ok" },
+        "checks": checks,
+    })
 }
 
 fn live_get_response(path: &str, paths: Option<&RagPaths>) -> Option<Value> {
@@ -1635,12 +1688,8 @@ fn live_ask(paths: &RagPaths, body: &Value) -> Result<Value, String> {
 }
 
 fn live_index(paths: &RagPaths, body: &Value) -> Result<Value, String> {
-    let repo_path = std::path::PathBuf::from(required_string(body, "repo_path")?)
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if !repo_path.is_dir() {
-        return Err("repository path is not a directory".to_owned());
-    }
+    let repo_path =
+        indexing::canonical_directory("repo_path", required_string(body, "repo_path")?)?;
     std::fs::create_dir_all(&paths.home).map_err(|error| error.to_string())?;
     let settings = rag_config::load_settings(paths).unwrap_or_default();
     let skip_dirs: Vec<_> = settings
@@ -1769,9 +1818,10 @@ fn sanitize_name(name: &str) -> String {
 }
 
 fn live_index_docs(paths: &RagPaths, body: &Value) -> Result<Value, String> {
-    let docs_path = std::path::PathBuf::from(required_string(body, "docs_path")?)
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    // `discover_docs` accepts a file or a directory, so only existence is
+    // required here — but a `docs_path` that is not there is still the
+    // caller's mistake, not an outage.
+    let docs_path = indexing::canonical_path("docs_path", required_string(body, "docs_path")?)?;
     std::fs::create_dir_all(&paths.home).map_err(|error| error.to_string())?;
     let collection = body
         .get("collection")
@@ -2083,6 +2133,48 @@ fn body_field(body: Option<&Value>, field: &str) -> Value {
     body.and_then(|value| value.get(field))
         .cloned()
         .unwrap_or(json!(""))
+}
+
+/// Map a route error onto an HTTP response.
+///
+/// The default is `503 BACKEND_NOT_READY`, and it stays reserved for what it
+/// says: the daemon could not reach Qdrant/Ollama/SQLite. Client mistakes are
+/// classified explicitly first, because a caller error dressed as an outage
+/// sends an operator to restart healthy services instead of fixing the
+/// request. Two mechanisms feed the classification: [`indexing::RouteRejection`],
+/// which is typed at the point of failure and decoded here, and the documented
+/// error prefixes of the helpers that predate it.
+fn route_error_response(error: &str) -> Response {
+    match indexing::RouteRejection::decode(error) {
+        // Well-formed request, busy repository: 409, and the message says which
+        // repository — the caller can just retry.
+        Some(indexing::RouteRejection::Conflict(message)) => {
+            api_error(StatusCode::CONFLICT, &message, "HTTP_ERROR")
+        }
+        Some(indexing::RouteRejection::PathNotFound { field, message }) => {
+            validation_422(&field, &message, "value_error.path.not_exists")
+        }
+        Some(indexing::RouteRejection::PathNotDirectory { field, message }) => {
+            validation_422(&field, &message, "value_error.path.not_a_directory")
+        }
+        None if error.starts_with("missing required field") => {
+            let field = error.rsplit(": ").next().unwrap_or("body");
+            validation_422(field, "field required", "value_error.missing")
+        }
+        None if error.starts_with("unknown repo") => {
+            api_error(StatusCode::NOT_FOUND, error, "HTTP_ERROR")
+        }
+        // A destination outside `~/.rag/exports` is a bad request, not a
+        // backend outage — keep it off the 5xx path.
+        None if error.starts_with("invalid output path") => {
+            api_error(StatusCode::BAD_REQUEST, error, "HTTP_ERROR")
+        }
+        None => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Live retrieval backend is unavailable",
+            "BACKEND_NOT_READY",
+        ),
+    }
 }
 
 /// FastAPI-style validation rejection: `{"detail": [{loc, msg, type}]}`.
@@ -2423,9 +2515,10 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use http::{header, Request, StatusCode};
     use rag_contracts::{ErrorResponse, HealthResponse};
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use tower::ServiceExt;
 
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use super::retrieval::resolve_export_path;
@@ -2844,5 +2937,211 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // -----------------------------------------------------------------------
+    // Route error mapping: a client mistake must never be reported as an
+    // outage, and an outage must never be reported as anything else.
+    // -----------------------------------------------------------------------
+
+    /// A backend wired to a port nothing listens on. Enough to take the dense
+    /// `/index` write path (`indexing::index_route`), and guaranteed to fail
+    /// the instant that path touches Qdrant.
+    fn unreachable_backend() -> super::RetrievalBackend {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a port");
+        let address = listener.local_addr().expect("reserved address");
+        // Releasing it leaves the port closed, so every connection is refused
+        // immediately instead of hanging on a firewall-black-holed address.
+        drop(listener);
+        let settings = rag_config::Settings {
+            qdrant: rag_config::QdrantSettings {
+                url: format!("http://{address}"),
+                ..rag_config::QdrantSettings::default()
+            },
+            ..rag_config::Settings::default()
+        };
+        super::RetrievalBackend::from_settings(&settings).expect("backend clients")
+    }
+
+    async fn post_json(app: axum::Router, uri: &str, body: &Value) -> (StatusCode, Value) {
+        let response = app
+            .oneshot(
+                request("POST", uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// A second `/index` for a repository that is already being indexed is a
+    /// conflict, not an outage: the daemon is healthy and the request is
+    /// well-formed, the repository is merely busy. It used to answer
+    /// `503 BACKEND_NOT_READY` and throw the real message away, which sends an
+    /// operator to restart Qdrant over a request that just needs a retry.
+    #[tokio::test]
+    async fn concurrent_index_for_the_same_repo_is_a_409_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.canonicalize().unwrap();
+
+        // Hold the per-repo guard exactly as an in-flight run does. The write
+        // path takes it before it talks to Qdrant, so the rejected request is
+        // answered without ever reaching the (deliberately dead) backend —
+        // deterministic, and no sleep anywhere.
+        let _in_flight =
+            super::indexing::IndexRunGuard::acquire(&repo).expect("first run takes the guard");
+
+        let app = router_with_state(
+            ServerState::new(None)
+                .with_rag_home(temp.path().join("rag-home"))
+                .with_retrieval(Arc::new(unreachable_backend())),
+        );
+        let (status, value) = post_json(
+            app,
+            "/index",
+            &json!({"repo_path": repo, "collection": "repo_busy"}),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT, "unexpected body: {value}");
+        let message = value["error"].as_str().expect("error envelope");
+        assert!(
+            message.contains("another index run is already in progress"),
+            "the conflict was not named: {message}"
+        );
+        assert!(
+            !message.contains("backend"),
+            "a busy repository was reported as a backend problem: {message}"
+        );
+        // Envelope shape is unchanged — only the status and the message are.
+        assert_eq!(value["code"], "HTTP_ERROR");
+        assert!(value["detail"].is_null());
+    }
+
+    /// A `repo_path` the caller made up is a 4xx on both write paths (dense and
+    /// the SQLite fallback), in the same FastAPI shape the rest of the request
+    /// contract uses. It used to be `503 BACKEND_NOT_READY` on both.
+    #[tokio::test]
+    async fn bad_repo_path_is_a_422_not_a_backend_outage() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("rag-home");
+        let missing = temp.path().join("no-such-repo");
+        let a_file = temp.path().join("a-file.txt");
+        std::fs::write(&a_file, "not a repository").unwrap();
+
+        for (path, expected_type) in [
+            (&missing, "value_error.path.not_exists"),
+            (&a_file, "value_error.path.not_a_directory"),
+        ] {
+            let states = [
+                // No retrieval backend: the SQLite `live_index` path.
+                (
+                    "sqlite fallback",
+                    ServerState::new(None).with_rag_home(&home),
+                ),
+                (
+                    "dense backend",
+                    ServerState::new(None)
+                        .with_rag_home(&home)
+                        .with_retrieval(Arc::new(unreachable_backend())),
+                ),
+            ];
+            for (label, state) in states {
+                let (status, value) = post_json(
+                    router_with_state(state),
+                    "/index",
+                    &json!({"repo_path": path, "collection": "repo_missing"}),
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "{label} answered {status} for {}: {value}",
+                    path.display()
+                );
+                assert_eq!(value["detail"][0]["loc"], json!(["body", "repo_path"]));
+                assert_eq!(value["detail"][0]["type"], expected_type, "{label}");
+                assert!(
+                    value["detail"][0]["msg"].is_string(),
+                    "{label} lost the FastAPI msg"
+                );
+            }
+        }
+    }
+
+    /// The regression guard for the two cases above: narrowing the mapping must
+    /// not let a genuine outage through as a client error. Everything about
+    /// this request is valid — the path exists, nothing holds the run guard —
+    /// and the only thing wrong is that Qdrant cannot be reached.
+    #[tokio::test]
+    async fn unreachable_backend_still_returns_503_backend_not_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("app.py"), "def alpha(value):\n    return value\n").unwrap();
+
+        let app = router_with_state(
+            ServerState::new(None)
+                .with_rag_home(temp.path().join("rag-home"))
+                .with_retrieval(Arc::new(unreachable_backend())),
+        );
+        let (status, value) = post_json(
+            app,
+            "/index",
+            &json!({"repo_path": repo, "collection": "repo_offline"}),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a real outage stopped being a 503: {value}"
+        );
+        assert_eq!(value["code"], "BACKEND_NOT_READY");
+        assert_eq!(value["error"], "Live retrieval backend is unavailable");
+    }
+
+    /// The rejection wire format is the contract between the write paths and
+    /// the HTTP mapping. Field names never contain `": "`, messages do, so the
+    /// split has to be on the first separator only — and an error nobody
+    /// tagged must stay unclassified (i.e. a 503).
+    #[test]
+    fn route_rejections_round_trip_and_leave_untagged_errors_alone() {
+        use super::indexing::RouteRejection;
+
+        for rejection in [
+            RouteRejection::Conflict("another index run is already in progress for /a: b".into()),
+            RouteRejection::PathNotFound {
+                field: "repo_path".into(),
+                message: "file or directory at path \"/a: b\" does not exist".into(),
+            },
+            RouteRejection::PathNotDirectory {
+                field: "docs_path".into(),
+                message: "path \"/a: b\" does not point to a directory".into(),
+            },
+        ] {
+            let encoded = rejection.encode();
+            assert_eq!(
+                RouteRejection::decode(&encoded),
+                Some(rejection),
+                "{encoded}"
+            );
+        }
+        for untagged in [
+            "qdrant returned HTTP 500: internal error",
+            "unknown repo: sample",
+            "",
+        ] {
+            assert_eq!(RouteRejection::decode(untagged), None, "{untagged}");
+        }
     }
 }

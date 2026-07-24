@@ -955,12 +955,20 @@ async fn concurrent_run_for_the_same_repo_is_rejected() {
     entered.recv().await.expect("first run reached embedding");
 
     let (status, blocked) = harness.index(json!({})).await;
+    // A busy repository is a conflict, not an outage: the daemon is healthy and
+    // the request is well-formed, so it gets a 409 that names the conflict.
     assert_eq!(
         status,
-        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::CONFLICT,
         "a concurrent run for the same repo must be rejected: {blocked}"
     );
-    assert_eq!(blocked["code"], "BACKEND_NOT_READY");
+    assert!(
+        blocked["error"]
+            .as_str()
+            .expect("error envelope")
+            .contains("another index run is already in progress"),
+        "the conflict was not named: {blocked}"
+    );
     assert!(
         harness.qdrant.ids(COLLECTION).is_empty(),
         "the rejected run must not have written anything"

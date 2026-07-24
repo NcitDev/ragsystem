@@ -85,25 +85,141 @@ const GIT_RECENCY_WINDOW_DAYS: u32 = 180;
 /// exactly like a non-git directory.
 const GIT_LOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// In-process per-repo run lock (Python parity: non-blocking flock that fails
-/// fast with "another index run holds the lock").
+/// Route failures that are the *caller's* fault rather than a backend outage.
+///
+/// Write paths report failures to `generic_post` as `String`, a channel shared
+/// with `retrieval.rs` and `live_post_response`, so it cannot be narrowed to a
+/// typed error here. The HTTP classification is still typed at both ends:
+/// [`RouteRejection::encode`] is the only producer of these strings and
+/// [`RouteRejection::decode`] the only consumer. Anything `decode` does not
+/// recognise keeps the `503 BACKEND_NOT_READY` mapping, so extending this enum
+/// can never silently swallow a genuine outage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RouteRejection {
+    /// The request is well-formed but the repository is busy — another run
+    /// holds the per-repo guard. HTTP 409: retrying later works.
+    Conflict(String),
+    /// A caller-supplied path field that does not resolve. HTTP 422.
+    PathNotFound {
+        /// Request field that carried the path (`repo_path`, `docs_path`).
+        field: String,
+        /// FastAPI-shaped `msg` for the 422 body.
+        message: String,
+    },
+    /// A caller-supplied path field that resolves to a non-directory. HTTP 422.
+    PathNotDirectory {
+        /// Request field that carried the path.
+        field: String,
+        /// FastAPI-shaped `msg` for the 422 body.
+        message: String,
+    },
+}
+
+impl RouteRejection {
+    const CONFLICT_TAG: &'static str = "index run conflict: ";
+    const NOT_FOUND_TAG: &'static str = "invalid path (not found): ";
+    const NOT_DIRECTORY_TAG: &'static str = "invalid path (not a directory): ";
+
+    /// Render into the `String` error channel the route handlers return.
+    pub(crate) fn encode(&self) -> String {
+        match self {
+            Self::Conflict(message) => format!("{}{message}", Self::CONFLICT_TAG),
+            Self::PathNotFound { field, message } => {
+                format!("{}{field}: {message}", Self::NOT_FOUND_TAG)
+            }
+            Self::PathNotDirectory { field, message } => {
+                format!("{}{field}: {message}", Self::NOT_DIRECTORY_TAG)
+            }
+        }
+    }
+
+    /// Recover a rejection from a route error, or `None` when the error is not
+    /// one of ours — i.e. when something downstream really did fail.
+    pub(crate) fn decode(error: &str) -> Option<Self> {
+        // The field name never contains ": ", the message may, so the split is
+        // on the first separator only.
+        fn split(rest: &str) -> Option<(String, String)> {
+            let (field, message) = rest.split_once(": ")?;
+            Some((field.to_owned(), message.to_owned()))
+        }
+        if let Some(message) = error.strip_prefix(Self::CONFLICT_TAG) {
+            return Some(Self::Conflict(message.to_owned()));
+        }
+        if let Some(rest) = error.strip_prefix(Self::NOT_FOUND_TAG) {
+            let (field, message) = split(rest)?;
+            return Some(Self::PathNotFound { field, message });
+        }
+        if let Some(rest) = error.strip_prefix(Self::NOT_DIRECTORY_TAG) {
+            let (field, message) = split(rest)?;
+            return Some(Self::PathNotDirectory { field, message });
+        }
+        None
+    }
+}
+
+/// Resolve a caller-supplied path field, existence-checked.
+///
+/// A path the caller named that is not there is a *request* error: the daemon
+/// is healthy, the argument is wrong. Reporting it as a rejection keeps it off
+/// the 503 path, where it would send an operator hunting a non-existent
+/// outage. The wording follows pydantic's `FilePath`/`DirectoryPath` messages
+/// so the 422 body stays FastAPI-compatible.
+pub(crate) fn canonical_path(field: &str, raw: &str) -> Result<PathBuf, String> {
+    PathBuf::from(raw).canonicalize().map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            format!("file or directory at path \"{raw}\" does not exist")
+        } else {
+            format!("file or directory at path \"{raw}\" is not accessible: {error}")
+        };
+        RouteRejection::PathNotFound {
+            field: field.to_owned(),
+            message,
+        }
+        .encode()
+    })
+}
+
+/// [`canonical_path`] plus the directory requirement the repository paths have.
+pub(crate) fn canonical_directory(field: &str, raw: &str) -> Result<PathBuf, String> {
+    let path = canonical_path(field, raw)?;
+    if !path.is_dir() {
+        return Err(RouteRejection::PathNotDirectory {
+            field: field.to_owned(),
+            message: format!("path \"{raw}\" does not point to a directory"),
+        }
+        .encode());
+    }
+    Ok(path)
+}
+
+/// In-process per-repo run lock.
+///
+/// The fail-fast semantics match the Python indexer's non-blocking `flock`, but
+/// the exclusion does not: this is a process-local `static`, so it only
+/// serializes runs *within one daemon*. A second daemon process indexing the
+/// same repository is not excluded, where the Python lock file was. That is
+/// tolerable because the supervised deployment runs exactly one daemon; it is
+/// not a cross-process lock, and nothing here should be read as one.
 static ACTIVE_INDEX_RUNS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
 > = std::sync::OnceLock::new();
 
-struct IndexRunGuard(PathBuf);
+pub(crate) struct IndexRunGuard(PathBuf);
 
 impl IndexRunGuard {
-    fn acquire(repo_path: &Path) -> Result<Self, String> {
+    pub(crate) fn acquire(repo_path: &Path) -> Result<Self, String> {
         let lock = ACTIVE_INDEX_RUNS.get_or_init(|| std::sync::Mutex::new(Default::default()));
         let mut active = lock
             .lock()
             .map_err(|_| "index run lock poisoned".to_owned())?;
         if !active.insert(repo_path.to_path_buf()) {
-            return Err(format!(
+            // Not an outage: the request is well-formed and the daemon is
+            // healthy, the repository is simply busy.
+            return Err(RouteRejection::Conflict(format!(
                 "another index run is already in progress for {}",
                 repo_path.display()
-            ));
+            ))
+            .encode());
         }
         Ok(Self(repo_path.to_path_buf()))
     }
@@ -138,12 +254,7 @@ pub async fn index_route(
     paths: &RagPaths,
     body: &Value,
 ) -> Result<Value, String> {
-    let repo_path = PathBuf::from(crate::required_string(body, "repo_path")?)
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if !repo_path.is_dir() {
-        return Err("repository path is not a directory".to_owned());
-    }
+    let repo_path = canonical_directory("repo_path", crate::required_string(body, "repo_path")?)?;
     let repo_name = body
         .get("name")
         .and_then(Value::as_str)
@@ -220,8 +331,8 @@ pub async fn index_route(
     let (current_hashes, test_files) = scan.map_err(|error| error.to_string())??;
     let test_files = std::sync::Arc::new(test_files);
 
-    // Serialize runs per repository (Python uses a non-blocking flock and
-    // fails fast; concurrent runs would race state.json, Qdrant and SQLite).
+    // Serialize runs per repository inside this process (see
+    // `ACTIVE_INDEX_RUNS`): concurrent runs race state.json, Qdrant and SQLite.
     let _run_guard = IndexRunGuard::acquire(&repo_path)?;
 
     let stored_state = IndexState::load(paths, &repo_path).unwrap_or_default();
@@ -935,7 +1046,7 @@ async fn ensure_collection(backend: &RetrievalBackend, collection: &str) -> Resu
 }
 
 /// Python parity: chunk ids that are not UUIDs become `uuid5(NAMESPACE_DNS, id)`.
-fn point_id_for(chunk_id: &str) -> String {
+pub(crate) fn point_id_for(chunk_id: &str) -> String {
     if Uuid::parse_str(chunk_id).is_ok() {
         chunk_id.to_owned()
     } else {
