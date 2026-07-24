@@ -294,16 +294,71 @@ The lesson generalises: **an in-place worktree cannot verify a commit.** Only
 **Gate:** ✅ clean clone of `b3b9909` passes `cargo test --workspace`
 (88 passed, 0 failed), `clippy -D warnings`, and `fmt --check`.
 
-### Phase 1 — Tell the truth (1–2 days)
+### Phase 1 — Tell the truth — ✅ DONE 2026-07-24 (`a3ae2bf`)
 
-4. Report `ast-index` presence in `/health/detail`, `/diagnose` and `/stack`;
-   add it to README's runtime-dependency list with the install command
-   (P2.1, short-term half).
-5. Add `retrieval_mode` to degraded responses (P1.3, first half).
-6. Fix or remove `rag install-agent` (P3.3).
-7. Untrack `ragsystem.pen` and `vocab_*.jsonl` (P3.4).
+4. ✅ `/stack` carries an `AST-INDEX` card (probe cached 300 s behind a 5 s
+   timeout, so the 12 s dashboard poll costs ≤1 subprocess per five minutes).
+   Both dashboards render it — TUI card row went 4→5 columns plus a header
+   dot, web dashboard got a card and dot. README's runtime-dependency section
+   now states the real set and what degrades without it.
+   **Correction to P2.1 above:** `ast-index` is `@ast-index/cli`, a *native
+   binary* distributed through npm behind a 53-line Node launcher shim — not a
+   Node program. Node is needed only to run the shim. This matters for Phase 4
+   scoping.
+5. ✅ `retrieval_mode` (`"dense"` / `"lexical_fallback"`) added to both paths.
+6. ✅ `rag install-agent` removed, not repaired: it exec'd a script the
+   migration deleted, by *relative* path, and needed the repo's `skills/`
+   directory — so it could never work from an installed binary anyway.
+7. ✅ Done in Phase 0.
 
-**Gate:** on a machine without `ast-index` on PATH, `rag diagnose` says so.
+**Gate:** ✅ verified empirically both ways — card reads `ok` with the CLI on
+PATH, `warn` with the install hint when removed (this box has two installs,
+`~/.nvm/.../bin` and `/usr/local/bin`; both must go to test the absent case).
+
+### Phase 2 — Correctness and resource fixes — ✅ DONE 2026-07-24 (`a13ca2e`)
+
+8. ✅ Embedding cache: `embed_documents` now bypasses it entirely (SQLite
+   already owns that durability); `embed_query` still caches, bounded FIFO at
+   2048 entries. **Unbounded → 20.0 MiB hard ceiling.**
+9. ✅ Recency populated, not deleted — and the decision was validated rather
+   than assumed. On a live corpus the term is genuinely discriminating (3 % of
+   files score 0.0, the rest spread across 0.00–0.15), and a real top-10
+   result band is only 0.072 wide with adjacent gaps of 0.002–0.017. A term
+   worth up to 0.15 is wider than the entire band it reorders.
+10. ✅ Export path confined, rate-limit map swept and capped, poisoning
+    recovery on both request-path mutexes.
+11. ⏸️ Dashboard token model (P1.4) **not done** — deferred, see below.
+
+**Gate:** ✅ clean clone of `a3ae2bf`: fmt clean, clippy 0 issues, 111 tests
+(was 88), release build + empty-env smoke pass, and the working tree stays
+clean after a full test run.
+
+### Newly found during Phase 1–2 (were not in the original review)
+
+- **`rag export` could never have worked.** The CLI sent no `output` field,
+  which the route required → every invocation died on a 422; and the live
+  route omitted the `records` the declared contract shape promises, so even
+  past that it wrote a file with no data. Fixed both ends: `output` is now
+  optional, `records` is always returned, the CLI writes them to the user's
+  path (which also works when the daemon is not on the caller's machine).
+- **`docs/guides/NEW_PC_SETUP.md` documented a system that does not exist** —
+  a persistent index-time LSP client pool computing `fan_in`/`dead_code_candidate`.
+  `lsp.rs` exposes exactly one function, `detect_lsp_servers`, a PATH probe;
+  the `[lsp]` config keys are parsed and ignored. Those enrichment fields are
+  real but come from static tree-sitter analysis. The guide also said
+  `cargo install ast-index` (an unrelated crate) and told users to install
+  Python + `uv`. `docs/deployment-linux.md` still shipped a systemd unit
+  running `.venv/bin/python -m rag start`.
+- **The r6 contract test mutated its own checked-in fixture** on every run,
+  dirtying the tree. Now copies into a tempdir.
+- **Lexical hits carry no enrichment payload** (`promote_lexical_hits`,
+  retrieval.rs ~1250): FTS-promoted hits build their payload from SQLite
+  columns only, so they score 0.0 on recency *and* patterns *and* quality
+  while dense hits carry the full Qdrant payload. Pre-existing and untouched —
+  it systematically under-ranks lexical evidence. Worth a decision in Phase 6
+  alongside the RRF work.
+- **`docs/wiki/` is auto-generated and stale** — it still links
+  `scripts/install-codex-skills.sh` as though it existed.
 
 ### Phase 2 — Correctness and resource fixes (3–5 days)
 
