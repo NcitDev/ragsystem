@@ -539,15 +539,42 @@ async fn agy_timeout_cleans_up_process_tree() {
     let err = planner.plan_search("find auth").await.expect_err("timeout");
     assert!(matches!(err, rag_agent::PlannerError::Timeout));
 
-    let child_pid = fs::read_to_string(&pid_file).expect("pid file");
-    let child_pid = child_pid.trim().parse::<i32>().expect("pid");
-    let probe = std::process::Command::new("kill")
-        .arg("-0")
-        .arg(child_pid.to_string())
-        .status()
-        .expect("kill probe");
-    assert!(
-        !probe.success(),
-        "background child should be gone after timeout"
-    );
+    // Both waits below are bounded polls rather than single immediate checks.
+    // The property under test is "the guard kills the whole process group",
+    // not "the kernel has already run the kill by the time the next statement
+    // executes". Probing instantly made this test fail under parallel load
+    // (a full `cargo test --workspace` reliably reproduced it while running
+    // the test alone never did) — a flake that blamed the code for the
+    // scheduler.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let child_pid = loop {
+        if let Some(pid) = fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+        {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "script never recorded its background child's pid"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    loop {
+        let alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(child_pid.to_string())
+            .status()
+            .expect("kill probe")
+            .success();
+        if !alive {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background child {child_pid} outlived the planner timeout"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
