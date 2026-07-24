@@ -8,6 +8,9 @@ build/
 
 # RAG system data
 *.db
+# ...but the R1/R6 compat fixtures are checked-in test data: without them
+# `cargo test --workspace` only passes on a machine that already has them.
+!tests/rust-compat/**/*.db
 
 # Secrets
 .env
