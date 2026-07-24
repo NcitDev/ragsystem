@@ -6,6 +6,10 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
+# Nothing here is published to crates.io. Also what lets cargo-deny treat the
+# members as first-party (no license field needed) and exempt intra-workspace
+# path dependencies from its wildcard check.
+publish = false
 
 [workspace.dependencies]
 anyhow = "1.0"

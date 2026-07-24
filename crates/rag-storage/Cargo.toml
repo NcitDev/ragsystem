@@ -3,6 +3,7 @@ name = "rag-storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 rag-config = { path = "../rag-config" }

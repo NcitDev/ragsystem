@@ -5,7 +5,18 @@ on:
     branches: [master]
   pull_request:
 
+# A new push to the same branch makes the in-flight run obsolete. Cancelling it
+# frees runners rather than paying for results nobody will read.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Build, lint, test. Also produces the release binary that `integration`
+  # consumes, so the live-service job exercises the exact artifact we ship
+  # rather than a second, separately-compiled debug build.
+  # ---------------------------------------------------------------------------
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -29,8 +40,291 @@ jobs:
       - name: Rust tests
         run: cargo test --workspace
 
+      # The test suite must be a pure function of the checkout. A test that
+      # writes into a checked-in fixture (the rust-compat SQLite databases are
+      # opened read-mostly, but nothing structurally prevents a write) leaves
+      # the next run reading data the previous run produced -- green locally,
+      # and quietly testing something other than the committed fixture.
+      # `actions/checkout` hands us a pristine tree, so anything dirty here was
+      # produced by the suite itself.
+      - name: Working tree must be unchanged by the test suite
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "::error::The test suite modified tracked files. Tests must not mutate the checked-in tree."
+            echo "$dirty"
+            echo "--- diff ---"
+            git --no-pager diff
+            exit 1
+          fi
+          echo "Working tree clean after cargo test --workspace."
+
       - name: Release build (single binary, no Python)
         run: cargo build --release --locked -p rag-app
 
       - name: Python-free smoke test
         run: env -i PATH="/usr/bin:/bin" ./target/release/rag-rs --version
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-rs-linux-x86_64
+          path: target/release/rag-rs
+          retention-days: 1
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Supply chain. 771 crates resolve into this workspace; nothing previously
+  # checked them for advisories, license drift, or unexpected sources.
+  # Policy lives in //deny.toml -- read it, it explains every decision.
+  # ---------------------------------------------------------------------------
+  deps:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # cargo-deny only needs `cargo metadata`, so this caches the registry
+      # index rather than a build. It is the slow part of this job.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: deps
+
+      # Pinned to an exact cargo-deny version, not a floating one: the whole
+      # point of this job is a reproducible verdict, and a tool that silently
+      # updates can turn a green PR red with no change to our tree.
+      # taiki-e/install-action fetches a prebuilt binary (seconds) instead of
+      # `cargo install` compiling it (minutes).
+      # Bump deliberately, and re-run `cargo deny check` locally when you do.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      # Runs all four checks: advisories, bans, licenses, sources.
+      - name: cargo deny check
+        run: cargo deny --workspace check
+
+  # ---------------------------------------------------------------------------
+  # Does the committed tree stand on its own?
+  #
+  # A blanket `*.db` rule in .gitignore once shadowed the checked-in rust-compat
+  # SQLite fixtures. `cargo test --workspace` passed on any machine that already
+  # had those files on disk and failed on a fresh clone. The `test` job above
+  # catches the *loud* version of that (a fixture missing from the checkout makes
+  # the suite fail, since none of the fixture tests skip when their input is
+  # absent). These checks catch the quiet versions it cannot see.
+  #
+  # No compilation, so this is a fast parallel signal.
+  # ---------------------------------------------------------------------------
+  repo-hygiene:
+    name: clean-checkout self-sufficiency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # The exact shape of the original bug. A file that is BOTH tracked and
+      # matched by an ignore rule still arrives in a checkout, so tests pass --
+      # but it is invisible to `git add` when modified and is destroyed by
+      # `git clean -xdf`. It is a required file living on borrowed time.
+      # Today this is empty only because of the `!tests/rust-compat/**/*.db`
+      # negation; delete that line and this check goes red immediately.
+      - name: No tracked file may be matched by .gitignore
+        run: |
+          shadowed="$(git ls-files --cached --ignored --exclude-standard)"
+          if [ -n "$shadowed" ]; then
+            echo "::error::These files are committed AND matched by an ignore rule."
+            echo "They survive checkout but are invisible to 'git add' and are deleted by 'git clean -xdf'."
+            echo "Either un-ignore them (add a '!' negation) or stop tracking them."
+            echo "$shadowed"
+            exit 1
+          fi
+          echo "No tracked file is shadowed by .gitignore."
+
+      # The other direction: a '!' negation that no longer matches anything is
+      # a dead rule. It reads as protection but protects nothing, so the next
+      # broadening of the ignore pattern silently re-creates the bug. Usually
+      # caused by moving or renaming the fixtures the negation was written for.
+      - name: Every .gitignore negation must still protect a tracked file
+        run: |
+          status=0
+          while IFS= read -r pattern; do
+            [ -n "$pattern" ] || continue
+            matched="$(git ls-files -- ":(glob)$pattern")"
+            if [ -z "$matched" ]; then
+              echo "::error::.gitignore negation '!$pattern' matches no tracked file -- dead rule, delete it or fix the path."
+              status=1
+            else
+              echo "ok: '!$pattern' protects:"
+              echo "$matched" | sed 's/^/    /'
+            fi
+          done < <(grep -E '^[[:space:]]*!' .gitignore | sed 's/^[[:space:]]*!//' || true)
+          exit "$status"
+        shell: bash
+
+  # ---------------------------------------------------------------------------
+  # Live-service integration against a real Qdrant.
+  #
+  # JUDGEMENT CALL -- Qdrant is real here, Ollama is deliberately absent.
+  #
+  # Qdrant is cheap and worth it: a ~130 MB image that boots in seconds, and it
+  # covers rag-services' Qdrant HTTP client and the daemon's collection-metadata
+  # path against the real v1.18.2 server we pin everywhere else, instead of the
+  # axum mock in tests/rust-compat/r2.
+  #
+  # Ollama is not worth it, on three counts:
+  #   1. Size. Installing Ollama on Linux is a ~1 GB download before any model,
+  #      and the configured embedder is Qwen3-Embedding-4B -- multiple GB more,
+  #      on a CPU-only runner with limited disk. That is minutes of wall clock
+  #      and a real disk/timeout flake surface on every PR.
+  #   2. Fidelity. Substituting a small model (e.g. all-minilm, 384-dim)
+  #      contradicts `embeddings.dim = 2560` in the packaged defaults, so the
+  #      collection geometry under test would be one we never ship. Cheap
+  #      coverage of the wrong configuration is worse than no coverage.
+  #   3. It buys little. Embedding calls are already covered by the mock-server
+  #      tests, which can assert on request shape and failure/retry behaviour
+  #      that a live model cannot be made to produce on demand.
+  #
+  # So: real Qdrant, no Ollama, and we assert the daemon *degrades correctly*
+  # with the embedder down -- which is itself production behaviour that nothing
+  # else exercises end to end.
+  #
+  # Runs after `test` and reuses its release binary, which costs an artifact
+  # download (seconds) instead of a second full compile (minutes).
+  # ---------------------------------------------------------------------------
+  integration:
+    name: live Qdrant integration
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+
+    services:
+      qdrant:
+        # Same tag as rag-app's QDRANT_IMAGE and rag-server's qdrant_boot
+        # QDRANT_VERSION. If you bump those, bump this.
+        image: qdrant/qdrant:v1.18.2
+        ports:
+          - 6333:6333
+        # No --health-cmd: the qdrant image ships no curl/wget to health-check
+        # with. We poll /readyz from the runner instead, below.
+
+    env:
+      RAG_TOKEN: ci-integration-token
+      QDRANT_URL: http://127.0.0.1:6333
+      DAEMON_URL: http://127.0.0.1:7890
+      # Keeps every daemon side effect (token, logs, state, SQLite) inside the
+      # runner temp dir instead of a real ~/.rag.
+      RAG_HOME: ${{ runner.temp }}/rag-home
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rag-rs-linux-x86_64
+
+      - name: Make binary executable
+        run: chmod +x ./rag-rs
+
+      - name: Wait for Qdrant
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS "$QDRANT_URL/readyz" >/dev/null 2>&1; then
+              echo "Qdrant ready:"
+              curl -fsS "$QDRANT_URL/" | jq .
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Qdrant did not become ready within 60s"
+          exit 1
+
+      # Pre-create the collection the packaged defaults name, with the
+      # dimensionality they declare. This is what makes the assertions below
+      # meaningful: /status has to reach the real server to learn it exists.
+      - name: Create the default code collection in Qdrant
+        run: |
+          curl -fsS -X PUT "$QDRANT_URL/collections/code_chunks" \
+            -H 'content-type: application/json' \
+            -d '{"vectors": {"size": 2560, "distance": "Cosine"}}' | jq .
+
+      # No config file is written on purpose: the packaged defaults already
+      # say qdrant.mode = "server" and url = http://127.0.0.1:6333, so this
+      # also asserts those defaults are what we think they are.
+      - name: Start the daemon
+        run: |
+          mkdir -p "$RAG_HOME"
+          ./rag-rs start --host 127.0.0.1 --port 7890 \
+            > "$RUNNER_TEMP/daemon.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/daemon.pid"
+          for _ in $(seq 1 60); do
+            if curl -fsS "$DAEMON_URL/health" >/dev/null 2>&1; then
+              echo "Daemon up."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Daemon did not answer /health within 60s"
+          cat "$RUNNER_TEMP/daemon.log"
+          exit 1
+
+      # The core assertion: the daemon's qdrant component is "ok" only if
+      # rag-services' Qdrant client completed a real round trip to the
+      # container. Nothing is mocked on this path.
+      - name: Daemon reports the live Qdrant as healthy
+        run: |
+          health="$(curl -fsS "$DAEMON_URL/health")"
+          echo "$health" | jq .
+          jq -e '.components.qdrant == "ok"' <<<"$health" > /dev/null \
+            || { echo "::error::Expected components.qdrant == ok against the live container"; exit 1; }
+
+      # Degraded-but-serving is the production behaviour when the embedder is
+      # down, and it is exactly the state this job runs in. Assert it rather
+      # than tolerate it, so a change that turns a missing Ollama into a hard
+      # failure gets caught here.
+      - name: Daemon degrades cleanly with no Ollama
+        run: |
+          health="$(curl -fsS "$DAEMON_URL/health")"
+          jq -e '.components.ollama == "unavailable"' <<<"$health" > /dev/null \
+            || { echo "::error::Expected components.ollama == unavailable (no Ollama in this job)"; exit 1; }
+          jq -e '.status == "degraded"' <<<"$health" > /dev/null \
+            || { echo "::error::Expected overall status == degraded when the embedder is down"; exit 1; }
+
+      # Exercises the authenticated path and status_collections(), which issues
+      # a live collection_metadata call per collection. Finding code_chunks
+      # here proves the daemon read state we created directly in Qdrant.
+      - name: /status reflects live Qdrant collection metadata
+        run: |
+          status="$(curl -fsS -H "Authorization: Bearer $RAG_TOKEN" "$DAEMON_URL/status")"
+          echo "$status" | jq .
+          jq -e '.collections | type == "array"' <<<"$status" > /dev/null \
+            || { echo "::error::/status.collections must be an array"; exit 1; }
+          jq -e '.collections[] | select(.name == "code_chunks")' <<<"$status" > /dev/null \
+            || { echo "::error::/status did not report the code_chunks collection created in the live Qdrant"; exit 1; }
+
+      - name: Protected routes still require the token
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' "$DAEMON_URL/status")"
+          if [ "$code" = "200" ]; then
+            echo "::error::/status answered without a bearer token (got $code)"
+            exit 1
+          fi
+          echo "/status without a token -> HTTP $code"
+
+      - name: Daemon log
+        if: always()
+        run: cat "$RUNNER_TEMP/daemon.log" || true
+
+      - name: Stop the daemon
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/daemon.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/daemon.pid")" 2>/dev/null || true
+          fi

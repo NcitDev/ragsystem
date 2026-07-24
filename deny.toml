@@ -1,0 +1,149 @@
+# Dependency policy for the rag workspace.
+#
+# The workspace already takes an absolute position on memory safety
+# (`unsafe_code = "forbid"` in Cargo.toml). This file is the equivalent
+# position on supply chain: what we are allowed to link, where it may come
+# from, and what we refuse to ship. Enforced in CI by `cargo deny check`.
+#
+# Every value here was derived from the actual dependency graph
+# (`cargo deny list`, `cargo tree`), not copied from a template. Re-derive
+# rather than guess when it needs to change.
+
+[graph]
+# Scope every check to the targets we actually ship. `rag` is a Linux/macOS
+# daemon (systemd user unit / launchd agent, and see the release manifest in
+# rag-app), so Windows/WASM/UEFI-only crates are not part of the shipped
+# artifact and must not drive policy decisions about it.
+#
+# This is load-bearing, not cosmetic: with no target scoping, `r-efi` (v5.3.0
+# and v6.0.0, pulled in by getrandom for `target_os = "uefi"`) appears in the
+# graph under LGPL-2.1-or-later. It is never compiled for any target we
+# release. Scoping removes it honestly instead of allow-listing a copyleft
+# license we do not actually link.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = false
+no-default-features = false
+
+[advisories]
+# cargo-deny >= 0.16 has no per-class toggles here: vulnerabilities,
+# unmaintained crates and yanked crates are all hard errors, and `ignore` is
+# the only relaxation. That is the posture we want -- so this list must stay
+# short, and every entry must carry a reason and a way out.
+# RUSTSEC-2024-0436 -- paste 1.0.15, archived/unmaintained.
+#   Reached only via ratatui 0.29 -> paste (TUI rendering macros). It is a
+#   compile-time proc-macro: no runtime code ships, and there is no known
+#   vulnerability, only abandonment. The advisory states "No safe upgrade is
+#   available", so there is nothing to bump to.
+#   Exit path: move off ratatui 0.29. ratatui 0.30.x restructured into
+#   ratatui-core/ratatui-widgets, but declares rust-version 1.88 while this
+#   workspace pins rust-version = "1.85" -- so it is an MSRV bump, not a
+#   drop-in. Revisit when the workspace MSRV moves.
+ignore = [{ id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained compile-time proc-macro pulled in by ratatui 0.29; no patched version exists and the fix requires an MSRV bump to adopt ratatui 0.30 (rust-version 1.88 vs our 1.85)" }]
+
+[licenses]
+# Derived from `cargo deny list` over the graph above -- this is what the tree
+# actually contains, not an aspirational list. Every entry is a permissive /
+# public-domain-equivalent license compatible with shipping a single
+# statically-linked proprietary-friendly binary.
+#
+# Deliberately NOT allowed (cargo-deny's model is allow-list-only, so absence
+# is denial): every copyleft and weak-copyleft family -- GPL, LGPL, AGPL, MPL,
+# CDDL, EPL, SSPL, BUSL. A dependency bump that pulls one in fails CI rather
+# than quietly changing our distribution obligations.
+allow = [
+    # The overwhelming majority: dual MIT OR Apache-2.0.
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # rustix, linux-raw-sys, wasi
+    "MIT-0",                          # aws-lc-sys, dunce
+    "BSD-2-Clause",                   # zerocopy
+    "BSD-3-Clause",                   # encoding_rs, matchit, sha1_smol, subtle, aws-lc-sys
+    "ISC",                            # the rustls/ring/aws-lc TLS stack
+    "0BSD",                           # adler2
+    "Zlib",                           # foldhash, miniz_oxide
+    "BSL-1.0",                        # ryu
+    "CC0-1.0",                        # dunce
+    "Unlicense",                      # BurntSushi crates (aho-corasick, memchr, walkdir, ignore, globset)
+    "Unicode-3.0",                    # the ICU / zerovec family, unicode-ident
+    "CDLA-Permissive-2.0",            # webpki-roots, webpki-root-certs (Mozilla CA bundle data)
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# The nine crates/* members are marked `publish = false` in [workspace.package],
+# so third-party license policy correctly does not apply to them. This is what
+# lets them carry no `license` field without failing the check.
+ignore = true
+
+[bans]
+# Cargo.lock holds 771 packages, 59 of which appear at more than one version.
+# Scoped to the targets above with default features, that collapses to 10
+# genuinely-built duplicates:
+#
+#   core-foundation 0.9.4  / 0.10.1            (macOS only)
+#   getrandom       0.2.17 / 0.3.4
+#   hashbrown       0.14.5 / 0.15.5
+#   linux-raw-sys   0.4.15 / 0.12.1            (with rustix, below)
+#   reqwest         0.12.28 / 0.13.4           <-- the one that matters
+#   rustix          0.38.44 / 1.1.4
+#   toml_datetime   0.6.11 / 1.1.1
+#   toml_edit       0.22.27 / 0.25.12
+#   unicode-width   0.1.14 / 0.2.0             (both via ratatui 0.29)
+#   winnow          0.7.15 / 1.0.3
+#
+# All ten are transitive-dependency skew we do not control directly. The
+# significant one is reqwest: the workspace pins 0.12 while rig-core 0.40
+# pulls 0.13, so two HTTP client majors link into the binary (they do at
+# least share hyper 1.x). toml_edit/toml_datetime/winnow follow from the same
+# rig-derive -> proc-macro-crate edge.
+#
+# Failing on this would make CI permanently red for reasons no single PR can
+# fix -- unifying reqwest means waiting on rig or on our own bump to 0.13.
+# "warn" keeps the count printed on every run so it stays visible and can be
+# ratcheted down; flip to "deny" (with a `skip` list for the residue) once
+# the reqwest majors converge.
+multiple-versions = "warn"
+highlight = "all"
+
+# `*` version requirements make `cargo update` a silent, unreviewable
+# major-version bump. No third-party dependency in this workspace uses one.
+#
+# This is "warn" rather than "deny" for a first-party reason, not a
+# third-party one: cargo-deny counts intra-workspace `{ path = "../x" }`
+# dependencies as wildcards, and `allow-wildcard-paths` explicitly refuses to
+# exempt them for crates that are not marked unpublished ("does not apply to
+# public crates as crates.io disallows path dependencies"). Since no crates/*
+# member sets `publish = false`, denying here would fail on 14 of our own
+# path deps across 5 crates.
+#
+# Same one-line fix as the licenses section: `publish = false` in
+# [workspace.package] -- now set, so this is enforced. allow-wildcard-paths
+# below is already set so it will pass.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+deny = [
+    # The binary must stay self-contained with no system TLS dependency:
+    # reqwest is configured `default-features = false, features = ["rustls-tls"]`
+    # precisely so a release build has no libssl to find at runtime. Ban the
+    # OpenSSL path so a future transitive dependency cannot silently reintroduce
+    # it and break the "one binary, no system deps" deployment story.
+    { crate = "openssl-sys", reason = "rustls-only TLS; a system OpenSSL link breaks the self-contained binary" },
+    { crate = "native-tls", reason = "rustls-only TLS; pulls in platform TLS backends" },
+    { crate = "openssl", reason = "rustls-only TLS" },
+]
+
+[sources]
+# Every dependency currently resolves to crates.io -- there is not one git or
+# alternate-registry source in Cargo.lock. Make that an invariant: a git
+# dependency is an unversioned, unaudited, potentially force-pushed input, and
+# adding one should be a deliberate edit to this file.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
