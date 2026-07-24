@@ -1,6 +1,10 @@
 //! Bounded Ollama embedding client.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -11,6 +15,12 @@ const SERVICE: &str = "ollama";
 const DOCUMENT_INSTRUCTION: &str = "Instruct: Retrieve code that is semantically similar\nQuery: ";
 const QUERY_INSTRUCTION: &str =
     "Instruct: Given a code search query, retrieve relevant code snippets\nQuery: ";
+
+/// Default number of query embeddings kept in the process cache.
+///
+/// At the packaged embedding dimension (2560 f32 = 10.24 KiB per vector) this
+/// bounds the cache at roughly 21 MiB of vectors plus the (short) query keys.
+const DEFAULT_CACHE_CAPACITY: usize = 2048;
 
 /// Ollama client configuration.
 #[derive(Debug, Clone)]
@@ -35,7 +45,19 @@ pub struct OllamaConfig {
     /// saturating local Ollama on developer machines.
     pub max_concurrency: usize,
     /// Whether to cache embeddings by fully-prefixed input text.
+    ///
+    /// Only the interactive query path ([`OllamaClient::embed_query`]) and the
+    /// generic [`OllamaClient::embed_prefixed`] entry point populate this
+    /// cache. Bulk document embedding never does: the indexing write path
+    /// already reads and writes a durable SQLite embed cache keyed by content
+    /// hash, so retaining every chunk vector in the daemon would only duplicate
+    /// that data for the life of the process.
     pub cache_embeddings: bool,
+    /// Maximum number of vectors retained by the in-process cache.
+    ///
+    /// The cache evicts in insertion order once this many entries are live.
+    /// `0` disables caching entirely, exactly like `cache_embeddings: false`.
+    pub cache_capacity: usize,
 }
 
 impl Default for OllamaConfig {
@@ -50,6 +72,7 @@ impl Default for OllamaConfig {
             retry: RetryPolicy::default(),
             max_concurrency: 1,
             cache_embeddings: true,
+            cache_capacity: DEFAULT_CACHE_CAPACITY,
         }
     }
 }
@@ -101,12 +124,112 @@ struct EmbedResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
+/// Whether a given embedding call may use the in-process cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachePolicy {
+    /// Read cached vectors and store freshly computed ones (interactive path).
+    ReadWrite,
+    /// Ignore the cache in both directions (bulk indexing path: the caller's
+    /// SQLite embed cache owns durability, so process-lifetime retention of
+    /// every chunk vector would be pure memory growth).
+    Bypass,
+}
+
+#[derive(Debug, Default)]
+struct CacheInner {
+    entries: HashMap<String, Vec<f32>>,
+    /// Keys in insertion order; always exactly the keys of `entries`.
+    order: VecDeque<String>,
+}
+
+impl CacheInner {
+    fn put(&mut self, key: &str, vector: &[f32], capacity: usize) {
+        if self
+            .entries
+            .insert(key.to_owned(), vector.to_vec())
+            .is_none()
+        {
+            self.order.push_back(key.to_owned());
+        }
+        while self.order.len() > capacity {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+}
+
+/// Capacity-bounded embedding cache with first-in/first-out eviction.
+///
+/// FIFO (rather than LRU) keeps the write path to a single `push_back` and the
+/// read path lock-free of bookkeeping, which matters because reads are batched
+/// under one shared lock. Query embeddings are cheap to recompute, so the
+/// bound - not the hit rate - is the property worth guaranteeing.
+#[derive(Debug)]
+struct BoundedEmbeddingCache {
+    capacity: usize,
+    inner: RwLock<CacheInner>,
+}
+
+impl BoundedEmbeddingCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            inner: RwLock::new(CacheInner::default()),
+        }
+    }
+
+    /// A zero capacity means "caching disabled"; no lock is ever taken.
+    const fn is_enabled(&self) -> bool {
+        self.capacity > 0
+    }
+
+    /// Look up every key under one read lock, `None` per miss.
+    async fn get_many(&self, keys: &[String]) -> Vec<Option<Vec<f32>>> {
+        if !self.is_enabled() {
+            return vec![None; keys.len()];
+        }
+        let inner = self.inner.read().await;
+        keys.iter()
+            .map(|key| inner.entries.get(key).cloned())
+            .collect()
+    }
+
+    /// Store every pair under one write lock, evicting oldest first.
+    async fn insert_many(&self, keys: &[String], vectors: &[Vec<f32>]) {
+        if !self.is_enabled() || keys.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.write().await;
+        for (key, vector) in keys.iter().zip(vectors.iter()) {
+            inner.put(key, vector, self.capacity);
+        }
+    }
+
+    async fn entry_count(&self) -> usize {
+        if !self.is_enabled() {
+            return 0;
+        }
+        self.inner.read().await.entries.len()
+    }
+
+    async fn clear(&self) {
+        if !self.is_enabled() {
+            return;
+        }
+        let mut inner = self.inner.write().await;
+        inner.entries.clear();
+        inner.order.clear();
+    }
+}
+
 /// Bounded Ollama HTTP client.
 #[derive(Clone)]
 pub struct OllamaClient {
     config: OllamaConfig,
     client: reqwest::Client,
-    cache: Arc<RwLock<HashMap<String, Vec<f32>>>>,
+    cache: Arc<BoundedEmbeddingCache>,
 }
 
 impl OllamaClient {
@@ -146,10 +269,15 @@ impl OllamaClient {
                 service: SERVICE,
                 source,
             })?;
+        let cache_capacity = if config.cache_embeddings {
+            config.cache_capacity
+        } else {
+            0
+        };
         Ok(Self {
             config,
             client,
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(BoundedEmbeddingCache::new(cache_capacity)),
         })
     }
 
@@ -243,12 +371,18 @@ impl OllamaClient {
     }
 
     /// Embed documents with Python-compatible document instruction prefixing.
+    ///
+    /// This is the indexing path and deliberately bypasses the in-process
+    /// cache: the indexer consults and writes through to the durable SQLite
+    /// embed cache before calling here, so keeping every chunk vector resident
+    /// for the lifetime of the daemon would duplicate that store and never
+    /// release the memory.
     pub async fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ServiceError> {
         let prefixed = texts
             .iter()
             .map(|text| format!("{DOCUMENT_INSTRUCTION}{text}"))
             .collect::<Vec<_>>();
-        self.embed_prefixed(&prefixed).await
+        self.embed_with_policy(&prefixed, CachePolicy::Bypass).await
     }
 
     /// Embed one search query with Python-compatible query instruction prefixing.
@@ -262,30 +396,47 @@ impl OllamaClient {
     }
 
     /// Embed already-prefixed strings. This is useful for compatibility tests
-    /// and cache callers that own prefixing.
+    /// and cache callers that own prefixing. Cached vectors are reused and
+    /// freshly computed ones are stored, subject to `cache_capacity`.
     pub async fn embed_prefixed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ServiceError> {
+        self.embed_with_policy(texts, CachePolicy::ReadWrite).await
+    }
+
+    /// Number of cached embedding vectors.
+    pub async fn cache_len(&self) -> usize {
+        self.cache.entry_count().await
+    }
+
+    /// Clear the in-memory embedding cache.
+    pub async fn clear_cache(&self) {
+        self.cache.clear().await;
+    }
+
+    /// Shared embedding path. Returns one vector per input, in input order.
+    async fn embed_with_policy(
+        &self,
+        texts: &[String],
+        policy: CachePolicy,
+    ) -> Result<Vec<Vec<f32>>, ServiceError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        let use_cache = policy == CachePolicy::ReadWrite && self.cache.is_enabled();
 
-        let mut output = vec![None; texts.len()];
-        let mut missing_positions = Vec::new();
-        let mut missing_texts = Vec::new();
-
-        if self.config.cache_embeddings {
-            let cache = self.cache.read().await;
-            for (idx, text) in texts.iter().enumerate() {
-                if let Some(value) = cache.get(text) {
-                    output[idx] = Some(value.clone());
-                } else {
-                    missing_positions.push(idx);
-                    missing_texts.push(text.clone());
-                }
-            }
+        let mut output: Vec<Option<Vec<f32>>> = if use_cache {
+            self.cache.get_many(texts).await
         } else {
-            missing_positions.extend(0..texts.len());
-            missing_texts.extend(texts.iter().cloned());
-        }
+            vec![None; texts.len()]
+        };
+        let missing_positions = output
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.is_none().then_some(idx))
+            .collect::<Vec<_>>();
+        let missing_texts = missing_positions
+            .iter()
+            .map(|&idx| texts[idx].clone())
+            .collect::<Vec<_>>();
 
         if !missing_texts.is_empty() {
             let embedded = self.embed_missing(&missing_texts).await?;
@@ -300,11 +451,8 @@ impl OllamaClient {
                 });
             }
 
-            if self.config.cache_embeddings {
-                let mut cache = self.cache.write().await;
-                for (text, vector) in missing_texts.iter().zip(embedded.iter()) {
-                    cache.insert(text.clone(), vector.clone());
-                }
+            if use_cache {
+                self.cache.insert_many(&missing_texts, &embedded).await;
             }
             for (idx, vector) in missing_positions.into_iter().zip(embedded) {
                 output[idx] = Some(vector);
@@ -320,16 +468,6 @@ impl OllamaClient {
                 })
             })
             .collect()
-    }
-
-    /// Number of cached embedding vectors.
-    pub async fn cache_len(&self) -> usize {
-        self.cache.read().await.len()
-    }
-
-    /// Clear the in-memory embedding cache.
-    pub async fn clear_cache(&self) {
-        self.cache.write().await.clear();
     }
 
     fn model_is_present(&self, models: &[OllamaModel]) -> bool {
@@ -431,5 +569,255 @@ impl OllamaClient {
             Ok(body.embeddings)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{extract::State, routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use tokio::net::TcpListener;
+
+    use super::{
+        BoundedEmbeddingCache, OllamaClient, OllamaConfig, DEFAULT_CACHE_CAPACITY,
+        QUERY_INSTRUCTION,
+    };
+
+    const TEST_DIM: usize = 4;
+
+    /// Deterministic per-text vector so callers can assert result ordering.
+    fn mock_vector(text: &str) -> Vec<f32> {
+        let seed = f32::from(
+            text.bytes()
+                .fold(0_u8, |acc, byte| acc.wrapping_mul(31).wrapping_add(byte)),
+        );
+        vec![seed, seed + 1.0, seed + 2.0, seed + 3.0]
+    }
+
+    #[derive(Clone, Default)]
+    struct MockState {
+        embed_calls: std::sync::Arc<AtomicUsize>,
+    }
+
+    async fn embed_handler(State(state): State<MockState>, Json(body): Json<Value>) -> Json<Value> {
+        state.embed_calls.fetch_add(1, Ordering::SeqCst);
+        let inputs = body["input"].as_array().cloned().unwrap_or_default();
+        let embeddings = inputs
+            .iter()
+            .map(|value| mock_vector(value.as_str().unwrap_or_default()))
+            .collect::<Vec<_>>();
+        Json(json!({ "embeddings": embeddings }))
+    }
+
+    async fn spawn_mock() -> (String, MockState) {
+        let state = MockState::default();
+        let app = Router::new()
+            .route("/api/embed", post(embed_handler))
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let addr = listener.local_addr().expect("mock addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve mock");
+        });
+        (format!("http://{addr}"), state)
+    }
+
+    fn test_client(
+        base_url: String,
+        cache_embeddings: bool,
+        cache_capacity: usize,
+    ) -> OllamaClient {
+        OllamaClient::new(OllamaConfig {
+            base_url,
+            dim: TEST_DIM,
+            batch_size: 2,
+            cache_embeddings,
+            cache_capacity,
+            ..OllamaConfig::default()
+        })
+        .expect("client")
+    }
+
+    #[tokio::test]
+    async fn bounded_cache_evicts_oldest_entries_beyond_capacity() {
+        let cache = BoundedEmbeddingCache::new(3);
+        for index in 0..10_u8 {
+            let key = format!("key-{index}");
+            cache
+                .insert_many(&[key], &[vec![f32::from(index); TEST_DIM]])
+                .await;
+            assert!(cache.entry_count().await <= 3, "cache exceeded capacity");
+        }
+
+        assert_eq!(cache.entry_count().await, 3);
+        let keys = (0..10_u8).map(|i| format!("key-{i}")).collect::<Vec<_>>();
+        let found = cache.get_many(&keys).await;
+        // Only the three most recent insertions survive; the rest were evicted.
+        assert!(found[..7].iter().all(Option::is_none));
+        assert_eq!(found[7], Some(vec![7.0; TEST_DIM]));
+        assert_eq!(found[9], Some(vec![9.0; TEST_DIM]));
+
+        cache.clear().await;
+        assert_eq!(cache.entry_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn bounded_cache_repeat_insert_does_not_double_count() {
+        let cache = BoundedEmbeddingCache::new(2);
+        let key = "same".to_owned();
+        for _ in 0..5 {
+            cache
+                .insert_many(std::slice::from_ref(&key), &[vec![1.0; TEST_DIM]])
+                .await;
+        }
+        assert_eq!(cache.entry_count().await, 1);
+
+        // A repeat write must not have consumed eviction slots for other keys.
+        cache
+            .insert_many(&["other".to_owned()], &[vec![2.0; TEST_DIM]])
+            .await;
+        let found = cache.get_many(&[key, "other".to_owned()]).await;
+        assert!(found.iter().all(Option::is_some));
+    }
+
+    #[tokio::test]
+    async fn bounded_cache_with_zero_capacity_stores_nothing() {
+        let cache = BoundedEmbeddingCache::new(0);
+        assert!(!cache.is_enabled());
+        cache
+            .insert_many(&["key".to_owned()], &[vec![1.0; TEST_DIM]])
+            .await;
+        assert_eq!(cache.entry_count().await, 0);
+        assert_eq!(cache.get_many(&["key".to_owned()]).await, vec![None]);
+    }
+
+    #[tokio::test]
+    async fn embed_documents_leaves_process_cache_empty() {
+        let (base_url, state) = spawn_mock().await;
+        let client = test_client(base_url, true, DEFAULT_CACHE_CAPACITY);
+
+        let docs = (0..5_u8)
+            .map(|index| format!("doc-{index}"))
+            .collect::<Vec<_>>();
+        let vectors = client.embed_documents(&docs).await.expect("embeds");
+
+        assert_eq!(vectors.len(), docs.len());
+        assert_eq!(client.cache_len().await, 0);
+
+        // A second identical run also caches nothing (SQLite owns durability).
+        let repeat = client.embed_documents(&docs).await.expect("embeds again");
+        assert_eq!(repeat, vectors);
+        assert_eq!(client.cache_len().await, 0);
+        assert_eq!(state.embed_calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[tokio::test]
+    async fn embed_query_caches_and_repeat_is_served_from_cache() {
+        let (base_url, state) = spawn_mock().await;
+        let client = test_client(base_url, true, DEFAULT_CACHE_CAPACITY);
+
+        let first = client.embed_query("find the parser").await.expect("query");
+        assert_eq!(client.cache_len().await, 1);
+        assert_eq!(state.embed_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            first,
+            mock_vector(&format!("{QUERY_INSTRUCTION}find the parser"))
+        );
+
+        let second = client.embed_query("find the parser").await.expect("query");
+        assert_eq!(second, first);
+        assert_eq!(client.cache_len().await, 1);
+        assert_eq!(
+            state.embed_calls.load(Ordering::SeqCst),
+            1,
+            "repeat query must not hit Ollama"
+        );
+
+        client.clear_cache().await;
+        assert_eq!(client.cache_len().await, 0);
+        client.embed_query("find the parser").await.expect("query");
+        assert_eq!(state.embed_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn query_cache_stops_growing_at_configured_capacity() {
+        let (base_url, _state) = spawn_mock().await;
+        let client = test_client(base_url, true, 2);
+
+        for index in 0..8_u8 {
+            client
+                .embed_query(&format!("query-{index}"))
+                .await
+                .expect("query");
+            assert!(client.cache_len().await <= 2);
+        }
+        assert_eq!(client.cache_len().await, 2);
+    }
+
+    #[tokio::test]
+    async fn cache_embeddings_false_disables_the_cache_entirely() {
+        let (base_url, state) = spawn_mock().await;
+        let client = test_client(base_url, false, DEFAULT_CACHE_CAPACITY);
+
+        client.embed_query("same question").await.expect("query");
+        client.embed_query("same question").await.expect("query");
+
+        assert_eq!(client.cache_len().await, 0);
+        assert_eq!(state.embed_calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// `cache_capacity: 0` and `cache_embeddings: false` are documented as
+    /// equivalent; assert it observably rather than trusting the comment.
+    #[tokio::test]
+    async fn cache_capacity_zero_is_equivalent_to_cache_embeddings_false() {
+        let (flag_url, flag_state) = spawn_mock().await;
+        let disabled_by_flag = test_client(flag_url, false, DEFAULT_CACHE_CAPACITY);
+        let (capacity_url, capacity_state) = spawn_mock().await;
+        let disabled_by_capacity = test_client(capacity_url, true, 0);
+
+        let mut results = Vec::new();
+        for client in [&disabled_by_flag, &disabled_by_capacity] {
+            let first = client.embed_query("same question").await.expect("query");
+            let second = client.embed_query("same question").await.expect("query");
+            assert_eq!(first, second);
+            let prefixed = client
+                .embed_prefixed(&["already prefixed".to_owned()])
+                .await
+                .expect("prefixed");
+            // Clearing a disabled cache stays a no-op rather than a panic.
+            client.clear_cache().await;
+            assert_eq!(client.cache_len().await, 0);
+            results.push((first, prefixed));
+        }
+
+        assert_eq!(results[0], results[1], "vectors must not differ");
+        assert_eq!(
+            flag_state.embed_calls.load(Ordering::SeqCst),
+            capacity_state.embed_calls.load(Ordering::SeqCst),
+            "both disabled forms must issue the same HTTP calls"
+        );
+        assert_eq!(flag_state.embed_calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn embed_prefixed_preserves_input_order_across_batches_and_cache_hits() {
+        let (base_url, _state) = spawn_mock().await;
+        let client = test_client(base_url, true, DEFAULT_CACHE_CAPACITY);
+
+        let warm = vec!["text-1".to_owned(), "text-4".to_owned()];
+        client.embed_prefixed(&warm).await.expect("warm cache");
+
+        let texts = (0..6_u8)
+            .map(|index| format!("text-{index}"))
+            .collect::<Vec<_>>();
+        let vectors = client.embed_prefixed(&texts).await.expect("embeds");
+
+        assert_eq!(vectors.len(), texts.len());
+        for (text, vector) in texts.iter().zip(vectors.iter()) {
+            assert_eq!(vector, &mock_vector(text), "output order must match input");
+        }
+        assert_eq!(client.cache_len().await, texts.len());
     }
 }

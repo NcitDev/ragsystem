@@ -74,6 +74,17 @@ const PAYLOAD_INDEXES: [(&str, PayloadSchemaType); 44] = [
 /// inside the Ollama client; this only bounds hash-promotion granularity.
 const FILES_PER_FLUSH: usize = 16;
 
+/// How far back the single `git log` recency pass walks. `rag_retrieval`
+/// scores anything older than `MAX_RECENCY_DAYS` (90) at 0.0, so older
+/// commits cannot move a ranking; the extra margin leaves room to retune that
+/// weight without touching the indexer.
+const GIT_RECENCY_WINDOW_DAYS: u32 = 180;
+
+/// Wall-clock bound for that one subprocess. A slow, huge or hung repository
+/// must not stall an index run: on timeout we simply have no recency data,
+/// exactly like a non-git directory.
+const GIT_LOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// In-process per-repo run lock (Python parity: non-blocking flock that fails
 /// fast with "another index run holds the lock").
 static ACTIVE_INDEX_RUNS: std::sync::OnceLock<
@@ -169,7 +180,7 @@ pub async fn index_route(
     let scan_repo = repo_path.clone();
     let skip_dirs = settings.index.skip_dirs.clone();
     let language_filter = languages.clone();
-    let (current_hashes, test_files) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+    let scan_task = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let skip: Vec<&str> = skip_dirs.iter().map(String::as_str).collect();
         let files = rag_index::discover_files(&scan_repo, None, &skip)
             .map_err(|error| error.to_string())?;
@@ -201,9 +212,12 @@ pub async fn index_route(
             }
         }
         Ok((hashes, test_files))
-    })
-    .await
-    .map_err(|error| error.to_string())??;
+    });
+    // One `git log` for the whole run (never one per file) dates every tracked
+    // file for `rag_retrieval::score_hits`' recency term; it runs alongside the
+    // scan so it stays off the critical path.
+    let (scan, git_dates) = tokio::join!(scan_task, git_last_modified_map(&repo_path));
+    let (current_hashes, test_files) = scan.map_err(|error| error.to_string())??;
     let test_files = std::sync::Arc::new(test_files);
 
     // Serialize runs per repository (Python uses a non-blocking flock and
@@ -303,6 +317,14 @@ pub async fn index_route(
                     .map(|hash| (rel.clone(), hash.clone()))
             })
             .collect();
+        let group_dates: BTreeMap<String, String> = group
+            .iter()
+            .filter_map(|rel| {
+                git_dates
+                    .get(rel)
+                    .map(|modified| (rel.clone(), modified.clone()))
+            })
+            .collect();
         let target_collection = collection.clone();
         let max_chars = settings.index.max_chunk_chars as usize;
         let group_test_files = std::sync::Arc::clone(&test_files);
@@ -315,6 +337,7 @@ pub async fn index_route(
                         &rel,
                         &absolute,
                         group_hashes.get(&rel),
+                        group_dates.get(&rel),
                         max_chars,
                         &group_test_files,
                     )
@@ -625,6 +648,7 @@ fn process_file(
     rel_path: &str,
     absolute: &Path,
     known_hash: Option<&String>,
+    git_last_modified: Option<&String>,
     max_chars: usize,
     test_files: &std::collections::BTreeSet<String>,
 ) -> Result<FileChunks, String> {
@@ -659,6 +683,12 @@ fn process_file(
         payload.insert("start_line".to_owned(), json!(chunk.start_line));
         payload.insert("end_line".to_owned(), json!(chunk.end_line));
         payload.insert("content_hash".to_owned(), json!(content_hash));
+        // RFC 3339 (`git log --format=%aI`), the shape
+        // `rag_retrieval::recency_score` parses. Absent for untracked files and
+        // for non-git directories, where recency simply stays 0.0.
+        if let Some(modified) = git_last_modified {
+            payload.insert("git_last_modified".to_owned(), json!(modified));
+        }
         for (key, value) in &chunk.metadata {
             payload.insert(key.clone(), value.clone());
         }
@@ -932,6 +962,67 @@ fn json_to_payload(value: &Value) -> PayloadValue {
     }
 }
 
+/// Date every tracked file with the author date of the newest commit that
+/// touched it, using a single `git log` pass for the whole index run.
+///
+/// Any failure (not a repository, git missing, empty history, timeout) is
+/// "no data": the map comes back empty and indexing proceeds without the
+/// recency signal.
+async fn git_last_modified_map(repo_path: &Path) -> BTreeMap<String, String> {
+    let since = format!("--since={GIT_RECENCY_WINDOW_DAYS} days ago");
+    let output = tokio::time::timeout(
+        GIT_LOG_TIMEOUT,
+        tokio::process::Command::new("git")
+            // Keep non-ASCII paths verbatim instead of C-quoted octal escapes.
+            .args(["-c", "core.quotePath=false", "-C"])
+            .arg(repo_path)
+            // `--relative` keeps paths relative to `repo_path` (and drops files
+            // outside it) when the indexed directory is a subtree of the repo,
+            // matching the relative keys the scan produces.
+            .args(["log", "--format=%aI", "--name-only", "--relative", &since])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    match output {
+        Ok(Ok(output)) if output.status.success() => {
+            parse_git_log_dates(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => BTreeMap::new(),
+    }
+}
+
+/// Parse `git log --format=%aI --name-only` output into `{path -> RFC 3339}`.
+///
+/// The stream is a date line, a blank line, then that commit's files; commits
+/// with no diff output (merges) contribute a bare date line. History is walked
+/// newest-first, so the first commit that mentions a path carries its last
+/// modification and later (older) mentions are ignored.
+fn parse_git_log_dates(output: &str) -> BTreeMap<String, String> {
+    let mut dates: BTreeMap<String, String> = BTreeMap::new();
+    let mut current: Option<&str> = None;
+    for line in output.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        // A line that parses as a timestamp starts a new commit; everything
+        // else is one of its paths.
+        if chrono::DateTime::parse_from_rfc3339(line).is_ok() {
+            current = Some(line);
+            continue;
+        }
+        if let Some(modified) = current {
+            dates
+                .entry(line.to_owned())
+                .or_insert_with(|| modified.to_owned());
+        }
+    }
+    dates
+}
+
 fn git_head(repo_path: &Path) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(["-C", &repo_path.to_string_lossy(), "rev-parse", "HEAD"])
@@ -966,7 +1057,25 @@ fn save_state(paths: &RagPaths, repo_path: &Path, state: &IndexState) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::point_id_for;
+    use super::{parse_git_log_dates, point_id_for};
+
+    /// Literal `git log --format=%aI --name-only` output: two ordinary
+    /// commits, a merge commit with no file list, then an older commit that
+    /// re-touches a path already dated by a newer commit.
+    const GIT_LOG_SAMPLE: &str = "\
+2026-07-24T21:58:28+03:00
+
+crates/rag-server/src/indexing.rs
+crates/rag-retrieval/src/lib.rs
+2026-07-20T10:11:12+03:00
+
+docs/IMPROVEMENTS.md
+2026-07-19T08:00:00+00:00
+2026-06-01T12:00:00-07:00
+
+crates/rag-retrieval/src/lib.rs
+docs/rust-migration-plan.md
+";
 
     #[test]
     fn uuid5_matches_python() {
@@ -979,5 +1088,60 @@ mod tests {
     fn valid_uuid_passes_through() {
         let id = "00027383-b1ee-54fa-b4f2-c4314ac6e043";
         assert_eq!(point_id_for(id), id);
+    }
+
+    #[test]
+    fn git_log_parse_dates_every_touched_path() {
+        let dates = parse_git_log_dates(GIT_LOG_SAMPLE);
+        // A commit touching several files dates all of them.
+        assert_eq!(
+            dates
+                .get("crates/rag-server/src/indexing.rs")
+                .map(String::as_str),
+            Some("2026-07-24T21:58:28+03:00")
+        );
+        // Blank separators do not leak into the key set, and the second commit
+        // is attributed to its own date.
+        assert_eq!(
+            dates.get("docs/IMPROVEMENTS.md").map(String::as_str),
+            Some("2026-07-20T10:11:12+03:00")
+        );
+        assert_eq!(dates.len(), 4);
+        assert!(!dates.contains_key(""));
+    }
+
+    #[test]
+    fn git_log_parse_keeps_newest_commit_per_path() {
+        let dates = parse_git_log_dates(GIT_LOG_SAMPLE);
+        // lib.rs appears in both the newest and the oldest commit; log order is
+        // newest-first, so first-seen must win.
+        assert_eq!(
+            dates
+                .get("crates/rag-retrieval/src/lib.rs")
+                .map(String::as_str),
+            Some("2026-07-24T21:58:28+03:00")
+        );
+    }
+
+    #[test]
+    fn git_log_parse_handles_fileless_merge_commits() {
+        let dates = parse_git_log_dates(GIT_LOG_SAMPLE);
+        // The merge commit (2026-07-19) lists no files, so it must claim none
+        // of the following commit's paths.
+        assert_eq!(
+            dates.get("docs/rust-migration-plan.md").map(String::as_str),
+            Some("2026-06-01T12:00:00-07:00")
+        );
+        assert!(!dates
+            .values()
+            .any(|date| date == "2026-07-19T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn git_log_parse_tolerates_no_output() {
+        assert!(parse_git_log_dates("").is_empty());
+        // Paths with no preceding commit line (truncated/garbled output) are
+        // dropped rather than mis-dated.
+        assert!(parse_git_log_dates("src/a.rs\nsrc/b.rs\n").is_empty());
     }
 }

@@ -551,8 +551,107 @@ mod tests {
 
     use super::{
         apply_symbol_sanity_filter, decompose_query, estimate_tokens, expand_query, lexical_score,
-        merge_query_hits, quality_score, score_hits, trim_to_token_budget, truthy, SearchHit,
+        merge_query_hits, quality_score, recency_score, score_hits, trim_to_token_budget, truthy,
+        SearchHit, MAX_RECENCY_DAYS, RECENCY_WEIGHT,
     };
+
+    fn payload_with_modified(modified: &str) -> Map<String, serde_json::Value> {
+        let mut payload = Map::new();
+        payload.insert("git_last_modified".to_owned(), json!(modified));
+        payload
+    }
+
+    #[test]
+    fn recency_score_boundaries() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 24, 12, 0, 0).unwrap();
+        // Missing field (the pre-fix state of every indexed chunk) scores 0.
+        assert!((recency_score(&Map::new(), now) - 0.0).abs() < f64::EPSILON);
+        // Malformed timestamps must not panic and must not earn credit.
+        assert!(
+            (recency_score(&payload_with_modified("yesterday"), now) - 0.0).abs() < f64::EPSILON
+        );
+        assert!(
+            (recency_score(&payload_with_modified("2026-07-24 12:00:00"), now) - 0.0).abs()
+                < f64::EPSILON
+        );
+        // days <= 0 (same instant, and a clock-skewed future commit) -> 1.0.
+        assert!(
+            (recency_score(&payload_with_modified("2026-07-24T12:00:00+00:00"), now) - 1.0).abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (recency_score(&payload_with_modified("2026-08-01T00:00:00+00:00"), now) - 1.0).abs()
+                < f64::EPSILON
+        );
+        // days >= MAX_RECENCY_DAYS -> 0.0, just inside the window -> positive.
+        let stale = now - chrono::Duration::days(MAX_RECENCY_DAYS);
+        assert!(
+            (recency_score(&payload_with_modified(&stale.to_rfc3339()), now) - 0.0).abs()
+                < f64::EPSILON
+        );
+        let fresh = now - chrono::Duration::days(MAX_RECENCY_DAYS - 1);
+        let edge = recency_score(&payload_with_modified(&fresh.to_rfc3339()), now);
+        assert!(edge > 0.0 && edge < 0.06, "edge score was {edge}");
+        // Decay is exponential with a 30-day constant: 30 days -> e^-1.
+        let month = now - chrono::Duration::days(30);
+        let decayed = recency_score(&payload_with_modified(&month.to_rfc3339()), now);
+        assert!(
+            (decayed - (-1.0f64).exp()).abs() < 1e-9,
+            "30d score was {decayed}"
+        );
+        // Offset timestamps are compared in UTC, not naively by wall clock.
+        assert!(
+            (recency_score(&payload_with_modified("2026-07-24T15:00:00+03:00"), now) - 1.0).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn recency_reorders_hits_with_equal_base_scores() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 24, 12, 0, 0).unwrap();
+        // `old` sorts first on the point-id tie-breaker, so any reordering is
+        // attributable to recency alone.
+        let hits = |recent_payload: Map<String, serde_json::Value>,
+                    old_payload: Map<String, serde_json::Value>| {
+            vec![
+                SearchHit {
+                    point_id: "old".into(),
+                    content: String::new(),
+                    score: 0.5,
+                    payload: old_payload,
+                },
+                SearchHit {
+                    point_id: "recent".into(),
+                    content: String::new(),
+                    score: 0.5,
+                    payload: recent_payload,
+                },
+            ]
+        };
+
+        // Unstamped payloads (the defect): recency contributes nothing and the
+        // tie-breaker decides.
+        let mut unstamped = hits(Map::new(), Map::new());
+        score_hits(&mut unstamped, "", now);
+        assert_eq!(unstamped[0].point_id, "old");
+        assert!((unstamped[0].score - unstamped[1].score).abs() < f64::EPSILON);
+
+        // Stamped payloads: the file touched yesterday outranks the one last
+        // touched well outside the 90-day window.
+        let mut stamped = hits(
+            payload_with_modified("2026-07-23T12:00:00+00:00"),
+            payload_with_modified("2025-01-01T00:00:00+00:00"),
+        );
+        score_hits(&mut stamped, "", now);
+        assert_eq!(stamped[0].point_id, "recent");
+        // A stamp older than the window scores exactly like an unstamped hit.
+        assert!((stamped[1].score - unstamped[0].score).abs() < f64::EPSILON);
+        let gain = stamped[0].score - stamped[1].score;
+        assert!(
+            gain > 0.14 && gain <= RECENCY_WEIGHT,
+            "recency gain was {gain}"
+        );
+    }
 
     #[test]
     fn string_flags_match_python() {

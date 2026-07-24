@@ -86,8 +86,14 @@ async fn embed(State(state): State<MockState>, Json(body): Json<Value>) -> impl 
     (StatusCode::OK, Json(json!({ "embeddings": embeddings })))
 }
 
+/// Documents are deliberately NOT retained in the process cache: the indexing
+/// write path already reads and writes the durable SQLite embed cache, so
+/// keeping every chunk vector resident leaked ~10 KB per chunk for the life of
+/// the daemon. Queries — short, few, frequently repeated — still cache.
+/// The in-process cache is a Rust-only addition, so this is not a parity
+/// change (see docs/python-parity-audit.md "Deliberate / accepted deltas").
 #[tokio::test]
-async fn ollama_verifies_model_batches_embeddings_retries_and_caches() {
+async fn ollama_verifies_model_batches_embeddings_retries_and_caches_queries_only() {
     let state = MockState::default();
     state.fail_embeds.store(1, Ordering::SeqCst);
     let base_url = spawn(
@@ -115,10 +121,30 @@ async fn ollama_verifies_model_batches_embeddings_retries_and_caches() {
     assert_eq!(vectors.len(), 3);
     assert_eq!(state.embed_calls.load(Ordering::SeqCst), 3);
 
-    let cached = client.embed_documents(&docs).await.expect("cached embeds");
-    assert_eq!(cached, vectors);
-    assert_eq!(client.cache_len().await, 3);
-    assert_eq!(state.embed_calls.load(Ordering::SeqCst), 3);
+    // Re-embedding the same documents must recompute: nothing was retained,
+    // and both batches are re-requested (no failures left to retry) => 3 + 2.
+    let recomputed = client.embed_documents(&docs).await.expect("cached embeds");
+    assert_eq!(recomputed, vectors);
+    assert_eq!(
+        client.cache_len().await,
+        0,
+        "documents must not be retained"
+    );
+    assert_eq!(state.embed_calls.load(Ordering::SeqCst), 5);
+
+    // Queries do cache: the second identical query costs no HTTP call.
+    let query = client.embed_query("delta").await.expect("query embed");
+    assert_eq!(state.embed_calls.load(Ordering::SeqCst), 6);
+    assert_eq!(
+        client.embed_query("delta").await.expect("cached query"),
+        query
+    );
+    assert_eq!(
+        state.embed_calls.load(Ordering::SeqCst),
+        6,
+        "query not cached"
+    );
+    assert_eq!(client.cache_len().await, 1);
 
     let calls = state.calls.lock().await;
     let first_body = &calls[0].1;

@@ -36,6 +36,21 @@ use tokio::net::TcpListener;
 const MAX_QUERY_LENGTH: usize = 2_000;
 const DEFAULT_RATE_LIMIT_PER_MINUTE: u32 = 120;
 const MAX_EVENTS: usize = 1_000;
+/// `retrieval_mode` marker for responses produced by the live dense pipeline
+/// (Ollama embeddings + Qdrant). Clients use it to tell a full-quality answer
+/// apart from the degraded one below, which shares the same JSON shape.
+pub(crate) const DENSE_RETRIEVAL_MODE: &str = "dense";
+/// `retrieval_mode` marker for responses produced by the SQLite keyword
+/// fallback, which runs whenever the dense backend is not configured.
+pub(crate) const LEXICAL_RETRIEVAL_MODE: &str = "lexical_fallback";
+/// Fixed rate-limit window; entries older than this carry no information.
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+/// Only sweep expired rate-limit windows once the map is larger than a
+/// single-token daemon will ever make it.
+const RATE_WINDOW_SWEEP_THRESHOLD: usize = 64;
+/// Hard ceiling on live rate-limit windows, so a flood of distinct credentials
+/// cannot grow the map without bound inside one window.
+const RATE_WINDOW_MAX_ENTRIES: usize = 10_000;
 
 /// Mutable process state shared by middleware and route handlers.
 #[derive(Clone)]
@@ -100,8 +115,23 @@ impl ServerState {
         self
     }
 
+    /// Take the event ring lock, recovering from poisoning.
+    ///
+    /// `record_request` runs this on *every* request, so `.expect()` here would
+    /// let a single panic anywhere under the lock turn the whole daemon into a
+    /// permanent 500 machine — the opposite of the degrade-never-500 contract.
+    /// The guarded value is an append-only ring of independent JSON events: a
+    /// panic mid-`push_back` can at worst leave one event missing or malformed,
+    /// never a state the later reads cannot handle. Losing an event beats
+    /// wedging the process.
+    fn events_guard(&self) -> std::sync::MutexGuard<'_, VecDeque<Value>> {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn push_event(&self, event: Value) {
-        let mut events = self.events.lock().expect("event lock poisoned");
+        let mut events = self.events_guard();
         if events.len() == MAX_EVENTS {
             events.pop_front();
         }
@@ -109,12 +139,7 @@ impl ServerState {
     }
 
     fn recent_events(&self) -> Vec<Value> {
-        self.events
-            .lock()
-            .expect("event lock poisoned")
-            .iter()
-            .cloned()
-            .collect()
+        self.events_guard().iter().cloned().collect()
     }
 }
 
@@ -596,6 +621,11 @@ async fn generic_post(State(state): State<ServerState>, request: Request) -> Res
                     Err(error) if error.starts_with("unknown repo") => {
                         api_error(StatusCode::NOT_FOUND, &error, "HTTP_ERROR")
                     }
+                    // A destination outside `~/.rag/exports` is a bad request,
+                    // not a backend outage — keep it off the 5xx path.
+                    Err(error) if error.starts_with("invalid output path") => {
+                        api_error(StatusCode::BAD_REQUEST, &error, "HTTP_ERROR")
+                    }
                     Err(_) => api_error(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "Live retrieval backend is unavailable",
@@ -799,6 +829,7 @@ fn live_search(paths: &RagPaths, body: &Value) -> Result<Value, String> {
         "plan": plan,
         "total": results.len(),
         "results": results,
+        "retrieval_mode": LEXICAL_RETRIEVAL_MODE,
         "latency_ms": started.elapsed().as_secs_f64() * 1000.0,
     }))
 }
@@ -1470,6 +1501,7 @@ fn live_smart_search(paths: &RagPaths, body: &Value) -> Result<Value, String> {
         "definitions": definitions, "usages": usages, "semantic": search["results"], "related": [],
         "candidates": candidates, "candidates_total": candidates.len(), "repos_searched": repo.into_iter().collect::<Vec<_>>(),
         "vocab_anchors": [], "vocab_files": [], "symbol_inference_ms": 0.0,
+        "retrieval_mode": LEXICAL_RETRIEVAL_MODE,
         "latency_ms": started.elapsed().as_secs_f64() * 1000.0}),
     )
 }
@@ -1542,14 +1574,16 @@ fn live_ask(paths: &RagPaths, body: &Value) -> Result<Value, String> {
         return Ok(
             json!({"question": question, "answer": "Insufficient indexed context to answer safely.",
             "citations": [], "model": "deterministic-fallback", "retrieval_ms": started.elapsed().as_secs_f64() * 1000.0,
-            "generation_ms": 0.0, "latency_ms": started.elapsed().as_secs_f64() * 1000.0, "insufficient_context": true}),
+            "generation_ms": 0.0, "latency_ms": started.elapsed().as_secs_f64() * 1000.0, "insufficient_context": true,
+            "retrieval_mode": LEXICAL_RETRIEVAL_MODE}),
         );
     };
     let citation = json!({"file_path": first["file_path"], "lines": first["lines"], "name": first["name"], "score": first["score"]});
     Ok(json!({"question": question,
         "answer": format!("The strongest indexed evidence is {} at {}.", first["name"].as_str().unwrap_or("the cited symbol"), first["citation"].as_str().unwrap_or("the cited location")),
         "citations": [citation], "model": "deterministic-fallback", "retrieval_ms": search["latency_ms"],
-        "generation_ms": 0.0, "latency_ms": started.elapsed().as_secs_f64() * 1000.0, "insufficient_context": false}))
+        "generation_ms": 0.0, "latency_ms": started.elapsed().as_secs_f64() * 1000.0, "insufficient_context": false,
+        "retrieval_mode": LEXICAL_RETRIEVAL_MODE}))
 }
 
 fn live_index(paths: &RagPaths, body: &Value) -> Result<Value, String> {
@@ -2122,9 +2156,31 @@ async fn authenticate_and_limit(
 
 fn consume_rate_limit(state: &ServerState, key: &str) -> bool {
     let now = Instant::now();
-    let mut windows = state.rate_windows.lock().expect("rate limit lock poisoned");
+    // Same reasoning as `events_guard`: this runs on every authenticated
+    // request, so refusing to proceed on a poisoned lock would convert one
+    // panic into a permanently 500-ing daemon. The map holds nothing but
+    // independent fixed-window counters, so resuming costs at most one caller
+    // an extra window.
+    let mut windows = state
+        .rate_windows
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // The map is only ever added to, so distinct bearer credentials (rotated
+    // tokens, or attacker-chosen values when auth is disabled) would grow it
+    // forever. Expired windows carry no information, so drop them on insert.
+    // Guarded by a threshold: the common single-token daemon never scans.
+    if windows.len() >= RATE_WINDOW_SWEEP_THRESHOLD && !windows.contains_key(key) {
+        windows.retain(|_, (started, _)| now.duration_since(*started) < RATE_LIMIT_WINDOW);
+        // Even with every window still live, a flood of distinct credentials
+        // must not be able to grow the map without bound. Dropping the counters
+        // only grants those callers a fresh window — per-key limits already do
+        // not constrain a caller who varies the key.
+        if windows.len() >= RATE_WINDOW_MAX_ENTRIES {
+            windows.clear();
+        }
+    }
     let entry = windows.entry(key.to_owned()).or_insert((now, 0));
-    if now.duration_since(entry.0) >= Duration::from_secs(60) {
+    if now.duration_since(entry.0) >= RATE_LIMIT_WINDOW {
         *entry = (now, 0);
     }
     if entry.1 >= state.rate_limit {
@@ -2295,7 +2351,10 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use super::{parse_bearer, router, router_with_state, ServerState};
+    use std::time::{Duration, Instant};
+
+    use super::retrieval::resolve_export_path;
+    use super::{consume_rate_limit, parse_bearer, router, router_with_state, ServerState};
 
     fn request(method: &str, uri: &str) -> http::request::Builder {
         Request::builder()
@@ -2429,5 +2488,173 @@ mod tests {
         for path in ["/health", "/search", "/resolve", "/context-pack", "/ask"] {
             assert!(value["paths"].get(path).is_some(), "missing {path}");
         }
+    }
+
+    /// A panic while holding the event-ring mutex must not turn every later
+    /// request into a 500 — the middleware runs on all of them.
+    #[tokio::test]
+    async fn poisoned_event_lock_still_serves_requests() {
+        let state = ServerState::new(None).with_contract_fixtures();
+        let poisoner = state.clone();
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let poisoned = std::thread::spawn(move || {
+            let _guard = poisoner.events.lock().unwrap();
+            panic!("deliberate poison");
+        })
+        .join();
+        std::panic::set_hook(previous_hook);
+        assert!(poisoned.is_err());
+        assert!(
+            state.events.lock().is_err(),
+            "event mutex should now be poisoned"
+        );
+
+        let health = router_with_state(state.clone())
+            .oneshot(request("GET", "/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let events = router_with_state(state)
+            .oneshot(
+                request("GET", "/events/recent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(events.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(events.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert!(value["events"].is_array());
+    }
+
+    #[test]
+    fn rate_limit_windows_are_evicted_and_bounded() {
+        let state = ServerState::new(None);
+        let stale = Instant::now()
+            .checked_sub(Duration::from_secs(120))
+            .expect("monotonic clock is younger than the rate-limit window");
+        {
+            let mut windows = state.rate_windows.lock().unwrap();
+            for index in 0..5_000 {
+                windows.insert(format!("expired-{index}"), (stale, 1));
+            }
+        }
+        // Expired windows carry no information and must not survive new keys.
+        assert!(consume_rate_limit(&state, "fresh-0"));
+        {
+            let windows = state.rate_windows.lock().unwrap();
+            assert!(
+                !windows.keys().any(|key| key.starts_with("expired-")),
+                "expired rate-limit windows were never reclaimed"
+            );
+        }
+        // Live windows from a flood of distinct credentials stay bounded too.
+        for index in 0..(super::RATE_WINDOW_MAX_ENTRIES + 2_000) {
+            consume_rate_limit(&state, &format!("flood-{index}"));
+        }
+        let len = state.rate_windows.lock().unwrap().len();
+        assert!(
+            len <= super::RATE_WINDOW_MAX_ENTRIES,
+            "rate-limit map grew to {len} entries"
+        );
+    }
+
+    /// Degraded (SQLite keyword) answers must be distinguishable from dense
+    /// ones: they share the JSON shape but not the quality.
+    #[tokio::test]
+    async fn search_responses_declare_their_retrieval_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join("auth.rs"),
+            "pub fn verify_bearer(token: &str) -> bool { !token.is_empty() }",
+        )
+        .unwrap();
+        let app =
+            router_with_state(ServerState::new(None).with_rag_home(temp.path().join("rag-home")));
+        let indexed = app
+            .clone()
+            .oneshot(
+                request("POST", "/index")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"repo_path":{},"repo_name":"sample","collection":"repo_sample","full":true}}"#,
+                        serde_json::to_string(&repo).unwrap()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(indexed.status(), StatusCode::OK);
+
+        let search = app
+            .oneshot(
+                request("POST", "/search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"query":"verify bearer","repo":"sample","top_k":5}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(search.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(search.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["retrieval_mode"], super::LEXICAL_RETRIEVAL_MODE);
+    }
+
+    #[test]
+    fn export_paths_are_confined_to_the_exports_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = super::RagPaths::from_home(temp.path());
+        let root = temp.path().join("exports");
+
+        let accepted = resolve_export_path(&paths, "dump.jsonl").unwrap();
+        assert_eq!(accepted, root.canonicalize().unwrap().join("dump.jsonl"));
+        let nested = resolve_export_path(&paths, "snapshots/dump.jsonl").unwrap();
+        assert!(nested.starts_with(root.canonicalize().unwrap()));
+        // An absolute path is only honored inside the root.
+        assert!(resolve_export_path(&paths, accepted.to_str().unwrap()).is_ok());
+
+        for traversal in [
+            "../escaped.jsonl",
+            "../../etc/cron.d/payload",
+            "nested/../../escaped.jsonl",
+            "/etc/cron.d/payload",
+            "",
+            ".",
+        ] {
+            let error = resolve_export_path(&paths, traversal)
+                .expect_err("traversal accepted: {traversal}");
+            assert!(
+                error.starts_with("invalid output path"),
+                "unexpected error for {traversal}: {error}"
+            );
+        }
+        assert!(!temp.path().join("escaped.jsonl").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_paths_reject_symlinked_escapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = super::RagPaths::from_home(temp.path());
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let root = temp.path().join("exports");
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("target.jsonl"), root.join("file.jsonl")).unwrap();
+
+        assert!(resolve_export_path(&paths, "link/dump.jsonl").is_err());
+        assert!(resolve_export_path(&paths, "file.jsonl").is_err());
+        assert!(!outside.join("dump.jsonl").exists());
     }
 }
