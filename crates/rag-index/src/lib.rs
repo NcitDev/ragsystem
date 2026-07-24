@@ -12,6 +12,7 @@ pub mod jobs;
 pub mod lexical;
 pub mod lsp;
 pub mod records;
+pub mod symbols;
 
 pub use chunker::{chunk_code, supported_extensions, supported_languages, Chunk, ChunkType};
 pub use discovery::{diff_index_state, discover_files, file_hash, IndexDiff, IndexState};
@@ -19,6 +20,13 @@ pub use graph::{
     AstDefinition, AstGraph, AstReference, AstUsage, CallTreeEdge, GraphNode, GraphRelation,
 };
 pub use jobs::{CancellationToken, IndexJob, JobProgress, JobStatus};
-pub use lexical::{CodeDocument, CodeSearchHit, LexicalIndex};
+pub use lexical::{
+    CodeDocument, CodeSearchHit, LexicalIndex, RelatedFileRow, SymbolDefRow, SymbolEdgeRow,
+    SymbolIndexStats, SymbolRefRow,
+};
 pub use lsp::{detect_lsp_servers, LspServerSpec, LspServerStatus};
 pub use records::{SummaryRecord, VocabRecord};
+pub use symbols::{
+    extract_symbols, extract_symbols_with, EdgeRelation, ExtractOptions, FileSymbols, RefKind,
+    SymbolDef, SymbolEdge, SymbolRef,
+};
