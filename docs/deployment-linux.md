@@ -16,8 +16,8 @@ After=network.target
 
 [Service]
 Type=simple
-# Adjust to your venv / install path.
-ExecStart=%h/production/ragsystem/.venv/bin/python -m rag start
+# Adjust to your install path.
+ExecStart=%h/.local/bin/rag start
 Restart=always
 RestartSec=3
 # Ollama / git must be on PATH for indexing + LLM planning.

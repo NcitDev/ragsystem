@@ -34,10 +34,6 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    InstallAgent {
-        #[arg(default_value = "codex")]
-        target: String,
-    },
     Start {
         #[arg(long, default_value = DEFAULT_HOST)]
         host: String,
@@ -303,7 +299,6 @@ async fn execute(
             let path = path.canonicalize().context("repository path does not exist")?;
             emit(client.post_with_timeout("/index", json!({"repo_path": path}), 600).await?)?;
         }
-        Command::InstallAgent { target } => install_agent(&target)?,
         Command::QdrantUp => qdrant_docker_up()?,
         Command::QdrantDown => qdrant_docker_down()?,
         Command::QdrantStatus => emit(qdrant_docker_status().await?)?,
@@ -344,8 +339,14 @@ async fn execute(
         }
         Command::Repos => emit(client.get("/repos").await?)?,
         Command::Export { output, collection } => {
+            // The daemon streams the records back and we write them here, so the
+            // user's path is honored even when the daemon is remote. Previously
+            // this sent no `output` at all, which the route required -> every
+            // `rag export` died on a 422 before reaching the export logic.
             let value = client.post("/admin/export", json!({"collection": collection})).await?;
-            fs::write(&output, serde_json::to_vec_pretty(&value)?)?;
+            let records = value.get("records").and_then(Value::as_array).cloned().unwrap_or_default();
+            let jsonl = records.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n");
+            fs::write(&output, jsonl)?;
             emit(json!({"output": output, "exported": value.get("exported").cloned().unwrap_or(json!(0))}))?;
         }
         Command::Import { input, collection } => {
@@ -496,17 +497,6 @@ fn read_token() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-}
-
-fn install_agent(target: &str) -> anyhow::Result<()> {
-    if target != "codex" {
-        bail!("only the codex agent integration is supported");
-    }
-    let status = ProcessCommand::new("scripts/install-codex-skills.sh").status()?;
-    if !status.success() {
-        bail!("agent installer failed with {status}");
-    }
-    Ok(())
 }
 
 /// Managed Qdrant container. Plain `docker run` (no compose file) so a

@@ -60,12 +60,71 @@ async fn dashboard_is_embedded_in_the_binary() {
     );
 }
 
+/// Copy the checked-in fixture home into a temp dir. Serving a request against
+/// it appends to `logs/daemon.jsonl` (and SQLite may drop sidecar files), which
+/// would leave the fixture — and the working tree — dirty after every run.
+fn fixture_rag_home() -> tempfile::TempDir {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/rust-compat/r1/python-rag-home");
+    let temp = tempfile::tempdir().expect("tempdir");
+    copy_tree(&source, temp.path());
+    temp
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("create fixture dir");
+    for entry in std::fs::read_dir(from).expect("read fixture dir") {
+        let entry = entry.expect("fixture entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("fixture file type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy fixture file");
+        }
+    }
+}
+
+/// `/stack` must carry an `ast_index` service card: the external `ast-index`
+/// CLI backs every symbol-exact route, and when it is missing those routes
+/// return empty results instead of failing — so the dashboards have to say so.
+#[tokio::test]
+async fn stack_reports_the_external_ast_index_cli() {
+    let rag_home = tempfile::tempdir().unwrap();
+    let app = rag_server::router_with_state(
+        rag_server::ServerState::new(None).with_rag_home(rag_home.path()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/stack")
+                .header(header::HOST, "localhost:7891")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    for card in ["ollama", "docker", "qdrant", "ast_index"] {
+        assert!(value.get(card).is_some(), "missing {card} card");
+    }
+    let ast_index = &value["ast_index"];
+    assert_eq!(ast_index["name"], "AST-INDEX");
+    assert!(["ok", "warn"].contains(&ast_index["state"].as_str().unwrap()));
+    assert!(!ast_index["headline"].as_str().unwrap().is_empty());
+    if ast_index["state"] == "warn" {
+        assert!(ast_index["hint"].as_str().unwrap().contains("ast-index"));
+    }
+}
+
 #[tokio::test]
 async fn live_search_reads_a_copied_python_created_database() {
-    let rag_home = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/rust-compat/r1/python-rag-home");
-    let app =
-        rag_server::router_with_state(rag_server::ServerState::new(None).with_rag_home(rag_home));
+    // Held for the whole test: dropping it deletes the copied home.
+    let rag_home = fixture_rag_home();
+    let app = rag_server::router_with_state(
+        rag_server::ServerState::new(None).with_rag_home(rag_home.path()),
+    );
     let response = app
         .oneshot(
             Request::builder()

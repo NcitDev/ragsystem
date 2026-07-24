@@ -264,17 +264,35 @@ is a regex source scan (lib.rs:1013) rather than a real call graph.
 Six phases. Each has a verification gate; nothing moves to the next phase with
 a red gate. Phases 0–2 are sequential; 3–6 can be reordered by appetite.
 
-### Phase 0 — Secure the work (hours, do first)
+### Phase 0 — Secure the work — ✅ DONE 2026-07-24
 
-1. Fix the index (P0.2), commit, push to `origin`, verify by clean clone.
-2. Delete `src/rag/`, `pyproject.toml`, `uv.lock`, `.venv`, `.pytest_cache`,
-   `.ruff_cache` from tracking and worktree (P0.3). Tag the last Python
-   commit first (`git tag python-final 9fa1ea9`) so the history stays
-   reachable without the files.
-3. Correct `CLAUDE.md:5-7` to describe the tree that exists.
+1. ✅ Index fixed and committed as `567e410`: obsolete `tui.rs` dropped, the
+   real `tui/{mod,ui,data}.rs` and `stack.rs` added, `.claude/scheduled_tasks.lock`
+   and `.qdrant-initialized` unstaged and gitignored. Tag `python-final`
+   marks the last Python tree.
+2. ✅ Python runtime removed in `b3b9909` (`src/rag/`, `pyproject.toml`,
+   `uv.lock`, `tools/`); `ragsystem.pen` and `vocab_*.jsonl` untracked but
+   kept on disk. `CLAUDE.md`'s "the Python source has been removed" is now
+   true. The only remaining `.py` in tracking is
+   `tests/rust-compat/r3/fixtures/sample.py` (chunker *input* data) plus
+   `bench/` dev harnesses, which is the existing convention.
+3. ✅ Not pushed — owner's call; the branch is deliberately local-only, so
+   the single-disk risk is reduced (recoverable from git) but not eliminated.
 
-**Gate:** clean clone of the pushed commit passes `cargo test --workspace`
-and `cargo clippy --workspace --all-targets -- -D warnings`.
+**New defect found by the gate — `76e0c4a`.** The clean-clone build failed
+where the in-place worktree passed: `.gitignore`'s blanket `*.db` rule had
+silently excluded `tests/rust-compat/r1/python-rag-home/{rag,repos}.db`, the
+fixtures `r6_contract::live_search_reads_a_copied_python_created_database`
+depends on. Without them the registry lookup fails and the route returns 503
+instead of 200. `cargo test --workspace` therefore passed *only* on machines
+that already had the files — CI would have failed on first push. Fixed by
+negating the rule (`!tests/rust-compat/**/*.db`) and tracking the fixtures.
+
+The lesson generalises: **an in-place worktree cannot verify a commit.** Only
+`git clone . /tmp/x && cd /tmp/x && cargo test --workspace` can.
+
+**Gate:** ✅ clean clone of `b3b9909` passes `cargo test --workspace`
+(88 passed, 0 failed), `clippy -D warnings`, and `fmt --check`.
 
 ### Phase 1 — Tell the truth (1–2 days)
 

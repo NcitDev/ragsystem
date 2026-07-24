@@ -376,6 +376,7 @@
     <span class="seg"><span class="dot off" id="dot-ollama">●</span> ollama</span>
     <span class="seg"><span class="dot off" id="dot-docker">●</span> docker</span>
     <span class="seg"><span class="dot off" id="dot-qdrant">●</span> qdrant</span>
+    <span class="seg"><span class="dot off" id="dot-ast-index">●</span> ast-index</span>
     <span class="seg">chunks <span class="val" id="st-chunks">—</span></span>
     <span class="seg">qpm <span class="val" id="st-qpm">—</span></span>
     <span class="seg">up <span class="val" id="st-up">—</span></span>
@@ -401,6 +402,7 @@
           <div class="svc" id="card-ollama"><div class="s-name">OLLAMA</div><div class="s-head off">checking…</div></div>
           <div class="svc" id="card-docker"><div class="s-name">DOCKER</div><div class="s-head off">checking…</div></div>
           <div class="svc" id="card-qdrant"><div class="s-name">QDRANT</div><div class="s-head off">checking…</div></div>
+          <div class="svc" id="card-ast-index"><div class="s-name">AST-INDEX</div><div class="s-head off">checking…</div></div>
         </div>
         <div class="panel" style="flex:1;">
           <div class="panel-head"><span class="ph-title">PROJECT INDEXES</span><span class="ph-right" id="repos-src"></span></div>
@@ -748,6 +750,7 @@ async function pollStack() {
   setDot("dot-ollama", renderCard("card-ollama", stack.ollama || {}));
   setDot("dot-docker", renderCard("card-docker", stack.docker || {}));
   setDot("dot-qdrant", renderCard("card-qdrant", stack.qdrant || {}));
+  setDot("dot-ast-index", renderCard("card-ast-index", stack.ast_index || {}));
   renderLsp();
   renderRepos();
 }

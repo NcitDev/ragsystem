@@ -5,7 +5,11 @@
 //! timeboxed and failure-isolated: the dashboard must stay informative when
 //! parts of the stack are down, which is precisely when it is needed most.
 
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use rag_config::{load_settings, RagPaths, Settings};
 use rag_index::detect_lsp_servers;
@@ -21,6 +25,17 @@ pub const DOWN: &str = "down";
 pub const OFF: &str = "off";
 
 pub const QDRANT_CONTAINER: &str = "rag-qdrant";
+
+/// The external `ast-index` CLI backs every symbol-exact route (`/resolve`,
+/// `/graph/*`, `/call-tree`, `/context-pack`, the structural stage of
+/// `/smart-search`). Its absence is otherwise silent — those routes return
+/// empty results, not errors — so the dashboards get a card for it.
+pub const AST_INDEX_INSTALL_HINT: &str =
+    "npm install -g @ast-index/cli · then: cd <repo> && ast-index rebuild";
+/// Probing spawns a subprocess and the web dashboard polls `/stack` every 12s;
+/// an install/uninstall does not need to show up within a single poll.
+const AST_INDEX_TTL: Duration = Duration::from_secs(300);
+const AST_INDEX_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One service card on the dashboard (Python `ServiceHealth` asdict shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +67,7 @@ pub struct ExternalChecks {
     pub ollama: ServiceHealth,
     pub docker: ServiceHealth,
     pub qdrant: ServiceHealth,
+    pub ast_index: ServiceHealth,
     pub lsp: Vec<LspServerStatus>,
     pub service: Value,
 }
@@ -74,16 +90,18 @@ fn probe_client() -> Option<reqwest::Client> {
 /// Run every non-daemon probe concurrently. Never fails.
 pub async fn external_checks(settings: &Settings) -> ExternalChecks {
     let http = probe_client();
-    let (ollama, docker, qdrant) = match http {
+    let (ollama, docker, qdrant, ast_index) = match http {
         Some(http) => tokio::join!(
             check_ollama(&http, settings),
             check_docker(&settings.qdrant.mode),
             check_qdrant(&http, settings),
+            check_ast_index(),
         ),
         None => (
             ServiceHealth::new("OLLAMA"),
             ServiceHealth::new("DOCKER"),
             ServiceHealth::new("QDRANT"),
+            check_ast_index().await,
         ),
     };
     ExternalChecks {
@@ -91,6 +109,7 @@ pub async fn external_checks(settings: &Settings) -> ExternalChecks {
         ollama,
         docker,
         qdrant,
+        ast_index,
         lsp: detect_lsp_servers(None),
         // launchd info is macOS-only in the Python TUI; empty elsewhere.
         service: json!({}),
@@ -299,6 +318,66 @@ async fn check_qdrant(http: &reqwest::Client, settings: &Settings) -> ServiceHea
     svc
 }
 
+/// Cached `(checked_at, available)` — the probe shells out, so it is rate
+/// limited to one subprocess per [`AST_INDEX_TTL`] across every poller.
+static AST_INDEX_PROBE: OnceLock<tokio::sync::Mutex<Option<(Instant, bool)>>> = OnceLock::new();
+
+/// `Some(available)`, or `None` when the probe timed out with nothing cached.
+async fn ast_index_available() -> Option<bool> {
+    let cache = AST_INDEX_PROBE.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut cached = cache.lock().await;
+    if let Some((checked_at, available)) = *cached {
+        if checked_at.elapsed() < AST_INDEX_TTL {
+            return Some(available);
+        }
+    }
+    // `is_available()` spawns `ast-index --version` with the blocking std API.
+    let probe = tokio::time::timeout(
+        AST_INDEX_TIMEOUT,
+        tokio::task::spawn_blocking(rag_retrieval::ast_index::is_available),
+    )
+    .await;
+    match probe {
+        Ok(Ok(available)) => {
+            *cached = Some((Instant::now(), available));
+            Some(available)
+        }
+        // A hung or panicking probe keeps the last answer rather than lying.
+        _ => cached.map(|(_, available)| available),
+    }
+}
+
+async fn check_ast_index() -> ServiceHealth {
+    let mut svc = ServiceHealth::new("AST-INDEX");
+    match ast_index_available().await {
+        Some(true) => {
+            svc.state = OK.to_owned();
+            svc.headline = "installed".to_owned();
+            svc.lines = vec![
+                which("ast-index")
+                    .map_or_else(|| "on PATH".to_owned(), |path| path.display().to_string()),
+                "symbol navigation enabled".to_owned(),
+            ];
+        }
+        Some(false) => {
+            svc.state = WARN.to_owned();
+            svc.headline = "not installed".to_owned();
+            svc.lines = vec![
+                "resolve · callers · callees · impact return empty".to_owned(),
+                "smart-search loses its structural stage".to_owned(),
+            ];
+            svc.hint = AST_INDEX_INSTALL_HINT.to_owned();
+        }
+        None => {
+            svc.state = WARN.to_owned();
+            svc.headline = "probe timed out".to_owned();
+            svc.lines = vec!["ast-index --version did not answer".to_owned()];
+            svc.hint = AST_INDEX_INSTALL_HINT.to_owned();
+        }
+    }
+    svc
+}
+
 async fn get_json(http: &reqwest::Client, url: &str) -> Option<Value> {
     let response = http.get(url).send().await.ok()?;
     if !response.status().is_success() {
@@ -351,6 +430,7 @@ pub async fn stack_status_json(paths: &RagPaths) -> Value {
         "ollama": checks.ollama,
         "docker": checks.docker,
         "qdrant": checks.qdrant,
+        "ast_index": checks.ast_index,
         "lsp": checks.lsp,
         "service": checks.service,
         "repos_meta": repos_meta,
@@ -447,7 +527,10 @@ pub fn humanize_bytes(n: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_ago, humanize_bytes, humanize_seconds, ServiceHealth};
+    use super::{
+        ast_index_available, check_ast_index, humanize_ago, humanize_bytes, humanize_seconds,
+        ServiceHealth, AST_INDEX_PROBE, OK, WARN,
+    };
 
     #[test]
     fn humanize_seconds_matches_python() {
@@ -475,6 +558,37 @@ mod tests {
         let value = serde_json::to_value(&svc).unwrap();
         for key in ["name", "state", "headline", "lines", "hint"] {
             assert!(value.get(key).is_some(), "missing key {key}");
+        }
+    }
+
+    /// The card must render on both kinds of machine: with `ast-index` on PATH
+    /// and without it. Missing must never be silent — it carries an install hint.
+    #[tokio::test]
+    async fn ast_index_card_is_a_dashboard_service_card() {
+        let svc = check_ast_index().await;
+        assert_eq!(svc.name, "AST-INDEX");
+        assert!(matches!(svc.state.as_str(), OK | WARN), "{}", svc.state);
+        assert!(!svc.headline.is_empty());
+        assert!(!svc.lines.is_empty());
+        if svc.state == WARN {
+            assert!(svc.hint.contains("ast-index"), "{}", svc.hint);
+        }
+        let value = serde_json::to_value(&svc).unwrap();
+        for key in ["name", "state", "headline", "lines", "hint"] {
+            assert!(value.get(key).is_some(), "missing key {key}");
+        }
+    }
+
+    /// `/stack` is polled every 12s by the web dashboard; the subprocess probe
+    /// must be served from cache in between.
+    #[tokio::test]
+    async fn ast_index_probe_is_cached() {
+        let first = ast_index_available().await;
+        let second = ast_index_available().await;
+        assert_eq!(first, second);
+        if first.is_some() {
+            let cache = AST_INDEX_PROBE.get().expect("probe cache initialised");
+            assert!(cache.lock().await.is_some());
         }
     }
 }

@@ -122,7 +122,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         state_dot(&app.snap.docker.state),
         dim(" docker  "),
         state_dot(&app.snap.qdrant.state),
-        dim(" qdrant"),
+        dim(" qdrant  "),
+        state_dot(&app.snap.ast_index.state),
+        dim(" ast-index"),
     ];
     if let Some(note) = app.note_text() {
         spans.push(Span::raw("   "));
@@ -254,16 +256,18 @@ fn draw_home(frame: &mut Frame, app: &App, area: Rect) {
     let cards = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 5),
+            Constraint::Ratio(1, 5),
+            Constraint::Ratio(1, 5),
+            Constraint::Ratio(1, 5),
+            Constraint::Ratio(1, 5),
         ])
         .split(rows[0]);
     draw_card(frame, &app.snap.daemon, cards[0]);
     draw_card(frame, &app.snap.ollama, cards[1]);
     draw_card(frame, &app.snap.docker, cards[2]);
     draw_card(frame, &app.snap.qdrant, cards[3]);
+    draw_card(frame, &app.snap.ast_index, cards[4]);
 
     draw_repos(frame, app, rows[1]);
 

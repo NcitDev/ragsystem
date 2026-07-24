@@ -16,7 +16,7 @@ on macOS) so it auto-starts on login and restarts on crash.
 
 ## Runtime dependencies
 
-Three things, nothing else:
+Three required, one required for symbol navigation:
 
 1. **`rag`** — the single ~30 MB binary (daemon + CLI + TUI).
 2. **Qdrant** — vector database. `qdrant.mode = "server"` connects to a Docker
@@ -25,6 +25,15 @@ Three things, nothing else:
    itself (auto-downloaded to `~/.rag/bin`), no Docker required.
 3. **Ollama** — local model server for embeddings (`qwen3-embedding`) and,
    optionally, the LLM planner and `/ask` generation (`qwen3:8b`).
+4. **`ast-index`** — an external CLI the daemon shells out to for every
+   symbol-exact answer (`npm install -g @ast-index/cli`; a native binary
+   behind a Node launcher, so Node.js must be on `PATH`). It backs `/resolve`,
+   `/graph/node|callers|callees|impact`, `/call-tree`, `/context-pack` and the
+   structural stage of `/smart-search`. **Without it those routes return empty
+   results rather than an error** — dense and lexical search are unaffected,
+   but navigation answers silently go blank, which looks like a broken index.
+   `rag diagnose` and the daemon's `/stack` endpoint (its `ast_index` service
+   card) report whether it is present.
 
 ## Install
 
@@ -61,15 +70,20 @@ First `rag start` bootstraps `~/.rag` (auth token with 0600 perms, default
 
 ## AST navigation
 
-Symbol-exact features (`rag resolve`, `rag callers`, `rag impact`,
-`rag smart-search` structural links) use the external `ast-index` CLI. Build
-its index once per repo:
+Symbol-exact features (`rag resolve`, `rag callers`, `rag callees`,
+`rag impact`, `rag call-tree`, `rag context-pack`, `rag smart-search`
+structural links) shell out to the external `ast-index` CLI — see runtime
+dependency 4 above. Install it and build its index once per repo:
 
 ```bash
+npm install -g @ast-index/cli     # requires Node.js on PATH
 cd <repo> && ast-index rebuild
 ```
 
-Without it, those commands degrade to lexical/dense fallbacks.
+Without it, `rag resolve` / `callers` / `callees` / `impact` return **empty
+results, not an error**, and `smart-search` falls back to its dense/lexical
+stages only. Check `rag diagnose` or `/stack` before concluding the index is
+broken.
 
 ## Architecture
 

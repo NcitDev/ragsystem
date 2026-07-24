@@ -226,13 +226,29 @@ impl RetrievalBackend {
     }
 
     /// Python `/admin/export`: stream a collection's points to JSONL.
+    ///
+    /// The destination is confined to `~/.rag/exports` — the request body is
+    /// caller-controlled and so is the file content, so an unconstrained path
+    /// here is an arbitrary-file-write primitive for anything the daemon user
+    /// can reach (loopback-only and authenticated, but that is not a boundary
+    /// worth betting a file write on).
     pub async fn admin_export_route(
         &self,
         paths: &RagPaths,
         body: &Value,
     ) -> Result<Value, String> {
         let collection = self.collection_arg(paths, body);
-        let output = super::required_string(body, "output")?;
+        // `output` is optional: the CLI streams the records back and writes them
+        // wherever the user asked, which a daemon-side write confined to
+        // ~/.rag/exports cannot do (and which is the only thing that works when
+        // the daemon is not on the caller's machine). A server-side copy is
+        // still available for callers that want one.
+        let output = match body.get("output").and_then(Value::as_str) {
+            Some(requested) if !requested.trim().is_empty() => {
+                Some(resolve_export_path(paths, requested)?)
+            }
+            _ => None,
+        };
         let mut exported = 0usize;
         let mut offset: Option<Value> = None;
         let mut lines: Vec<String> = Vec::new();
@@ -255,8 +271,23 @@ impl RetrievalBackend {
                 None => break,
             }
         }
-        std::fs::write(output, lines.join("\n")).map_err(|error| error.to_string())?;
-        Ok(json!({"exported": exported, "collection": collection, "output": output}))
+        if let Some(output) = &output {
+            std::fs::write(output, lines.join("\n")).map_err(|error| error.to_string())?;
+        }
+        // `records` is what the declared contract shape has always promised
+        // (`response_for("/admin/export")` returns `{exported, records}`); the
+        // live route used to omit it, so `rag export` wrote a file with no data
+        // in it even once the missing-`output` 422 was out of the way.
+        let records: Vec<Value> = lines
+            .iter()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        Ok(json!({
+            "exported": exported,
+            "collection": collection,
+            "records": records,
+            "output": output.map(|path| path.to_string_lossy().into_owned()),
+        }))
     }
 
     /// Python `/admin/verify`: detect orphaned SQLite chunks (present in the
@@ -447,6 +478,7 @@ impl RetrievalBackend {
                 "filters": plan.filters,
             },
             "total": results.len(),
+            "retrieval_mode": super::DENSE_RETRIEVAL_MODE,
             "latency_ms": round4(latency_ms),
         }))
     }
@@ -857,6 +889,7 @@ impl RetrievalBackend {
             "repos_searched": repo.into_iter().collect::<Vec<_>>(),
             "vocab_anchors": vocab_anchors,
             "vocab_files": vocab_files,
+            "retrieval_mode": super::DENSE_RETRIEVAL_MODE,
             "symbol_inference_ms": round4(symbol_inference_ms),
             "latency_ms": started.elapsed().as_secs_f64() * 1000.0,
         }))
@@ -988,6 +1021,7 @@ impl RetrievalBackend {
                 "generation_ms": 0.0,
                 "latency_ms": round4(started.elapsed().as_secs_f64() * 1000.0),
                 "insufficient_context": true,
+                "retrieval_mode": super::DENSE_RETRIEVAL_MODE,
             }));
         }
 
@@ -1076,6 +1110,7 @@ impl RetrievalBackend {
             "generation_ms": round4(generation_ms),
             "latency_ms": round4(latency_ms),
             "insufficient_context": insufficient,
+            "retrieval_mode": super::DENSE_RETRIEVAL_MODE,
         }))
     }
 
@@ -1383,6 +1418,71 @@ fn slim_result(hit: &SearchHit, matched_queries: Vec<usize>) -> Value {
         "citation": citation,
         "matched_queries": matched_queries,
     })
+}
+
+/// Confine an `/admin/export` destination to `~/.rag/exports`.
+///
+/// The caller-supplied name may be relative — or absolute *inside* the export
+/// root — and may nest, but it can never escape: `..`, root and prefix
+/// components are rejected outright, and every level that already exists must
+/// still canonicalize inside the root, which is what stops a symlinked
+/// subdirectory from redirecting the write. The error string is prefixed so
+/// the route dispatcher can map it to a 400 envelope rather than a 503/500.
+pub(crate) fn resolve_export_path(
+    paths: &RagPaths,
+    requested: &str,
+) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, Path};
+
+    let rejected = || format!("invalid output path: {requested}");
+    let root = paths.home.join("exports");
+    std::fs::create_dir_all(&root).map_err(|error| {
+        format!("invalid output path: cannot create exports directory: {error}")
+    })?;
+    let root = root.canonicalize().map_err(|_| rejected())?;
+
+    let requested_path = Path::new(requested);
+    let relative = if requested_path.is_absolute() {
+        // An absolute request is only honored when it already names the root.
+        requested_path.strip_prefix(&root).map_err(|_| rejected())?
+    } else {
+        requested_path
+    };
+    if relative.as_os_str().is_empty()
+        || !relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(rejected());
+    }
+
+    let candidate = root.join(relative);
+    let parent = candidate.parent().ok_or_else(rejected)?.to_path_buf();
+    // The deepest already-existing ancestor has to resolve inside the root
+    // *before* anything is created: otherwise `exports/link -> /etc` would let
+    // `create_dir_all` write outside the root before the final check runs.
+    let mut probe = parent.as_path();
+    let existing = loop {
+        match probe.canonicalize() {
+            Ok(real) => break real,
+            Err(_) => probe = probe.parent().ok_or_else(rejected)?,
+        }
+    };
+    if !existing.starts_with(&root) {
+        return Err(rejected());
+    }
+    std::fs::create_dir_all(&parent).map_err(|_| rejected())?;
+    let parent = parent.canonicalize().map_err(|_| rejected())?;
+    if !parent.starts_with(&root) {
+        return Err(rejected());
+    }
+    let resolved = parent.join(candidate.file_name().ok_or_else(rejected)?);
+    // `fs::write` follows symlinks, so an existing symlinked destination would
+    // escape the root even though its path does not.
+    if std::fs::symlink_metadata(&resolved).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(rejected());
+    }
+    Ok(resolved)
 }
 
 /// Python `diff._parse_since` + `get_changed_files_since`: date strings use

@@ -19,6 +19,7 @@ pub struct Snapshot {
     pub ollama: ServiceHealth,
     pub docker: ServiceHealth,
     pub qdrant: ServiceHealth,
+    pub ast_index: ServiceHealth,
     pub repos: Vec<RepoRow>,
     pub repos_source: &'static str, // "daemon" | "local"
     pub lsp: Vec<LspServerStatus>,
@@ -36,6 +37,7 @@ impl Default for Snapshot {
             ollama: checking("OLLAMA"),
             docker: checking("DOCKER"),
             qdrant: checking("QDRANT"),
+            ast_index: checking("AST-INDEX"),
             repos: Vec::new(),
             repos_source: "daemon",
             lsp: Vec::new(),
@@ -99,12 +101,14 @@ pub async fn collect(
             snap.ollama = checks.ollama;
             snap.docker = checks.docker;
             snap.qdrant = checks.qdrant;
+            snap.ast_index = checks.ast_index;
             snap.lsp = checks.lsp;
         }
         None => {
             snap.ollama = previous.ollama.clone();
             snap.docker = previous.docker.clone();
             snap.qdrant = previous.qdrant.clone();
+            snap.ast_index = previous.ast_index.clone();
             snap.lsp = previous.lsp.clone();
         }
     }

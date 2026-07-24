@@ -6,21 +6,30 @@ Use this guide to set up, initialize, and optimize the RAG codebase on the new P
 
 ## 1. Prerequisites and Installation
 
-1. **Install python & uv:** Ensure Python 3.10+ and the `uv` package manager are installed.
-2. **Install ast-index:** Install the AST lexical parser tool:
+> **This project is Rust-only.** Earlier revisions of this guide told you to
+> install Python + `uv` and run `uv sync`; there is no Python runtime any more.
+> They also said `cargo install ast-index`, which installs an unrelated crate —
+> the real tool ships through npm (see step 2).
+
+1. **Build or install `rag`:** a Rust toolchain is the only build dependency.
    ```bash
-   cargo install ast-index
-   # Or install via pre-built binary matching your system architecture
+   cargo build --release -p rag-app          # produces target/release/rag-rs
+   install -m 0755 target/release/rag-rs ~/.local/bin/rag
+   ```
+2. **Install ast-index** — required for symbol navigation (`resolve`, `callers`,
+   `callees`, `impact`, and the structural stage of `smart-search`). Without it
+   those routes return **empty results rather than an error**, so a missing
+   install looks like a broken index. `rag tui` and the web dashboard show an
+   `AST-INDEX` card that tells you which state you are in.
+   ```bash
+   npm install -g @ast-index/cli            # native binary behind a Node launcher
+   cd /path/to/your-repo && ast-index rebuild
    ```
 3. **Download target codebase:** Clone the **Signal-Android** codebase to a local directory:
    ```bash
    git clone https://github.com/signalapp/Signal-Android.git /path/to/Signal-Android
    ```
-4. **Sync Project virtualenv:**
-   ```bash
-   uv sync
-   ```
-5. **Start Qdrant & Ollama (Local GPU acceleration):**
+4. **Start Qdrant & Ollama (Local GPU acceleration):**
    * Make sure **Ollama** is running with GPU acceleration enabled.
    * Pull the target embedding model:
      ```bash
@@ -55,12 +64,12 @@ agent_model = "qwen3:8b"
 
 1. **Start the RAG Daemon:**
    ```bash
-   uv run rag start
+   rag start
    ```
 2. **Index Signal-Android:**
    Run a full index of the cloned repository:
    ```bash
-   uv run rag index /path/to/Signal-Android --name signal --full
+   rag index /path/to/Signal-Android --name signal --full
    ```
    * *Note:* Because we are running on a GPU-enabled machine, Ollama embedding generation should complete in **minutes** instead of hours.
    * This builds the lexical SQLite code index and the Qdrant semantic CodeGraph, populated with `inherits_from` metadata tags.
@@ -71,30 +80,46 @@ agent_model = "qwen3:8b"
 
 Verify that everything works correctly by running the comparative suite:
 ```bash
-uv run python benchmark_production_scenarios.py
+python3 bench/benchmark_rust_only.py   # dev-time harness in bench/
 ```
 This runs 10 developer scenarios comparing the Smart Agent (RAG), AST-Index, Graphify, Vanilla (ripgrep), and Serena (LSP).
 
 ---
 
-## 5. Natively Supported Persistent Index-Time LSP Type Enrichment
+## 5. Index-time metadata enrichment (and what LSP actually does)
 
-To achieve compiler-level precision on cross-file usage lookups without running a slow language server at query time, the system includes an **Index-Time LSP Type Enrichment** system.
+> **Correction.** This section previously described a persistent LSP client
+> pool that routed every chunk through a language server to compute cross-file
+> references. **That system does not exist in the Rust implementation.**
+> `crates/rag-index/src/lsp.rs` exposes exactly one function —
+> `detect_lsp_servers`, a PATH probe — and the `[lsp]` config keys below are
+> parsed but never acted on. Index-time LSP enrichment is listed as not ported
+> in `docs/python-parity-audit.md`.
 
-### How it works:
-1. **Persistent O(1) LSP Client Pool:**
-   During a repository indexing run (`uv run rag index`), the system detects and starts the appropriate language server (e.g., Kotlin/Java language server for Signal-Android, Pyright for Python, etc.) exactly once.
-   * *Optimization:* The language server is kept alive across the entire indexing run instead of starting/stopping on every document batch. This avoids launcher overhead (which could otherwise run a compiler startup hundreds of times for large repos).
-2. **Metadata Enrichment:**
-   As chunks are parsed, they are routed through the active language server client to query cross-file symbol references (`fan_in` / `called_by` / `dead_code_candidate`).
-3. **FQN/Keyword-accurate Resolution:**
-   Enriched metadata is stored directly in Qdrant/SQLite. When calling `/resolve` or performing symbol usage queries, the retrieval agent has immediate access to compile-accurate call-graphs and relationships in under **10ms** (without any query-time compilation overhead).
+**What actually happens.** Chunks are enriched by static analysis at index
+time (`crates/rag-index/src/enrich.rs` for Kotlin/Java,
+`enrich_python.rs` for Python), which computes the metadata the ranker
+consumes — `complexity_cyclomatic`, `has_docstring`, `has_unit_test`,
+`is_public`, `dead_code_candidate`, `fan_in` / `fan_out`, patterns, domains
+and layers. These are real and populated; `quality_score` in
+`crates/rag-retrieval/src/lib.rs` scores against them. They are derived from
+the tree-sitter parse, not from a compiler, so treat them as heuristics rather
+than compile-accurate facts.
 
-### Configuration:
-In `~/.rag/config.toml` (or `config/default.toml`), ensure the LSP section is enabled:
+**What LSP is used for today.** Nothing but detection: `detect_lsp_servers`
+reports which language servers are installed so `rag tui` and the web
+dashboard can show them. Installing `jdtls`, `pyright` or `rust-analyzer`
+changes that display and nothing else — it does not improve retrieval.
+
+**Symbol-exact navigation** comes from the external `ast-index` CLI (step 2),
+not from LSP.
+
+### Configuration
+The `[lsp]` section is still accepted for forward compatibility, but setting
+it has no runtime effect today:
 ```toml
 [lsp]
-enabled = true          # Set to false to disable LSP indexing completely
-timeout = 5000          # LSP request timeout in milliseconds
+enabled = true          # parsed; currently unused
+timeout = 5000          # parsed; currently unused
 ```
 
