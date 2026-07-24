@@ -1,0 +1,16 @@
+[package]
+name = "rag-retrieval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+regex = "1.11"
+rag-contracts = { path = "../rag-contracts" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

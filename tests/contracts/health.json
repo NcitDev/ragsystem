@@ -1,0 +1,10 @@
+{
+  "components": {
+    "embedder": "fake",
+    "ollama": "ok",
+    "qdrant": "ok",
+    "reranker": "disabled"
+  },
+  "status": "ok"
+}
+

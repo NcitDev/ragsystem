@@ -1,168 +1,361 @@
-# Improvement backlog
+# Project review and evolution plan
 
-Self-contained task list for a follow-up session (any LLM/agent). Ranked by
-expected payoff. Context: commit `9a26c60` fixed the retrieval core (chunker
-enrichment, decorated/exported defs, Kotlin names, chunk-id collisions, LSP
-positions), hardened the indexer/server, extracted `server.py` logic into
-`core/search_exec.py` / `core/structural.py` / `core/smart_search.py`, added
-cross-repo `/smart-search`, and set up CI. Read `CLAUDE.md` and
-`docs/ADR/001-full-stack-decision.md` before starting.
+Reviewed 2026-07-24 against the working tree of branch `rust-migration`
+(9 crates, 20 529 lines of Rust, 88 tests). Supersedes the previous
+Python-era backlog, which referenced `core/scoring.py`, `.venv/bin/ruff` and
+pytest gates that no longer exist.
 
-Verification gate for every task: `.venv/bin/ruff check .` clean and
-`RAG_E2E=1 RAG_SKIP_GRAPH=1 .venv/bin/python -m pytest -q` green (151+ tests).
+## Baseline: what is actually true today
+
+Verified by running the gates, not by reading docs:
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --check` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| `cargo test --workspace` | 88 passed, 0 failed, 0 ignored |
+| `target/release/rag-rs` | 32.4 MB, 771 crates in the dependency graph |
+
+The engineering that is genuinely strong: the workspace dependency direction
+holds (`contracts <- config/storage/index/retrieval/services/agent <- server
+<- app`), `unsafe_code = "forbid"` is workspace-wide, blocking SQLite work
+consistently goes through `spawn_blocking`, the never-500 planner contract is
+real (`plan_query` always falls back to `fallback_plan`), the incremental
+indexer's language-scoped diff is genuinely subtle and correct, and the
+Python-parity comments are precise enough to audit against.
+
+The problems below are ranked by expected damage, not by effort.
 
 ---
 
-## 1. Re-index and re-benchmark (manual, do first — informs 2 and 4)
+## P0 — The work is not durably stored
 
-**Why:** until `9a26c60`, metadata/filter/graph/Kotlin-FQN payload channels were
-empty; all tuning was done against a crippled pipeline.
+**P0.1 — The entire Rust migration is uncommitted.**
+`git diff --cached --stat` reports 133 files / 33 374 insertions staged.
+`HEAD` on `rust-migration` is `9fa1ea9`, which is still the Python tree
+(`git ls-tree HEAD` shows `src/`, `pyproject.toml`, `uv.lock` and no
+`crates/`). The branch has no upstream — `git for-each-ref
+refs/heads/rust-migration` shows an empty tracking ref, and `origin` is
+`git@gitverse.ru:ncit/coderagsystem.git`. Months of work exist on exactly one
+disk, in an index that any `git reset` discards.
 
-**Do:** `rag index --full` on the indexed repos (needs daemon + Ollama), then
-re-run `bench/benchmark_planner_comparison.py` and `bench/benchmark_vocab.py`.
-Record deltas in `docs/benchmark_planner_comparison/summary.md`. Requires the
-Qdrant server (`compose.qdrant.yml`) and, for vocab, the remote box collection
-`repo_signal_vocab`.
+**P0.2 — Committing the index as it stands produces a tree that does not
+build.** `crates/rag-app/src/tui.rs` is staged, but the TUI that replaced it —
+`crates/rag-app/src/tui/{mod,ui,data}.rs`, 2 078 lines — is **untracked**, as
+is `crates/rag-server/src/stack.rs` (480 lines, and `rag-server/src/lib.rs:6`
+declares `pub mod stack;`). Rust rejects a crate with both `tui.rs` and
+`tui/mod.rs` present (E0761), and a missing `stack.rs` fails the `mod`
+declaration outright. So the first commit would be broken in two independent
+ways.
 
-**Decision rule:** if vocab coverage grew → prioritize task 2; if golden files
-still rank poorly → prioritize task 4.
+Fix, in order:
 
-## 2. Vocab freshness: `rag vocab refresh`
+```bash
+git rm --cached crates/rag-app/src/tui.rs
+git add crates/rag-app/src/tui crates/rag-server/src/stack.rs
+git status --porcelain -uall | grep '\.rs$'      # must be empty
+git stash --keep-index && cargo build --release -p rag-app && git stash pop
+git commit
+git push -u origin rust-migration
+```
 
-**Problem:** the vocab layer (`core/vocab.py`, `/vocab/build`) is built once
-from a JSONL snapshot (`scripts/vocab_summarize_qoder.py` output). When the
-indexed repo changes, summaries go stale silently and `/smart-search`'s
-`vocab_files` channel degrades.
+Then verify the commit independently: `git clone . /tmp/verify && cd
+/tmp/verify && cargo test --workspace`. A clean-clone build is the only proof
+that nothing load-bearing is still untracked.
 
-**Fix:**
-- Store the source file's content hash in each vocab point's payload at build
-  time (`/vocab/build` in `server.py`, `core/vocab.py`).
-- New CLI `rag vocab refresh --repo X`: compare current file hashes (reuse
-  `_file_hash` from `core/indexer.py`) against vocab payload hashes; emit the
-  changed-file list; re-summarize only those via the qodercli pipeline
-  (see `scripts/vocab_summarize_qoder.py` for the prompt/batching); upsert into
-  the vocab collection; delete vocab points for removed files.
-- Daemon-side route `/vocab/refresh` doing the diff + upsert; CLI stays a thin
-  HTTP client (see CLAUDE.md "CLI ↔ daemon coupling").
+**P0.3 — The Python source is still in the repository.** `git ls-files src/`
+returns 47 tracked `.py` files, and `pyproject.toml` / `uv.lock` are tracked
+at HEAD. The staged deletions cover `tests/eval/*.py`, `scripts/*.py` and
+`tools/serena_server.py`, but not `src/rag/`. `CLAUDE.md:5-7` states "the
+Python source has been removed" — that is not true of this tree. The worktree
+also carries `.venv` (240 MB), `.pytest_cache` and `.ruff_cache`.
 
-**Verify:** unit test with a fake vectorstore: build → mutate one file → refresh
-→ only that file's vocab point re-written; removed file's point deleted.
+---
 
-## 3. Populate `git_last_modified` (or delete recency scoring)
+## P1 — Correctness and resource defects
 
-**Problem:** `core/scoring.py` has `RECENCY_WEIGHT = 0.15` and
-`_recency_score()` reading `payload["git_last_modified"]`, but nothing ever
-writes that field — 15% of the score formula is dead.
+**P1.1 — Unbounded in-process embedding cache (memory leak in a long-lived
+daemon).** `crates/rag-services/src/ollama.rs:109` holds
+`Arc<RwLock<HashMap<String, Vec<f32>>>>`, and `cache_embeddings` defaults to
+`true` (`ollama.rs:52`); `RetrievalBackend::from_settings` inherits that
+default via `..OllamaConfig::default()`. Every document embedded during
+indexing is retained for the process lifetime: key = the full instruction-
+prefixed chunk text, value = 2560 × f32 = 10.24 KB (`default.toml:11`).
+A 50 000-chunk repository leaves roughly 600–700 MB resident in a daemon
+`rag service install` keeps running for weeks. It is also redundant on the
+indexing path, which already consults the durable SQLite `EmbedCache`
+(`indexing.rs:712`) and writes through to it (`indexing.rs:747`).
 
-**Fix:** in `core/indexer.py`, during the scan phase (inside the `_scan()`
-thread helper), run one `git log --format=%aI --name-only` pass (or
-`git ls-files` + `git log -1 --format=%aI -- <batch>`) to build a
-{rel_path → ISO date} map; stamp it into each chunk's metadata in
-`_process_file`. Add `git_last_modified` to `PAYLOAD_INDEXES` in
-`vectorstore.py` only if it needs to be filterable (probably not).
-Keep it cheap: one subprocess per index run, not per file.
+Fix: construct the indexing-path client with `cache_embeddings: false`, or
+replace the map with a bounded LRU sized for queries only (a few thousand
+entries). Verify with RSS before/after a full index of a large repo.
 
-**Verify:** new test — index a git fixture repo, assert chunks carry
-`git_last_modified`; scoring test that a recent file outranks an old one with
-equal base score.
+**P1.2 — 15 % of the ranking formula is permanently zero.**
+`rag-retrieval/src/lib.rs:13` sets `RECENCY_WEIGHT = 0.15` and
+`recency_score` (lib.rs:55) reads `payload["git_last_modified"]`. A
+workspace-wide grep for that key returns exactly one hit — the read. Nothing
+writes it. Every hit scores 0.0 on recency, so the weight is dead and the
+remaining weights are effectively renormalised by accident.
 
-## 4. Reciprocal-rank fusion for channel merging
+Fix (pick one, don't leave it as-is): either stamp the field in
+`indexing.rs::process_file` from a single `git log --format=%aI --name-only`
+pass per index run (one subprocess, not one per file), or delete
+`RECENCY_WEIGHT`/`recency_score` and re-tune the remaining weights against
+`bench/`.
 
-**Problem:** lexical FTS hits are merged into dense results with a hand-tuned
-squash `0.75 * raw / (raw + 3)` (`core/search_exec.py:_lexical_hit_to_search_result`).
-It fixed lexical-always-wins, but the constants are arbitrary.
+**P1.3 — Two divergent implementations of the same endpoints, indistinguishable
+to clients.** The live dense pipeline lives in `rag-server/src/retrieval.rs`;
+a parallel SQLite keyword implementation of the same routes lives in
+`rag-server/src/lib.rs` (`live_search` :770, `live_smart_search` :1442,
+`live_ask` :1534, ~700 lines total). They return the same JSON contract with
+materially different quality. `live_search` loads up to 100 000 chunks into
+memory and substring-scores all of them per query (lib.rs:779, 830).
+`live_ask` synthesises an answer string from the top hit and labels it
+`"model": "deterministic-fallback"` — the only signal a caller gets, and only
+on that one route.
 
-**Fix:** replace score-space merging with RRF in `promote_lexical_hits`:
-`fused = Σ_channels 1 / (60 + rank_in_channel)`. Channels: dense results
-(already scored/ordered) and lexical results (ordered by `_score_code_row`).
-Keep the dedup-by-`_result_key` behavior (a hit in both channels sums both
-terms — that's the point of RRF). `core/scoring.py` boosts then apply on top.
+Fix: add an explicit `retrieval_mode: "dense" | "lexical_fallback"` field to
+every degraded response, then delete the fallback bodies that no longer earn
+their maintenance cost. The daemon already returns `BACKEND_NOT_READY` for
+most routes (`lib.rs:1955`); extending that to `/search` and `/smart-search`
+is more honest than answering badly.
 
-**Guardrails:** the e2e canary (`tests/test_e2e.py::test_index_then_search`,
-run with `RAG_E2E=1`) asserts auth.py outranks repo.py for an auth query and
-that exact-symbol lexical evidence still surfaces. Also re-run
-`bench/benchmark_planner_comparison.py` before/after.
+**P1.4 — `/` hands the bearer token to any unauthenticated loopback caller.**
+`dashboard` (lib.rs:511) substitutes the token into the served HTML, and the
+route is registered on the public router (lib.rs:178) — before
+`.merge(protected)`. The token file is 0600, but `curl 127.0.0.1:7890/` from
+any local process or user recovers it. DNS rebinding is blocked by
+`trusted_host` and cross-origin reads by the absent CORS headers, so this is
+acceptable on a single-user laptop and a real privilege downgrade on the
+shared GPU box.
 
-## 5. Unit tests for `run_smart_search`
+Fix: issue a short-lived session token for the dashboard instead of the
+long-lived daemon token, or add a `server.dashboard = false` setting for
+multi-user hosts.
 
-**Problem:** the flagship endpoint (`core/smart_search.py`, ~570 lines) has only
-route-level 422/404 tests. The pipeline (inference → grounding → definitions →
-usages → vocab → related → semantic → candidates/pagination) is untested.
+**P1.5 — `/admin/export` is an authenticated arbitrary-file-write primitive.**
+`retrieval.rs:258` does `std::fs::write(output, ...)` with `output` taken
+verbatim from the request body. Constrain it to `~/.rag/exports/` and reject
+paths that escape after canonicalisation.
 
-**Fix:** new `tests/test_smart_search.py` with a fake vectorstore (copy the
-pattern from `tests/test_indexer_crash.py::_InMemoryVectorStore`) and
-`monkeypatch` on `rag.agents.retrieval.infer_symbols` returning fixed symbols.
-Cover at minimum:
-- bucket composition for a symbol that resolves vs one that doesn't
-- `candidate_offset`/`candidate_limit` pagination math and `candidates_total`
-- `include_bodies=False` strips `code` from definitions/usages/semantic
-- blast-radius phrasing auto-bumps `usages_limit` (`_BLAST_RADIUS_SIGNALS`)
-- `run_smart_search_multi`: repo tags set on every item, semantic re-sorted
-  by score, merged limits honored, one failing repo doesn't fail the call
+**P1.6 — Rate-limit map never evicts.** `consume_rate_limit` (lib.rs:2123)
+inserts into `rate_windows` per bearer value and never removes expired
+entries. Bounded in practice by a single fixed token; unbounded if tokens ever
+rotate. Sweep entries older than the window on insert.
 
-## 6. systemd service for Linux (remote box)
+**P1.7 — Lock poisoning panics request handlers.** `push_event` (lib.rs:104)
+and `consume_rate_limit` (lib.rs:2125) `.expect("... poisoned")`. One panic
+anywhere holding those mutexes converts every subsequent request into a 500 on
+a daemon whose stated contract is "never 500". Use `unwrap_or_else(|e|
+e.into_inner())` — event loss is preferable to a permanently wedged daemon.
+There are 81 `.unwrap()/.expect()` sites in library code, 27 of them in
+`rag-server/src`; the two above are the ones on the hot path.
 
-**Problem:** `rag service install` (`src/rag/integration/supervisor.py`) is
-macOS-launchd-only; the Ubuntu GPU box (192.168.3.49) runs the daemon by hand.
+---
 
-**Fix:** add a systemd **user** unit path: `rag service install` on Linux writes
-`~/.config/systemd/user/rag-daemon.service` (ExecStart =
-`<venv-python> -m rag start`, `Restart=always`, `WantedBy=default.target`) and
-runs `systemctl --user daemon-reload && systemctl --user enable --now
-rag-daemon`. `service status`/`uninstall` get matching branches. Reference
-`docs/deployment-linux.md` and update it. Keep the existing "macOS-only"
-message for `--tui` mode.
+## P2 — Architecture debt
 
-**Also:** document SSH tunneling (`ssh -L 7890:localhost:7890 <box>`) as the
-sanctioned remote-access path in `docs/deployment-linux.md`. Do NOT bind
-non-loopback: the bearer token travels plaintext (see `config.py`
-`reject_wildcard_bind`, and the trusted-host middleware in `server.py` —
-a non-loopback bind also requires extending `_allowed_hosts`).
+**P2.1 — The "Rust-only, three runtime dependencies" claim is false; symbol
+navigation shells out to a Node.js CLI.** `rag-retrieval/src/ast_index.rs:83`
+and `:87` invoke `ast-index` as a subprocess — currently resolved to
+`~/.nvm/versions/node/v22.22.2/bin/ast-index`. It backs `/resolve`,
+`/graph/node`, `/graph/callers`, `/graph/callees`, `/graph/impact`,
+`/call-tree`, `/context-pack` and the structural stage of `/smart-search`
+(several subprocesses per request there). `README.md:16-30` lists three
+runtime dependencies and does not include it, and `CLAUDE.md` mentions it only
+as an implementation note.
 
-## 7. Finish CLI layering cleanup
+Worse, its absence is silent: every entry point guards on `is_available()`
+(ast_index.rs:229, 308, 585, 611, 689) and returns empty results. Nothing in
+`/health`, `/health/detail`, `/diagnose` or `/stack` reports it, so a machine
+without Node gets an apparently healthy daemon whose navigation answers are
+uniformly empty.
 
-**Problem:** CLAUDE.md's invariant is "CLI subcommands are thin HTTP clients",
-but in `src/rag/cli.py`: `export`/`import_` (~1862), `diff` (~1911),
-`overview`/`plugins`/`repos` (~1999-2154), `backfill_code_index` (~1447), and
-`benchmark_embeddings` (~313, calls private `embedder._embed_batch`) import
-`rag.core.*` and touch Qdrant/SQLite directly — they can contend with the
-running daemon. `repo_agent` (~581-997) re-implements the planner→resolve→
-context loop that `/smart-search` now does server-side.
+This is the largest remaining migration debt. Two-step fix below (P2 short
+term, Phase 4 long term).
 
-**Fix:** move each behind a daemon route (logic in `server.py` or a core
-module, presentation in `cli.py`); delete `repo_agent` and alias its CLI
-command to `smart-search` with a deprecation note. Do it one command per
-commit; run the full suite between each.
+**P2.2 — The `rig` provider layer is reachable only from tests.**
+`rag-agent/src/lib.rs:1077-1160` defines `openai_planner`,
+`anthropic_planner`, `gemini_planner`, `ollama_planner` and the matching
+`*_ask_generator`s. The only non-test callers are in
+`tests/rust-compat/r5/mod.rs`; `plan_query` (retrieval.rs:906-935) matches on
+`"ollama"` and `"agy"` and comments that "other Rig providers are not wired
+into this daemon". Meanwhile `default.toml:60` advertises
+`provider="gemini"` as a supported fallback — configuring it silently yields
+the heuristic plan. `rig` plus its four provider clients is a large share of
+the 771-crate graph and the 32 MB binary.
 
-## 8. Smaller items (grab-bag, each ≤1h)
+Fix: either wire the providers into `plan_query` (the config already promises
+them) or put `rig` behind a non-default `cloud-planners` cargo feature and
+drop the promise from `default.toml`. Pick one — the current state is the
+cost of both with the benefit of neither.
 
-- **Smart-search TTL cache:** key `(question, repo(s), candidate_offset,
-  include_*)`, ~10 min TTL, in-process dict in `core/smart_search.py` —
-  saves 10-25s of agy inference when an agent re-asks while paging.
-  Invalidate on index completion (hook where the indexer finishes a run).
-- **Branch-switch reindex:** `core/watcher.py` polls mtimes but misses
-  `git checkout`. Also watch `.git/HEAD` + `.git/refs` mtime; on change,
-  trigger the same `on_change` with the files git reports changed between
-  old and new HEAD (`_get_changed_files` in `core/indexer.py`).
-- **pyright in CI:** add `pyright` (basic mode) to `.github/workflows/ci.yml`;
-  fix or `# type: ignore` the initial fallout. It would have caught the
-  missing-`Any`-import class of bug for free.
-- **pytest-asyncio deprecations:** 147 warnings about
-  `asyncio.get_event_loop_policy` (removal in Py3.16). Upgrade pytest-asyncio
-  and pin in `[dependency-groups].dev`.
-- **Symbol-level incremental indexing:** `core/indexer.py` re-embeds a whole
-  file per edit. Compare per-chunk `content_hash` against the SQLite code
-  index (`storage/db.py`) and re-embed only changed chunks (delete-by-id for
-  the removed ones). Only worth it if incremental latency on Signal-sized
-  files actually annoys.
-- **Vocab for docs:** `/smart-search` only anchors code; the `doc_chunks`
-  collection could feed a `doc_files` bucket the same way `vocab_files` does.
+**P2.3 — `rag-server/src/lib.rs` is a 2 434-line god module with untyped
+dispatch.** It holds the router, four middlewares, auth, the JSONL logger,
+~15 route implementations, the contract fixtures and hand-rolled validation.
+`generic_post` (lib.rs:551) dispatches on `request.uri().path()` string
+matches, so request and response bodies are `serde_json::Value` end to end and
+the compiler checks nothing. The FastAPI-compatible 422 shape is reproduced by
+hand in `validate_request_contract` (lib.rs:2019), which is why bounds like the
+`/ask` top_k ceiling live in a match arm rather than on a type.
 
-## Explicitly rejected / do NOT do
+Fix incrementally: define typed request/response structs in `rag-contracts`,
+convert one route per commit to a real Axum handler with `Json<T>` extractors,
+and let the derived rejection produce the 422. `/search` and `/smart-search`
+first — they carry the contract tests.
 
-- **MCP server** — decided against; the low-token path is the `rag` CLI +
-  skills (`skills/rag-vocab-search`, `skills/rag-smart-retrieval`).
-- **Re-adding a cross-encoder reranker** — removed deliberately;
-  `SearchRequest.rerank` stays accepted-but-ignored.
-- **Restoring the old benchmark scripts** — only the planner-comparison and
-  vocab benchmarks (in `bench/`) are kept, per owner's instruction.
+**P2.4 — `contract_fixtures` is a mode in which the server returns canned
+JSON as live data.** `fixture()` (lib.rs:1981) serves checked-in
+`tests/contracts/*.json`. One test guards the leak
+(`production_mode_never_returns_captured_results_as_live_data`, lib.rs:2361).
+It works, but it is one refactor away from shipping fixtures to users. Move
+the fixture surface behind `#[cfg(feature = "contract-fixtures")]` so it
+cannot exist in a release build at all.
+
+---
+
+## P3 — Tests, CI, hygiene, product surface
+
+**P3.1 — The two highest-value code paths have no unit tests.** 88 tests for
+20 529 lines is thin, but the distribution is the real problem:
+`smart_search_route` (retrieval.rs:456-863, ~400 lines: inference →
+grounding → resolve → usage trim → structural expansion → candidate
+pagination) and `index_route` (indexing.rs:125-427, ~300 lines: language-
+scoped diff, stale-chunk deletion, per-batch hash promotion, partial-failure
+recovery) are both untested. Both are hand-rolled, both are subtle, and both
+are where a silent regression costs the most.
+
+Fix: a fake Qdrant + fake Ollama pair in `rag-services` behind a `test-doubles`
+feature, then table tests for: language-filtered runs leaving other languages'
+chunks intact; a failed flush dropping only that batch's hashes; changed files
+deleting their stale chunks before re-upsert; candidate pagination math and
+`candidates_total`; `include_bodies=false` stripping `code`; blast-radius
+phrasing bumping `usages_limit` to 100.
+
+**P3.2 — CI has no live-service job, no benchmark gate, no dependency audit.**
+`.github/workflows/ci.yml` runs fmt, clippy, test, release build and a
+Python-free smoke test — good, and the smoke test with `env -i` is a nice
+touch. Missing: an integration job with Qdrant + a small Ollama model
+(services containers), a benchmark regression check against `bench/`
+artifacts, and `cargo deny check` / `cargo audit` over 771 dependencies.
+
+**P3.3 — `rag install-agent` is broken.** `main.rs:505` executes
+`scripts/install-codex-skills.sh`, which this branch deletes; `scripts/` now
+contains only `build-rust-release.sh`. Remove the subcommand or restore the
+script.
+
+**P3.4 — Repository weight.** `ragsystem.pen` (1.2 MB) and ~800 KB of
+`vocab_*.jsonl` are tracked in git (the `.gitignore` rule `/vocab_*.jsonl`
+was added after they were committed, so it has no effect on tracked files).
+`.venv` (240 MB), `.pytest_cache`, `.ruff_cache`, `.qoder`, `.gemini` sit in
+the worktree.
+
+**P3.5 — Product gaps carried over from the parity audit** (still accurate):
+`/index` is synchronous with no progress despite `/index/progress/{job_id}`
+existing as a stub (lib.rs:662) and `rag-index/src/jobs.rs` defining an unused
+`IndexJob`; no file watcher; no plugins; LOD/summary and vocab collections are
+consumed by search but never generated by the Rust indexer; `/graph/callees`
+is a regex source scan (lib.rs:1013) rather than a real call graph.
+
+---
+
+## Evolution plan
+
+Six phases. Each has a verification gate; nothing moves to the next phase with
+a red gate. Phases 0–2 are sequential; 3–6 can be reordered by appetite.
+
+### Phase 0 — Secure the work (hours, do first)
+
+1. Fix the index (P0.2), commit, push to `origin`, verify by clean clone.
+2. Delete `src/rag/`, `pyproject.toml`, `uv.lock`, `.venv`, `.pytest_cache`,
+   `.ruff_cache` from tracking and worktree (P0.3). Tag the last Python
+   commit first (`git tag python-final 9fa1ea9`) so the history stays
+   reachable without the files.
+3. Correct `CLAUDE.md:5-7` to describe the tree that exists.
+
+**Gate:** clean clone of the pushed commit passes `cargo test --workspace`
+and `cargo clippy --workspace --all-targets -- -D warnings`.
+
+### Phase 1 — Tell the truth (1–2 days)
+
+4. Report `ast-index` presence in `/health/detail`, `/diagnose` and `/stack`;
+   add it to README's runtime-dependency list with the install command
+   (P2.1, short-term half).
+5. Add `retrieval_mode` to degraded responses (P1.3, first half).
+6. Fix or remove `rag install-agent` (P3.3).
+7. Untrack `ragsystem.pen` and `vocab_*.jsonl` (P3.4).
+
+**Gate:** on a machine without `ast-index` on PATH, `rag diagnose` says so.
+
+### Phase 2 — Correctness and resource fixes (3–5 days)
+
+8. Bound or bypass the in-process embedding cache (P1.1).
+9. Resolve the recency term — populate or delete (P1.2).
+10. Constrain `/admin/export` paths (P1.5); sweep the rate-limit map (P1.6);
+    replace poisoning `.expect()`s on the request path (P1.7).
+11. Decide on the dashboard token model (P1.4).
+
+**Gate:** RSS after a full index of a 50k-chunk repo stays flat across a
+second run; `bench/` numbers unchanged or better after the recency decision.
+
+### Phase 3 — Make the core testable (about a week)
+
+12. Fake Qdrant/Ollama doubles behind a cargo feature.
+13. Table tests for `index_route` and `smart_search_route` (P3.1).
+14. CI: services-container integration job + `cargo deny` (P3.2).
+
+**Gate:** mutating any of the six indexer invariants in `CLAUDE.md` turns a
+test red.
+
+### Phase 4 — Retire the Node.js dependency (2–3 weeks, the big one)
+
+15. Build a native symbol index in `rag-index`. The raw material is already
+    there: tree-sitter parsers for ten languages (`chunker.rs:328`), name-node
+    resolution (`chunker.rs:515`), and an `AstGraph` with callers/callees/
+    traverse already written and currently used only by a compat test
+    (`rag-index/src/graph.rs`). Persist definitions/usages/edges into the
+    existing SQLite database beside the code index.
+16. Swap `ast_index.rs`'s subprocess bridge for the native index behind a
+    config flag, keeping the CLI path as fallback for one release.
+17. Delete the bridge once the benchmark matrix shows parity.
+
+**Gate:** `bench/` navigation modes (resolve, callers, impact, smart-search)
+match or beat the current ast-index numbers, with `ast-index` uninstalled.
+
+This phase is what makes the README's "single binary, three dependencies"
+claim true, removes one subprocess spawn per navigation request, and unblocks
+`graph_walk` as a real strategy instead of a degradation to hybrid
+(`retrieval.rs:1130`).
+
+### Phase 5 — Slim and harden (about a week)
+
+18. Decide `rig`: wire the providers or feature-gate them (P2.2).
+19. Feature-gate the contract fixtures out of release builds (P2.4).
+20. Begin typed handlers in `rag-server`, `/search` and `/smart-search` first
+    (P2.3).
+
+**Gate:** release binary and dependency count both measurably down; contract
+tests still green.
+
+### Phase 6 — Product surface (ongoing)
+
+21. Async index jobs with real progress — `jobs.rs` and
+    `/index/progress/{job_id}` already exist as scaffolding.
+22. Reciprocal-rank fusion to replace the hand-tuned lexical squash
+    `0.75·raw/(raw+3)` (`rag-retrieval/src/lib.rs:148`), guarded by `bench/`.
+23. Vocab freshness: store the source file's content hash in each vocab point
+    (`indexing.rs:536` already writes `content_hash`) and add a
+    `/vocab/refresh` diff route so summaries stop going stale silently.
+24. Branch-switch reindex: watch `.git/HEAD` and `.git/refs` alongside file
+    mtimes.
+
+---
+
+## Explicitly not recommended
+
+- **MCP server** — previously decided against; the low-token path stays the
+  `rag` CLI plus skills.
+- **Re-adding a cross-encoder reranker** — removed deliberately from both
+  stacks; `SearchRequest.rerank` stays accepted-and-ignored.
+- **Reviving the deleted Python benchmark scripts** — only the planner-
+  comparison and vocab benchmarks in `bench/` are kept.

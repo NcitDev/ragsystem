@@ -1,0 +1,59 @@
+{
+  "modes": {
+    "vanilla": {
+      "coverage": 50.8,
+      "precision": 16.1,
+      "latency_mean": 121.9,
+      "latency_p50": 154.7,
+      "latency_p95": 318.9
+    },
+    "rag_llm": {
+      "coverage": 33.3,
+      "precision": 8.5,
+      "latency_mean": 17900.9,
+      "latency_p50": 16486.1,
+      "latency_p95": 26675.9
+    },
+    "smart": {
+      "coverage": 67.5,
+      "precision": 9.7,
+      "latency_mean": 235.3,
+      "latency_p50": 214.3,
+      "latency_p95": 475.8
+    },
+    "ast": {
+      "coverage": 54.2,
+      "precision": 23.2,
+      "latency_mean": 33.5,
+      "latency_p50": 25.8,
+      "latency_p95": 89.5
+    },
+    "graph": {
+      "coverage": 56.7,
+      "precision": 19.1,
+      "latency_mean": 178.0,
+      "latency_p50": 171.8,
+      "latency_p95": 212.1
+    },
+    "ask": {
+      "coverage": 55.8,
+      "precision": 26.9,
+      "latency_mean": 5937.9,
+      "latency_p50": 4423.2,
+      "latency_p95": 11039.7
+    }
+  },
+  "resources": {
+    "rss_mb": 34.2,
+    "peak_rss_mb": 35.5,
+    "cpu_seconds_total": 2.24,
+    "threads": 14,
+    "open_fds": 11,
+    "cold_start_ms": 40.0,
+    "footprint": {
+      "rust_binary_mb": 30.1,
+      "python_venv_mb": 240.0
+    },
+    "gpu": "7397 MiB, 12288 MiB"
+  }
+}

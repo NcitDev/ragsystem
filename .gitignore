@@ -13,6 +13,7 @@ build/
 .env
 
 # Build artifacts / temp clones
+/target/
 ragsystem_benchmarked.zip
 *.zip
 tmp_serena/
@@ -37,3 +38,7 @@ tmp_serena/
 
 # IDE/tool metadata that regenerates itself
 .qoder/
+
+# Daemon/runtime markers (not project state)
+.qdrant-initialized
+.claude/scheduled_tasks.lock

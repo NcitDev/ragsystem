@@ -1,0 +1,125 @@
+{
+  "ambiguities": [
+    {
+      "definitions": [
+        {
+          "chunk_type": "",
+          "file_path": "a/Foo.kt",
+          "lines": "",
+          "name": "same",
+          "score": 0,
+          "token_estimate": 0,
+          "why_included": ""
+        },
+        {
+          "chunk_type": "",
+          "file_path": "b/Foo.kt",
+          "lines": "",
+          "name": "same",
+          "score": 0,
+          "token_estimate": 0,
+          "why_included": ""
+        }
+      ],
+      "symbol": "same"
+    }
+  ],
+  "compact": {
+    "chunk_type": "",
+    "file_path": "src/main.py",
+    "lines": "1-3",
+    "name": "main",
+    "score": 1.0,
+    "token_estimate": 0,
+    "why_included": "exact_or_lexical_match"
+  },
+  "domain_terms": [
+    "waitForPayedOrder",
+    "PaidOrderResponse",
+    "OrderResult",
+    "OrderCreated",
+    "OrderIsBeingCreated",
+    "setupAppStateForNewOrder",
+    "StateAnalyzer",
+    "CheckoutService",
+    "AnalyticsHelper",
+    "PaymentAnalytics",
+    "trackPaymentFinished",
+    "trackPaymentFailed"
+  ],
+  "metrics": {
+    "answer_correctness": "not_evaluated",
+    "embeddings_used": false,
+    "first_relevant_file": "src/Foo.kt",
+    "first_relevant_rank": 1,
+    "source_tokens": 44,
+    "whole_file_reads": 0,
+    "whole_file_reads_avoided": true
+  },
+  "modules": [
+    {
+      "file_count": 12,
+      "kinds": {
+        "py": 3
+      },
+      "path": "src",
+      "score": 0.9
+    }
+  ],
+  "plan": {
+    "architecture_query": "setupAppStateForNewOrder waitForPayedOrder PaidOrderResponse OrderResult OrderIsBeingCreated AnalyticsHelper PaymentAnalytics trackPaymentFinished trackPaymentFailed PaidOrderState ALMOST_OK orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT STOP_ORDER_POLLING_AFTER_PAYMENT analytics move module dependencies Gradle build gradle public API FeatureDependencies Component Module provider boundary risks",
+    "call_tree_symbols": [
+      "setupAppStateForNewOrder",
+      "waitForPayedOrder",
+      "trackPaymentFinished",
+      "trackPaymentFailed"
+    ],
+    "context_query": "setupAppStateForNewOrder waitForPayedOrder PaidOrderResponse OrderResult OrderIsBeingCreated AnalyticsHelper PaymentAnalytics trackPaymentFinished trackPaymentFailed PaidOrderState ALMOST_OK orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT STOP_ORDER_POLLING_AFTER_PAYMENT analytics move",
+    "documentation_queries": [
+      "analytics event catalog payment order polling after payment still being created setupAppStateForNewOrder waitForPayedOrder PaidOrderResponse OrderResult OrderIsBeingCreated AnalyticsHelper PaymentAnalytics trackPaymentFinished trackPaymentFailed PaidOrderState ALMOST_OK orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT STOP_ORDER_POLLING_AFTER_PAYMENT",
+      "module ownership dependency rules public API boundaries setupAppStateForNewOrder waitForPayedOrder PaidOrderResponse OrderResult OrderIsBeingCreated AnalyticsHelper PaymentAnalytics trackPaymentFinished trackPaymentFailed PaidOrderState ALMOST_OK orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT STOP_ORDER_POLLING_AFTER_PAYMENT"
+    ],
+    "planner": {
+      "filters": {},
+      "queries": [
+        "paid order analytics"
+      ],
+      "strategy": "graph_walk",
+      "top_k": 20
+    },
+    "query": "Add analytics event only for still being created paid order and move setupAppStateForNewOrder into another module",
+    "reuse_queries": [
+      "AnalyticsHelper PaymentAnalytics payment analytics event orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT STOP_ORDER_POLLING_AFTER_PAYMENT trackPaymentFinished OrderIsBeingCreated PaidOrderState ALMOST_OK",
+      "setupAppStateForNewOrder waitForPayedOrder PaidOrderResponse OrderResult OrderIsBeingCreated AnalyticsHelper PaymentAnalytics trackPaymentFinished trackPaymentFailed PaidOrderState ALMOST_OK orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT STOP_ORDER_POLLING_AFTER_PAYMENT build gradle dependencies FeatureDependencies Module Component public API",
+      "existing reusable API helper event setupAppStateForNewOrder waitForPayedOrder PaidOrderResponse OrderResult OrderIsBeingCreated AnalyticsHelper PaymentAnalytics trackPaymentFinished trackPaymentFailed PaidOrderState ALMOST_OK orderPollingAfterPaymentStart START_ORDER_POLLING_AFTER_PAYMENT STOP_ORDER_POLLING_AFTER_PAYMENT"
+    ],
+    "semantic_fallback_allowed": true,
+    "symbols": [
+      "setupAppStateForNewOrder",
+      "waitForPayedOrder",
+      "PaidOrderResponse",
+      "OrderResult",
+      "OrderIsBeingCreated",
+      "AnalyticsHelper",
+      "PaymentAnalytics",
+      "trackPaymentFinished",
+      "trackPaymentFailed",
+      "PaidOrderState.ALMOST_OK",
+      "orderPollingAfterPaymentStart",
+      "START_ORDER_POLLING_AFTER_PAYMENT",
+      "STOP_ORDER_POLLING_AFTER_PAYMENT"
+    ]
+  },
+  "risks": [
+    "Semantic fallback was used; verify embedding-only hits before editing.",
+    "Same-name symbols need caller/path disambiguation: CheckoutService, StateAnalyzer.",
+    "No test slice was retrieved; locate analytics tests before editing.",
+    "Module-boundary task; verify Gradle dependencies and DI providers before editing."
+  ],
+  "symbols": [
+    "setupAppStateForNewOrder",
+    "trackPaymentFinished"
+  ],
+  "tests": [],
+  "tokens": 44
+}

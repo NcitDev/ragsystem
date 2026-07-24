@@ -1,0 +1,28 @@
+{
+  "collections": [
+    {
+      "kind": "default",
+      "name": "code_chunks",
+      "points_count": 0,
+      "status": "not_found"
+    },
+    {
+      "kind": "default",
+      "name": "doc_chunks",
+      "points_count": 0,
+      "status": "not_found"
+    }
+  ],
+  "embedder_model": "Qwen/Qwen3-Embedding-4B",
+  "embedder_provider": "fake",
+  "embedder_warm_ms": 0.0,
+  "files_indexed": 0,
+  "gen_ctx_size": null,
+  "gen_model": "qwen3:8b",
+  "reranker_enabled": false,
+  "reranker_model": "disabled",
+  "restart_count": 0,
+  "status": "running",
+  "uptime_seconds": 0.0
+}
+

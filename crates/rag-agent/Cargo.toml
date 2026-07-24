@@ -1,0 +1,25 @@
+[package]
+name = "rag-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+nix = { version = "0.30", features = ["signal", "process"] }
+rig = { version = "=0.40.0", default-features = true, features = ["reqwest"] }
+schemars = { version = "1.2", features = ["derive"] }
+rag-contracts = { path = "../rag-contracts" }
+rag-retrieval = { path = "../rag-retrieval" }
+regex = "1.11"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
+
+[dev-dependencies]
+axum = { workspace = true }
+http = { workspace = true }
+
+[lints]
+workspace = true

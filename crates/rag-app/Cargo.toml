@@ -1,0 +1,30 @@
+[package]
+name = "rag-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rag-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap.workspace = true
+crossterm.workspace = true
+rag-config = { path = "../rag-config" }
+rag-server = { path = "../rag-server" }
+rag-storage = { path = "../rag-storage" }
+ratatui.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[lints]
+workspace = true

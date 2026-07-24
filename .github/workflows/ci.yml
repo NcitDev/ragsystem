@@ -12,26 +12,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
+          components: rustfmt, clippy
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
-      - name: Install dependencies
-        run: |
-          uv venv
-          uv pip install -e . --group dev
+      - name: Rust format
+        run: cargo fmt --check
 
-      - name: Lint
-        run: uv run ruff check .
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Tests (including retrieval regression e2e)
-        env:
-          # The e2e suite indexes a synthetic repo with a deterministic fake
-          # embedder and asserts golden queries rank the right files — the
-          # retrieval-recall canary for chunker/scoring changes.
-          RAG_E2E: "1"
-          RAG_SKIP_GRAPH: "1"
-        run: uv run pytest -q
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Release build (single binary, no Python)
+        run: cargo build --release --locked -p rag-app
+
+      - name: Python-free smoke test
+        run: env -i PATH="/usr/bin:/bin" ./target/release/rag-rs --version
