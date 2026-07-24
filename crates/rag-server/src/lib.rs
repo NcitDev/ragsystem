@@ -937,15 +937,20 @@ fn live_resolve(paths: &RagPaths, body: &Value, graph_shape: bool) -> Result<Val
                 .unwrap_or_default(),
         );
     }
+    // Both bounded: unclamped they reached `ast_index::resolve_symbols`, whose
+    // over-fetch panicked for values above 200 (the panic surfaced as a 503,
+    // not a 4xx, because spawn_blocking's JoinError reads as a backend outage).
     let definitions_limit = body
         .get("definitions_limit")
         .or_else(|| body.get("limit"))
         .and_then(Value::as_u64)
-        .unwrap_or(20) as usize;
+        .unwrap_or(20)
+        .clamp(0, 200) as usize;
     let usages_limit = body
         .get("usages_limit")
         .and_then(Value::as_u64)
-        .unwrap_or(20) as usize;
+        .unwrap_or(20)
+        .clamp(0, 200) as usize;
     let mut resolved = rag_retrieval::ast_index::resolve_symbols(
         &repo.path,
         &symbols,
@@ -2155,6 +2160,24 @@ fn validate_request_contract(path: &str, body: &Value) -> Option<Response> {
                 "Provide repo or repos",
                 "value_error",
             ));
+        }
+        // `repos` is accepted by this contract but the Rust pipeline only ever
+        // reads `repo`, so a multi-repo request used to return 200 having
+        // silently searched the DEFAULT collection instead of the named ones.
+        // A wrong answer that looks right is worse than a refusal; say so
+        // until cross-repo smart-search is actually ported.
+        if !has_repo {
+            let count = body
+                .get("repos")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            if count > 1 {
+                return Some(validation_422(
+                    "repos",
+                    "Multi-repo smart-search is not supported yet; pass a single repo",
+                    "value_error",
+                ));
+            }
         }
     }
     None

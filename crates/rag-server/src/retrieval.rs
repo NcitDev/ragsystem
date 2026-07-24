@@ -492,7 +492,23 @@ impl RetrievalBackend {
     ) -> Result<Value, String> {
         let started = Instant::now();
         let question = super::required_string(body, "question")?.to_owned();
-        let repo = body.get("repo").and_then(Value::as_str).map(str::to_owned);
+        // `repos: ["x"]` is an accepted spelling of `repo: "x"`. Without this
+        // the plural form fell through to `None` and searched the default
+        // collection while reporting `repos_searched: []` — a wrong answer
+        // that looked like a right one. Lists longer than one are rejected
+        // upstream in `validate_request_contract` until cross-repo is ported.
+        let repo = body
+            .get("repo")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                body.get("repos")
+                    .and_then(Value::as_array)
+                    .and_then(|values| values.first())
+                    .and_then(Value::as_str)
+            })
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
         let top_k = body
             .get("top_k")
             .and_then(Value::as_u64)
@@ -531,10 +547,15 @@ impl RetrievalBackend {
             .clamp(0, 200) as usize;
         // usages_limit=0 means "auto": bump to 100 on blast-radius questions.
         let question_lower = question.to_lowercase();
+        // Bounded like every sibling limit. Unclamped, this reached
+        // `ast_index::resolve_symbols`, whose over-fetch used to panic for
+        // values above 200 — surfacing as a 503 rather than a 4xx, because
+        // the spawn_blocking JoinError is absorbed as a backend outage.
         let requested_usages = body
             .get("usages_limit")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
+            .unwrap_or(0)
+            .clamp(0, 200) as usize;
         let is_blast_radius = BLAST_RADIUS_SIGNALS
             .iter()
             .any(|signal| question_lower.contains(signal));
@@ -673,35 +694,34 @@ impl RetrievalBackend {
         grounded.truncate(8);
 
         // 4. Exact resolve on grounded symbols (definitions + usages).
-        let (mut definitions, mut usages) = if let (Some(repo), false) =
-            (&repo, grounded.is_empty())
-        {
-            let resolve_body = json!({
-                "repo": repo,
-                "symbols": grounded,
-                "definitions_limit": definitions_limit,
-                "usages_limit": usages_limit.max(if usages_limit == 0 { 0 } else { usages_limit }),
-            });
-            let paths_clone = paths.clone();
-            let resolved = tokio::task::spawn_blocking(move || {
-                super::live_resolve(&paths_clone, &resolve_body, false)
-            })
-            .await
-            .map_err(|error| error.to_string())??;
-            (
-                resolved["definitions"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default(),
-                if usages_limit > 0 {
-                    resolved["usages"].as_array().cloned().unwrap_or_default()
-                } else {
-                    Vec::new()
-                },
-            )
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let (mut definitions, mut usages) =
+            if let (Some(repo), false) = (&repo, grounded.is_empty()) {
+                let resolve_body = json!({
+                    "repo": repo,
+                    "symbols": grounded,
+                    "definitions_limit": definitions_limit,
+                    "usages_limit": usages_limit,
+                });
+                let paths_clone = paths.clone();
+                let resolved = tokio::task::spawn_blocking(move || {
+                    super::live_resolve(&paths_clone, &resolve_body, false)
+                })
+                .await
+                .map_err(|error| error.to_string())??;
+                (
+                    resolved["definitions"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default(),
+                    if usages_limit > 0 {
+                        resolved["usages"].as_array().cloned().unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    },
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
         // 4b. Two-phase usage trim on blast-radius queries (Python parity).
         if usages_limit > 0 && !usages.is_empty() {

@@ -78,6 +78,27 @@ impl AstIndexHit {
     }
 }
 
+/// Ceiling on how many hits are ever requested from the CLI in one call.
+const MAX_FETCH: usize = 200;
+
+/// Size of the over-fetch pool for a caller-supplied `limit`.
+///
+/// The CLI truncates internally in nondeterministic scan order, so asking for
+/// exactly `limit` returns a varying subset; a 3x pool makes the post-ranking
+/// top-`limit` stable.
+///
+/// `limit` must be bounded *before* it becomes the lower bound: `Ord::clamp`
+/// panics when min > max, so `(limit * 3).clamp(limit, MAX_FETCH)` panicked
+/// outright for any `limit > MAX_FETCH`. That was reachable from
+/// `/smart-search` (`usages_limit` was unclamped at the route) and `/resolve`
+/// (neither limit was), where it surfaced as a 503 backend-outage rather than
+/// a 4xx, because `spawn_blocking`'s JoinError reads as one. `saturating_mul`
+/// additionally keeps a huge limit from wrapping in release builds.
+fn over_fetch(limit: usize) -> usize {
+    let limit = limit.min(MAX_FETCH);
+    limit.saturating_mul(3).clamp(limit, MAX_FETCH)
+}
+
 #[must_use]
 pub fn is_available() -> bool {
     Command::new("ast-index").arg("--version").output().is_ok()
@@ -308,6 +329,10 @@ pub fn resolve_symbols(
     if !root.exists() || !is_available() {
         return serde_json::json!({"definitions": [], "usages": []});
     }
+    // Bound the caller's limits once, here, so the over-fetch below and the
+    // final truncation agree. See `over_fetch`.
+    let definitions_limit = definitions_limit.min(MAX_FETCH);
+    let usages_limit = usages_limit.min(MAX_FETCH);
     let mut definitions = Vec::new();
     let mut usages = Vec::new();
     for symbol in symbols {
@@ -315,11 +340,8 @@ pub fn resolve_symbols(
         if clean.is_empty() {
             continue;
         }
-        // Over-fetch: the CLI truncates internally in nondeterministic scan
-        // order, so asking for exactly `limit` returns a varying subset. A 3x
-        // candidate pool makes the post-ranking top-`limit` stable.
-        let definitions_fetch = (definitions_limit * 3).clamp(definitions_limit, 200);
-        let usages_fetch = (usages_limit * 3).clamp(usages_limit, 200);
+        let definitions_fetch = over_fetch(definitions_limit);
+        let usages_fetch = over_fetch(usages_limit);
         if let Some(value) = run_json(
             root,
             &[
@@ -804,6 +826,39 @@ mod tests {
     use super::{call_tree, callers, is_available, resolve_symbols};
     use crate::repo_agent::{compact_slice, infer_risks};
     use serde_json::json;
+
+    /// The over-fetch pool used to be `(limit * 3).clamp(limit, 200)`, and
+    /// `Ord::clamp` panics when min > max — so any caller-supplied limit above
+    /// 200 panicked. Reachable from `/smart-search` (`usages_limit` was
+    /// unclamped at the route) and `/resolve` (neither limit was), where it
+    /// surfaced as a 503 backend-outage rather than a 4xx.
+    ///
+    /// Tests `over_fetch` directly rather than through `resolve_symbols`: that
+    /// function returns early unless the repo path exists *and* the `ast-index`
+    /// CLI is installed, so a test driving it would pass without ever reaching
+    /// the arithmetic — and would silently stop testing anything on CI, which
+    /// has no `ast-index`.
+    #[test]
+    fn over_fetch_is_total_for_every_limit() {
+        // In-range: a genuine 3x pool, capped at MAX_FETCH.
+        assert_eq!(super::over_fetch(0), 0);
+        assert_eq!(super::over_fetch(1), 3);
+        assert_eq!(super::over_fetch(20), 60);
+        assert_eq!(super::over_fetch(66), 198);
+        assert_eq!(super::over_fetch(67), super::MAX_FETCH);
+        assert_eq!(super::over_fetch(super::MAX_FETCH), super::MAX_FETCH);
+
+        // Out of range: previously a panic, now saturates at the ceiling.
+        for limit in [201, 300, 100_000, usize::MAX] {
+            assert_eq!(super::over_fetch(limit), super::MAX_FETCH);
+        }
+
+        // The pool is never smaller than what the caller can actually receive,
+        // which is what the lower clamp bound was there to guarantee.
+        for limit in [0, 1, 20, 66, 67, 199, 200, 201, usize::MAX] {
+            assert!(super::over_fetch(limit) >= limit.min(super::MAX_FETCH));
+        }
+    }
 
     #[test]
     fn compact_slice_keeps_stable_fields() {
