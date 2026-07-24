@@ -31,23 +31,35 @@ Use this guide to set up, initialize, and optimize the RAG codebase on the new P
    ```
 4. **Start Qdrant & Ollama (Local GPU acceleration):**
    * Make sure **Ollama** is running with GPU acceleration enabled.
-   * Pull the target embedding model:
+   * Pull the target embedding model — this is the packaged default, so no
+     config edit is needed:
      ```bash
-     ollama pull qwen3-embedding:latest
+     ollama pull qwen3-embedding
      ```
    * Start the Qdrant vector database (either via docker or local binary). If using the default configuration, ensure it is listening on `http://127.0.0.1:6333`.
 
 ---
 
-## 2. Configuration (`config/default.toml` or `~/.rag/config.toml`)
+## 2. Configuration (`~/.rag/config.toml`)
 
-Update the configuration to take advantage of the GPU:
+`rag start` writes `~/.rag/config.toml` from the packaged defaults
+(`crates/rag-config/assets/default.toml`) on first run, and that file
+deep-merges over them afterwards. The defaults already work against the models
+pulled in step 4 — the only reason to edit anything here is the GPU batch size:
+
 ```toml
 [embeddings]
-model = "Qwen/Qwen3-Embedding-4B" # Ollama model name
+# Defaults (shown for reference; already correct out of the box).
+# `model` must be a tag `ollama list` prints — a HuggingFace repo path such as
+# "Qwen/Qwen3-Embedding-4B" is never matched and makes the daemon report
+# `ollama: unavailable` while Ollama is healthy.
+model = "qwen3-embedding:latest"
 provider = "ollama"
-dim = 2560
-batch_size = 128                  # Increase batch size for GPU parallelization
+# Must equal the width the model returns (4096 for the default/8b tag, 2560 for
+# `:4b`, 1024 for `:0.6b`). Collections are created with this size at the first
+# index, so a mismatch corrupts the index rather than erroring.
+dim = 4096
+batch_size = 128                  # <- the one GPU tweak: raise from the default 64
 
 [qdrant]
 mode = "server"
@@ -57,6 +69,10 @@ url = "http://127.0.0.1:6333"
 ollama_url = "http://localhost:11434"
 agent_model = "qwen3:8b"
 ```
+
+> If you change `embeddings.model` or `embeddings.dim` after indexing, drop and
+> rebuild the affected Qdrant collections — the stored vector width is fixed at
+> creation.
 
 ---
 

@@ -9,12 +9,27 @@ port = 7890
 dashboard = true
 
 [embeddings]
-model = "Qwen/Qwen3-Embedding-4B"
+# MUST be a tag that `ollama list` prints — not a HuggingFace repo path.
+# The availability probe takes the segment after the last `/`, lowercases it,
+# and requires it as a substring of a served tag, so a HF-style name such as
+# "Qwen/Qwen3-Embedding-4B" matches nothing and `/health` reports
+# `ollama: unavailable` even while Ollama is running perfectly.
+#   ollama pull qwen3-embedding
+model = "qwen3-embedding:latest"
 # `provider` is deprecated and ignored at runtime — Ollama is the only
 # supported embedder after FastEmbed was removed. Field retained for
 # user-config back-compat.
 provider = "ollama"
-dim = 2560
+# MUST equal the vector width the model above actually returns. Qdrant
+# collections are created with this size at the first index, so a mismatch
+# corrupts an index rather than failing cleanly. Verify with:
+#   curl -s localhost:11434/api/embed \
+#     -d '{"model":"qwen3-embedding:latest","input":"x"}' \
+#     | jq '.embeddings[0] | length'
+# qwen3-embedding:latest returns 4096 (Ollama `/api/tags` reports the same as
+# that tag's `details.embedding_length`). The 4b tag is 2560, the 0.6b is 1024
+# — change both fields together if you pull a different one.
+dim = 4096
 batch_size = 64
 keep_alive = "30m"
 
@@ -40,10 +55,15 @@ url = "http://127.0.0.1:6333"
 # The Rust daemon never reads it; kept for rollback tooling only.
 path = "~/.rag/qdrant_data"
 code_collection = "code_chunks"
+# Read only by `/status` when it lists collections. The doc-indexing write path
+# takes its collection from the request body and falls back to the literal
+# "doc_chunks", so renaming this does not move where docs are written.
 docs_collection = "doc_chunks"
 
 [index]
 max_chunk_chars = 8000
+# Parsed and range-checked but never read at runtime: the effective top_k comes
+# from the request body or the planner's SearchPlan, never from this value.
 retrieval_top_k = 20
 skip_dirs = [".git", "node_modules", ".venv", "venv", "__pycache__", "build", "dist", ".tox", ".mypy_cache", ".ruff_cache"]
 
@@ -53,26 +73,36 @@ agent_model = "qwen3:8b"
 # Generation model for /ask (RAG answer synthesis). Falls back to agent_model.
 # gen_model = "qwen3:8b"
 
+# Parsed and range-checked, but the whole section is inert: this build has no
+# index-time LSP enrichment. `crates/rag-index/src/lsp.rs` exposes only
+# `detect_lsp_servers`, a PATH probe that feeds the dashboards' LSP card.
+# Installing a language server changes that display and nothing else. Kept for
+# forward compatibility and user-config back-compat.
 [lsp]
 enabled = true
 auto_detect = true
 timeout = 5000
 
 [retrieval_agent]
-# LLM provider for the search strategy planner.
-# Options: gemini, openai, anthropic, ollama, agy
-# `agy` shells out to the Antigravity CLI (subscription auth, no API key) and
-# avoids the Gemini public-API 503s. The direct `gemini` provider is kept as a
-# fallback option (set provider="gemini", model="gemini-2.5-flash" + GEMINI_API_KEY).
+# LLM provider for the search-strategy planner. The daemon wires exactly two:
+#   "agy"    — shells out to the Antigravity CLI (subscription auth, no API
+#              key, no Gemini public-API 503s). Also the only provider that
+#              powers /smart-search symbol inference.
+#   "ollama" — plans through the local Ollama daemon at `llm.ollama_url`, using
+#              `model` below as the chat tag (e.g. "qwen3:8b").
+# "gemini", "openai" and "anthropic" pass config validation and have adapters
+# in rag-agent, but the daemon's `plan_query` never constructs them: selecting
+# one silently plans with the deterministic heuristic instead. Do not rely on
+# them as a fallback.
 provider = "agy"
 # For agy: a CLI display-name model (see `agy models`). "High" reasoning infers
 # real symbol names more reliably (fewer hallucinations) at higher latency;
 # "Low" is faster and fine for plain query planning.
+# For ollama: an Ollama chat tag, e.g. "qwen3:8b".
 model = "Gemini 3.5 Flash (High)"
-# Environment variable that holds the API key (used only by gemini/openai/anthropic).
+# Parsed but never read: it would only matter for the gemini/openai/anthropic
+# providers, which the daemon does not wire.
 api_key_env = "GEMINI_API_KEY"
-# For ollama, set provider="ollama" and point base_url at your daemon:
-# provider = "ollama"
-# model = "qwen3:8b"
-# base_url = "http://localhost:11434"
+# Parsed but never read. The ollama planner talks to `llm.ollama_url`, not to
+# this value.
 base_url = ""

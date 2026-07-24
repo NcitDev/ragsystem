@@ -158,10 +158,17 @@ impl Default for PythonServerSettings {
 #[serde(default)]
 pub struct EmbeddingSettings {
     /// Embedding model name.
+    ///
+    /// Must be an Ollama tag (as printed by `ollama list`), not a HuggingFace
+    /// repo path: `OllamaClient::model_is_present` matches the segment after
+    /// the last `/`, case-insensitively, as a substring of a served tag, so a
+    /// name like `Qwen/Qwen3-Embedding-4B` never matches and the daemon
+    /// reports `ollama: unavailable` while Ollama is healthy.
     pub model: String,
     /// Deprecated provider field retained for config compatibility.
     pub provider: String,
-    /// Vector dimension.
+    /// Vector dimension. Must equal the width `model` actually returns —
+    /// Qdrant collections are created with this size at the first index.
     pub dim: u16,
     /// Embedding batch size.
     pub batch_size: u16,
@@ -172,9 +179,9 @@ pub struct EmbeddingSettings {
 impl Default for EmbeddingSettings {
     fn default() -> Self {
         Self {
-            model: "Qwen/Qwen3-Embedding-4B".to_owned(),
+            model: "qwen3-embedding:latest".to_owned(),
             provider: "ollama".to_owned(),
-            dim: 2560,
+            dim: 4096,
             batch_size: 64,
             keep_alive: "30m".to_owned(),
         }
@@ -246,7 +253,8 @@ impl QdrantSettings {
 pub struct IndexSettings {
     /// Max chunk size in chars.
     pub max_chunk_chars: u32,
-    /// Default retrieval top-k.
+    /// Default retrieval top-k. Parsed and range-checked but never read at
+    /// runtime — the effective top_k comes from the request or the SearchPlan.
     pub retrieval_top_k: u16,
     /// Directory names skipped during discovery.
     pub skip_dirs: Vec<String>,
@@ -299,6 +307,10 @@ impl Default for LlmSettings {
 }
 
 /// LSP settings.
+///
+/// Inert in this build: there is no index-time LSP enrichment. `rag-index`
+/// exposes only `detect_lsp_servers`, a PATH probe feeding the dashboards, and
+/// none of these fields reach it. Retained for forward and config compat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LspSettings {
@@ -324,13 +336,18 @@ impl Default for LspSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RetrievalAgentSettings {
-    /// Provider name.
+    /// Provider name. Validation accepts `gemini`, `openai`, `anthropic`,
+    /// `ollama` and `agy`, but the daemon's `plan_query` only constructs
+    /// `agy` and `ollama`; the other three silently degrade to the
+    /// deterministic heuristic plan.
     pub provider: String,
-    /// Model name or display name.
+    /// Model name (agy CLI display name, or an Ollama chat tag).
     pub model: String,
-    /// API key environment variable.
+    /// API key environment variable. Never read — only the unwired
+    /// gemini/openai/anthropic providers would use it.
     pub api_key_env: String,
-    /// Optional provider base URL.
+    /// Optional provider base URL. Never read — the ollama planner uses
+    /// `llm.ollama_url`.
     pub base_url: String,
 }
 

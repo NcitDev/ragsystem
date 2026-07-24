@@ -32,8 +32,10 @@ Three required, one required for symbol navigation:
    structural stage of `/smart-search`. **Without it those routes return empty
    results rather than an error** — dense and lexical search are unaffected,
    but navigation answers silently go blank, which looks like a broken index.
-   `rag diagnose` and the daemon's `/stack` endpoint (its `ast_index` service
-   card) report whether it is present.
+   The daemon's `/stack` endpoint reports whether it is present, via its
+   `ast_index` service card — that is what `rag tui` and the web dashboard
+   render. (`rag diagnose` is *not* a working check: the route still returns a
+   static `{"status": "degraded", "checks": []}` stub.)
 
 ## Install
 
@@ -51,7 +53,7 @@ cargo build --release -p rag-app      # produces target/release/rag-rs
 ## 30-second quickstart
 
 ```bash
-ollama pull qwen3-embedding:latest         # embeddings (set embeddings.model/dim to match)
+ollama pull qwen3-embedding                # embeddings — this is the packaged default
 ollama pull qwen3:8b                       # planner + /ask generation (optional)
 
 rag qdrant-up                 # start the Qdrant container (or set qdrant.mode=embedded)
@@ -71,9 +73,16 @@ First `rag start` bootstraps `~/.rag` (auth token with 0600 perms, default
 > `~/.rag/token`, but on a multi-user host set `server.dashboard = false` and
 > use the CLI (over an SSH tunnel if remote) instead.
 
-> **Note:** `embeddings.model` must be an exact tag that `ollama list` shows
-> (e.g. `qwen3-embedding:latest`), and `embeddings.dim` must match that model's
-> dimension — collections are created with that size at first index.
+> **Embedding model:** the packaged default is
+> `embeddings.model = "qwen3-embedding:latest"` with `embeddings.dim = 4096`,
+> so pulling `qwen3-embedding` is all a fresh install needs. If you change the
+> model, it must stay an exact tag that `ollama list` shows — a HuggingFace
+> repo path (`Qwen/Qwen3-Embedding-4B`) will never be matched, and the daemon
+> reports `ollama: unavailable` even though Ollama is fine. `dim` must equal
+> the width that model returns (`qwen3-embedding` is 4096 for the default/8b
+> tag, 2560 for `:4b`, 1024 for `:0.6b`) — collections are created with that
+> size at first index, so a mismatch corrupts an index rather than erroring.
+> `GET /health/detail` lists the tags Ollama is actually serving.
 
 ## AST navigation
 
@@ -89,8 +98,8 @@ cd <repo> && ast-index rebuild
 
 Without it, `rag resolve` / `callers` / `callees` / `impact` return **empty
 results, not an error**, and `smart-search` falls back to its dense/lexical
-stages only. Check `rag diagnose` or `/stack` before concluding the index is
-broken.
+stages only. Check `/stack` (or the `AST-INDEX` card in `rag tui` / the web
+dashboard) before concluding the index is broken.
 
 ## Architecture
 

@@ -35,11 +35,88 @@ fn loads_packaged_defaults_deep_merged_with_python_user_toml() {
 
     assert_eq!(settings.server.host, "192.168.1.10");
     assert_eq!(settings.server.port, 8080);
-    assert_eq!(settings.embeddings.dim, 2560);
+    assert_eq!(settings.embeddings.dim, 4096);
     assert_eq!(settings.index.retrieval_top_k, 7);
     assert_eq!(settings.qdrant.url, "http://127.0.0.1:6333");
     assert_eq!(settings.qdrant.code_collection, "code_chunks");
     assert_eq!(settings.retrieval_agent.model, "Gemini 3.5 Flash (High)");
+}
+
+/// Replica of `OllamaClient::model_is_present` (`crates/rag-services/src/
+/// ollama.rs`). `rag-config` sits below `rag-services` in the workspace graph
+/// and cannot depend on it, so the matching rule is mirrored here — keep the
+/// two in step.
+fn model_is_present(configured: &str, served_tags: &[&str]) -> bool {
+    let short = configured
+        .rsplit('/')
+        .next()
+        .unwrap_or(configured)
+        .to_ascii_lowercase();
+    served_tags
+        .iter()
+        .any(|tag| tag.to_ascii_lowercase().contains(&short))
+}
+
+/// A fresh install must work without editing `~/.rag/config.toml`.
+///
+/// The packaged default used to ship the HuggingFace repo name
+/// `Qwen/Qwen3-Embedding-4B`. `model_is_present` keeps only the segment after
+/// the last `/` — `qwen3-embedding-4b` — which no served Ollama tag contains,
+/// so `health()` returned false and `/health` reported `ollama: unavailable`
+/// while Ollama was running perfectly. Reintroducing a HF-style name (or
+/// desyncing `dim` from the shipped tag) must fail here.
+#[test]
+fn packaged_default_embedding_model_is_an_ollama_tag_not_a_huggingface_path() {
+    // No config.toml in this home: exactly what a fresh install resolves.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = RagPaths::from_home(temp.path().join("fresh-rag-home"));
+
+    let settings = load_settings(&paths).expect("packaged defaults load");
+    let model = settings.embeddings.model.clone();
+
+    assert!(
+        !model.contains('/'),
+        "embeddings.model {model:?} looks like a HuggingFace repo path; it must \
+         be a tag as printed by `ollama list`"
+    );
+    assert!(
+        !model.is_empty() && model == model.to_ascii_lowercase(),
+        "embeddings.model {model:?} is not a lowercase Ollama tag"
+    );
+
+    // The daemon's availability probe, run against a realistic `ollama list`
+    // for a user who followed the documented `ollama pull qwen3-embedding`.
+    let served = ["qwen3-embedding:latest", "qwen3:8b"];
+    assert!(
+        model_is_present(&model, &served),
+        "packaged embeddings.model {model:?} is not matched by the served tags \
+         {served:?}; /health would report `ollama: unavailable` on a fresh \
+         install that followed the documented pull"
+    );
+    // Guard the guard: the rule really does reject the old HF-style name.
+    assert!(
+        !model_is_present("Qwen/Qwen3-Embedding-4B", &served),
+        "model_is_present replica no longer matches rag-services"
+    );
+
+    // Qdrant collections are created with `dim` at the first index, so a
+    // mismatch corrupts an index instead of erroring. Changing the shipped tag
+    // requires stating the width it returns.
+    let expected_dim = match model.as_str() {
+        "qwen3-embedding:latest" | "qwen3-embedding:8b" => 4096,
+        "qwen3-embedding:4b" => 2560,
+        "qwen3-embedding:0.6b" => 1024,
+        other => panic!(
+            "no known vector width for packaged embeddings.model {other:?}; \
+             verify it with `curl -s localhost:11434/api/embed -d \
+             '{{\"model\":\"{other}\",\"input\":\"x\"}}' | jq \
+             '.embeddings[0]|length'` and record it here"
+        ),
+    };
+    assert_eq!(
+        settings.embeddings.dim, expected_dim,
+        "embeddings.dim must match the width {model:?} actually returns"
+    );
 }
 
 #[test]
