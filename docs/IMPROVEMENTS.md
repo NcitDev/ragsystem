@@ -426,7 +426,71 @@ full test run.
   entries from `candidates` and shrinks `candidates_total`). Clients wanting
   "links, not bodies" want `include_bodies: false`. Worth a doc line.
 
-### Phase 4 — Retire the Node.js dependency (2–3 weeks, the big one)
+### Phase 5 — Slim and harden — ⏳ IN PROGRESS
+
+18. ✅ **rig gated** (`7e0d41f`). It was never reachable at runtime: `plan_query`
+    matches only `"ollama"` (plain `OllamaClient`) and `"agy"` (subprocess).
+    Measured A/B from identical snapshotted source into empty target dirs:
+
+    | | before | after |
+    | --- | --- | --- |
+    | crates in the binary graph | 277 | **239** |
+    | release binary | 32,496,192 B | **30,646,352 B** (−1.76 MiB) |
+    | clean build | 164.8 s | **107.9 s** (−34.5 %) |
+    | `cargo deny` duplicates | 10 | **5** |
+
+    **Correction to P2.2 above:** it claimed rig spanned "142 of 277 crates".
+    That was its *subtree*, most of it shared with tokio/hyper/serde; the
+    **exclusive** contribution is 38. Gone: `rig*`, `reqwest 0.13.4` (the
+    binary linked two reqwest majors), `h2`, the `futures` family,
+    `toml_edit`/`winnow`, and `aws-lc-rs`/`aws-lc-sys` — a C crypto library
+    built from source, which is most of the build-time saving.
+19. ⬜ Contract fixtures still compile into release builds.
+20. ⬜ Typed handlers not started.
+
+### Phase 6 — Product surface — ⏳ IN PROGRESS
+
+21. ⏳ Async index jobs — in flight.
+22. ⚠️ **RRF is under-specified in this plan and must not be implemented
+    literally.** RRF is rank-space (`1/(60+rank)` ≈ 0.016); the recency,
+    pattern and quality boosts are additive in score-space at up to 0.15.
+    Swapping the lexical squash for RRF without re-tuning the boosts would
+    let them dominate the fused score by roughly 10×. Doing it properly means
+    re-tuning both together against `bench/`, which needs live Qdrant +
+    Ollama + indexed corpora. Deferred rather than guessed at.
+23. ⬜ Vocab freshness.
+24. ⬜ Branch-switch reindex.
+
+### Also fixed along the way
+
+- **Lexical hits carried no enrichment** (`a6eca68`) — the asymmetry noted at
+  the end of Phase 3. `code_index` stores only structural columns, so every
+  FTS hit scored 0.0 on recency *and* pattern *and* quality while dense hits
+  carried the full Qdrant payload: a systematic penalty of up to 0.30 against
+  a top-10 band measured at 0.072 wide. Fixed with a new
+  `QdrantClient::retrieve` (deterministic uuid5 ids ⇒ one round trip).
+- **`/diagnose` had never done anything** (`17cd506`) — hard-coded
+  `{"status":"degraded","checks":[]}` on every call, while the README told
+  users to run it to check for `ast-index`. Now a real projection of the
+  `/stack` probes plus a config-sanity check.
+- **Misleading 503s** (`17cd506`) — index-lock conflict → 409, bad
+  `repo_path` → 422; genuine outages still 503.
+- **The packaged default config could not work** (`72d7a32`) — a HuggingFace
+  path where an Ollama tag was required, so a fresh install reported
+  `ollama: unavailable` against a healthy Ollama. Six parsed-but-ignored
+  config keys documented at the same time.
+
+### Phase 4 — Retire the Node.js dependency — ⏳ IN PROGRESS
+
+**Foundation landed** (`65f8fa4`): `crates/rag-index/src/symbols.rs` extracts
+definitions, references and edges straight from the tree-sitter parse, with
+four collection-scoped tables in the existing `rag.db`. Validated on
+Signal-Android — 5,598 files → 77,220 definitions / 964,381 references /
+356,292 edges in 28 s, 0.29 GB; resolve 65 µs, callers 230 µs. Wiring is in
+flight. Known gaps to plan around: no cross-file resolution (parity with the
+CLI, but `/graph/impact` will be noisy for common names), no fuzzy `search`
+verb, Go `implementations` always empty (structural interfaces), C/C++
+partial.
 
 15. Build a native symbol index in `rag-index`. The raw material is already
     there: tree-sitter parsers for ten languages (`chunker.rs:328`), name-node
