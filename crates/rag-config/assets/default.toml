@@ -1,6 +1,12 @@
 [server]
 host = "127.0.0.1"
 port = 7890
+# Serve the browser dashboard at `GET /`. That page cannot be authenticated
+# (a browser has no way to send a bearer token on its first request), so it
+# embeds a per-process credential that any local process able to reach the
+# loopback port can read. Fine on a single-user machine; set false on a shared
+# host and reach the daemon over an SSH tunnel with the CLI instead.
+dashboard = true
 
 [embeddings]
 model = "Qwen/Qwen3-Embedding-4B"

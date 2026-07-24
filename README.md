@@ -64,6 +64,13 @@ rag tui                       # open the stack dashboard
 First `rag start` bootstraps `~/.rag` (auth token with 0600 perms, default
 `config.toml`). The web dashboard is served at `http://127.0.0.1:7890/`.
 
+> **Shared machines:** `GET /` cannot be authenticated — a browser has no way
+> to present a bearer token on its first request — so the page embeds a
+> credential that any local process able to reach the loopback port can read.
+> It is a per-process token that dies with the daemon, never the durable
+> `~/.rag/token`, but on a multi-user host set `server.dashboard = false` and
+> use the CLI (over an SSH tunnel if remote) instead.
+
 > **Note:** `embeddings.model` must be an exact tag that `ollama list` shows
 > (e.g. `qwen3-embedding:latest`), and `embeddings.dim` must match that model's
 > dimension — collections are created with that size at first index.

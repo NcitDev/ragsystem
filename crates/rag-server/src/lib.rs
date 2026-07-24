@@ -63,6 +63,23 @@ pub struct ServerState {
     contract_fixtures: bool,
     rag_paths: Option<RagPaths>,
     retrieval: Option<Arc<RetrievalBackend>>,
+    /// Ephemeral credential handed to the browser dashboard.
+    ///
+    /// `GET /` is necessarily unauthenticated — a browser has no way to
+    /// present a bearer token for its first request — so whatever it embeds is
+    /// readable by any local process that can reach the loopback port. It used
+    /// to embed the durable `~/.rag/token`, which made a page fetch equivalent
+    /// to reading that 0600 file: the credential kept working after a restart
+    /// and authenticated the CLI and every other client too.
+    ///
+    /// This token is generated per process start and never persisted, so the
+    /// same fetch now yields something that dies with the daemon. It is not a
+    /// boundary against a local attacker who can simply keep using it while
+    /// the daemon runs; it bounds the blast radius rather than removing it.
+    /// Hosts where that is not good enough should set `server.dashboard = false`.
+    dashboard_token: Arc<str>,
+    /// Whether `GET /` serves the dashboard at all.
+    dashboard_enabled: bool,
 }
 
 impl Default for ServerState {
@@ -84,7 +101,18 @@ impl ServerState {
             contract_fixtures: false,
             rag_paths: RagPaths::from_env().ok(),
             retrieval: None,
+            dashboard_token: Arc::from(generate_token()),
+            dashboard_enabled: true,
         }
+    }
+
+    /// Disable `GET /` entirely (config `server.dashboard = false`). Intended
+    /// for multi-user hosts, where handing any working credential to every
+    /// local account is not acceptable.
+    #[must_use]
+    pub fn with_dashboard(mut self, enabled: bool) -> Self {
+        self.dashboard_enabled = enabled;
+        self
     }
 
     /// Attach the live dense-retrieval backend (Ollama + Qdrant clients).
@@ -286,6 +314,10 @@ pub async fn serve(config: &ServerConfig) -> Result<(), ServerError> {
         .and_then(|paths| rag_config::load_settings(paths).map_err(|error| error.to_string()));
     match settings {
         Ok(settings) => {
+            state = state.with_dashboard(settings.server.dashboard);
+            if !settings.server.dashboard {
+                eprintln!("browser dashboard disabled (server.dashboard = false)");
+            }
             // `embedded` hosts Qdrant as a managed child process; `server`
             // connects to whatever serves qdrant.url (e.g. `rag qdrant-up`).
             if settings.qdrant.mode == "embedded" {
@@ -534,14 +566,25 @@ async fn openapi() -> Json<Value> {
 }
 
 async fn dashboard(State(state): State<ServerState>) -> Response {
-    // Python parity: the page is only served through this route so the
-    // daemon token can be injected; same-origin fetch() then authenticates.
-    // `no-store` keeps the token-bearing page out of browser/disk caches.
+    if !state.dashboard_enabled {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "Dashboard is disabled (server.dashboard = false)",
+            "DASHBOARD_DISABLED",
+        );
+    }
+    // The page is only served through this route so a credential can be
+    // injected; same-origin fetch() then authenticates with it. `no-store`
+    // keeps the credential-bearing page out of browser and disk caches.
+    //
+    // Deliberately the ephemeral `dashboard_token`, never the durable
+    // `~/.rag/token`: this response is unauthenticated by necessity, so
+    // whatever it carries is readable by any local process. See the field
+    // docs on `ServerState::dashboard_token`.
     let html = include_str!("../assets/index.html");
-    let token = state.token.as_deref().unwrap_or("");
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Html(html.replace("__RAG_TOKEN__", token)),
+        Html(html.replace("__RAG_TOKEN__", &state.dashboard_token)),
     )
         .into_response()
 }
@@ -2136,7 +2179,16 @@ async fn authenticate_and_limit(
         .and_then(|value| value.to_str().ok())
         .and_then(parse_bearer);
     if let Some(expected) = state.token.as_deref() {
-        if bearer.is_none_or(|actual| !constant_time_eq(actual.as_bytes(), expected.as_bytes())) {
+        // Either the durable daemon token or this process's dashboard token
+        // authenticates. Both comparisons run so the answer does not leak
+        // which credential was presented via timing.
+        let matches_daemon =
+            bearer.is_some_and(|actual| constant_time_eq(actual.as_bytes(), expected.as_bytes()));
+        let matches_dashboard = state.dashboard_enabled
+            && bearer.is_some_and(|actual| {
+                constant_time_eq(actual.as_bytes(), state.dashboard_token.as_bytes())
+            });
+        if !(matches_daemon || matches_dashboard) {
             return api_error(
                 StatusCode::UNAUTHORIZED,
                 "Invalid or missing token",
@@ -2656,5 +2708,118 @@ mod tests {
         assert!(resolve_export_path(&paths, "link/dump.jsonl").is_err());
         assert!(resolve_export_path(&paths, "file.jsonl").is_err());
         assert!(!outside.join("dump.jsonl").exists());
+    }
+
+    /// Pull the credential the dashboard page embeds (`const TOKEN = "..."`).
+    fn embedded_dashboard_token(body: &str) -> String {
+        let marker = "const TOKEN = \"";
+        let start = body.find(marker).expect("dashboard embeds a token") + marker.len();
+        body[start..]
+            .split('"')
+            .next()
+            .expect("token literal")
+            .to_owned()
+    }
+
+    async fn dashboard_body(app: axum::Router) -> String {
+        let response = app
+            .oneshot(request("GET", "/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    /// `GET /` is unauthenticated by necessity, so whatever it embeds is
+    /// readable by any local process. It must never be the durable
+    /// `~/.rag/token`, which outlives the process and authenticates the CLI.
+    #[tokio::test]
+    async fn dashboard_never_serves_the_durable_daemon_token() {
+        let daemon_token = "durable-secret-from-rag-home";
+        let state = ServerState::new(Some(daemon_token.to_owned()));
+        let body = dashboard_body(router_with_state(state)).await;
+
+        assert!(
+            !body.contains(daemon_token),
+            "durable daemon token leaked into the unauthenticated dashboard page"
+        );
+        let embedded = embedded_dashboard_token(&body);
+        assert!(!embedded.is_empty() && embedded != daemon_token);
+    }
+
+    /// Two independent daemons must not share a dashboard credential — it is
+    /// generated per process and never persisted.
+    #[tokio::test]
+    async fn dashboard_tokens_are_per_process() {
+        let first = embedded_dashboard_token(
+            &dashboard_body(router_with_state(ServerState::new(None))).await,
+        );
+        let second = embedded_dashboard_token(
+            &dashboard_body(router_with_state(ServerState::new(None))).await,
+        );
+        assert_ne!(first, second);
+    }
+
+    /// The embedded credential has to actually work, or the dashboard is
+    /// broken; the daemon token has to keep working, or the CLI is.
+    #[tokio::test]
+    async fn both_credentials_authenticate_and_others_do_not() {
+        let state = ServerState::new(Some("daemon-token".to_owned())).with_contract_fixtures();
+        let app = router_with_state(state);
+        let embedded = embedded_dashboard_token(&dashboard_body(app.clone()).await);
+
+        for (credential, expected) in [
+            (embedded.as_str(), StatusCode::OK),
+            ("daemon-token", StatusCode::OK),
+            ("neither-of-them", StatusCode::UNAUTHORIZED),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    request("GET", "/status")
+                        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "credential {credential:?}");
+        }
+    }
+
+    /// `server.dashboard = false`: no page, and the credential it would have
+    /// carried stops authenticating too — otherwise disabling the page would
+    /// leave a live credential behind.
+    #[tokio::test]
+    async fn disabling_the_dashboard_serves_no_page_and_no_credential() {
+        let state = ServerState::new(Some("daemon-token".to_owned()))
+            .with_contract_fixtures()
+            .with_dashboard(false);
+        let leaked = state.dashboard_token.to_string();
+        let app = router_with_state(state);
+
+        let page = app
+            .clone()
+            .oneshot(request("GET", "/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::NOT_FOUND);
+
+        let response = app
+            .oneshot(
+                request("GET", "/status")
+                    .header(header::AUTHORIZATION, format!("Bearer {leaked}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

@@ -133,6 +133,14 @@ pub struct PythonServerSettings {
     pub host: String,
     /// Bind port.
     pub port: u16,
+    /// Whether `GET /` serves the browser dashboard.
+    ///
+    /// The dashboard page is unauthenticated by necessity (a browser cannot
+    /// present a bearer token on its first request), so it embeds a credential
+    /// that any local process able to reach the loopback port can read. On a
+    /// single-user machine that is the intended trade; on a shared host, set
+    /// this to `false` and use the CLI or an SSH tunnel instead.
+    pub dashboard: bool,
 }
 
 impl Default for PythonServerSettings {
@@ -140,6 +148,7 @@ impl Default for PythonServerSettings {
         Self {
             host: "127.0.0.1".to_owned(),
             port: 7890,
+            dashboard: true,
         }
     }
 }
