@@ -45,3 +45,6 @@ tmp_serena/
 # Daemon/runtime markers (not project state)
 .qdrant-initialized
 .claude/scheduled_tasks.lock
+
+# Large local artifacts (kept on disk, out of git)
+ragsystem.pen
