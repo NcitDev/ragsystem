@@ -9,6 +9,15 @@ publish.workspace = true
 name = "rag-rs"
 path = "src/main.rs"
 
+[features]
+default = []
+# Passthrough so the escape hatch is reachable from the binary:
+#   cargo build --release -p rag-app --features cloud-planners
+# Without this, `--features rag-agent/cloud-planners` is rejected whenever the
+# build is scoped with `-p rag-app`. The shipped build does not enable it; see
+# crates/rag-agent/Cargo.toml for why.
+cloud-planners = ["rag-server/cloud-planners"]
+
 [dependencies]
 anyhow.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

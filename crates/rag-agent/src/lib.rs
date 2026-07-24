@@ -13,6 +13,7 @@ use rag_retrieval::repo_agent::{
     build_context_query, expand_domain_terms, extract_symbol_candidates,
 };
 use regex::Regex;
+#[cfg(feature = "cloud-planners")]
 use rig::{
     client::CompletionClient,
     completion::Prompt,
@@ -598,6 +599,7 @@ impl From<GenerationError> for PlannerError {
     }
 }
 
+#[cfg(feature = "cloud-planners")]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 struct AskWireCitation {
     file_path: String,
@@ -606,6 +608,7 @@ struct AskWireCitation {
     score: f64,
 }
 
+#[cfg(feature = "cloud-planners")]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 struct AskWireResponse {
     answer: String,
@@ -818,12 +821,28 @@ pub fn grounded_symbols(query: &str, limit: usize) -> Vec<String> {
     symbols
 }
 
+// ---------------------------------------------------------------------------
+// Cloud provider adapters (feature `cloud-planners`, off by default).
+//
+// Everything from here to the end of this file is compiled only when the
+// feature is enabled. See the rationale in Cargo.toml: the daemon reaches none
+// of it, and linking it cost 38 crates nothing else in the workspace needs.
+//
+// The `Planner` trait, `AgyPlanner`, `fallback_plan`, `plan_from_value`,
+// `extract_json_object`, `grounded_symbols`, the prompts, `GenerationError`
+// and the `AskGenerator`/`AskResponse`/`AskSnippet` contracts above are *not*
+// gated -- the daemon depends on them, and the contracts are what a future
+// non-rig ask generator would implement.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cloud-planners")]
 fn parse_planner_response(raw: &str, query: &str) -> Result<SearchPlan, GenerationError> {
     let value = extract_json_object(raw).ok_or(GenerationError::InvalidResponse)?;
     let plan = plan_from_value(&value, query).ok_or(GenerationError::InvalidResponse)?;
     Ok(plan)
 }
 
+#[cfg(feature = "cloud-planners")]
 fn parse_ask_response(raw: &str) -> Result<AskResponse, GenerationError> {
     let value = extract_json_object(raw).ok_or(GenerationError::InvalidResponse)?;
     let wire: AskWireResponse =
@@ -855,6 +874,7 @@ fn parse_ask_response(raw: &str) -> Result<AskResponse, GenerationError> {
     })
 }
 
+#[cfg(feature = "cloud-planners")]
 async fn prompt_text_with_timeout<M>(
     agent: &rig::agent::Agent<M>,
     provider: &'static str,
@@ -876,6 +896,7 @@ where
 }
 
 /// Rig-backed planner adapter shared by the provider-specific constructors.
+#[cfg(feature = "cloud-planners")]
 #[derive(Clone)]
 pub struct RigPlanner<M>
 where
@@ -886,6 +907,7 @@ where
     timeout: Duration,
 }
 
+#[cfg(feature = "cloud-planners")]
 impl<M> RigPlanner<M>
 where
     M: rig::completion::CompletionModel + 'static,
@@ -947,6 +969,7 @@ where
     }
 }
 
+#[cfg(feature = "cloud-planners")]
 #[async_trait]
 impl<M> Planner for RigPlanner<M>
 where
@@ -976,6 +999,7 @@ pub trait AskGenerator: Send + Sync {
 }
 
 /// Rig-backed ask-generation adapter shared by provider constructors.
+#[cfg(feature = "cloud-planners")]
 #[derive(Clone)]
 pub struct RigAskGenerator<M>
 where
@@ -986,6 +1010,7 @@ where
     timeout: Duration,
 }
 
+#[cfg(feature = "cloud-planners")]
 impl<M> RigAskGenerator<M>
 where
     M: rig::completion::CompletionModel + 'static,
@@ -1038,6 +1063,7 @@ where
     }
 }
 
+#[cfg(feature = "cloud-planners")]
 #[async_trait]
 impl<M> AskGenerator for RigAskGenerator<M>
 where
@@ -1052,6 +1078,7 @@ where
     }
 }
 
+#[cfg(feature = "cloud-planners")]
 const PLANNER_SYSTEM_PROMPT: &str = concat!(
     "You are a code search strategy planner.\n",
     "Output only JSON with fields queries, filters, strategy, and top_k.\n",
@@ -1061,12 +1088,14 @@ const PLANNER_SYSTEM_PROMPT: &str = concat!(
     "Keep top_k between 1 and 200."
 );
 
+#[cfg(feature = "cloud-planners")]
 const SYMBOL_SYSTEM_PROMPT: &str = concat!(
     "Extract likely code symbols from the question.\n",
     "Return only a JSON array of up to five PascalCase or identifier-like names.\n",
     "Do not add prose."
 );
 
+#[cfg(feature = "cloud-planners")]
 const ASK_SYSTEM_PROMPT: &str = concat!(
     "You are a code assistant.\n",
     "Answer using only the provided snippets.\n",
@@ -1076,6 +1105,7 @@ const ASK_SYSTEM_PROMPT: &str = concat!(
 );
 
 /// Build an OpenAI-backed planner using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn openai_planner(
     api_key: impl Into<String>,
     base_url: Option<&str>,
@@ -1098,6 +1128,7 @@ pub fn openai_planner(
 }
 
 /// Build an Anthropic-backed planner using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn anthropic_planner(
     api_key: impl Into<String>,
     base_url: Option<&str>,
@@ -1122,6 +1153,7 @@ pub fn anthropic_planner(
 }
 
 /// Build a Gemini-backed planner using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn gemini_planner(
     api_key: impl Into<String>,
     base_url: Option<&str>,
@@ -1144,6 +1176,7 @@ pub fn gemini_planner(
 }
 
 /// Build an Ollama-backed planner using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn ollama_planner(
     api_key: impl Into<String>,
     base_url: Option<&str>,
@@ -1166,6 +1199,7 @@ pub fn ollama_planner(
 }
 
 /// Build an OpenAI-backed ask generator using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn openai_ask_generator(
     api_key: impl Into<String>,
     base_url: Option<&str>,
@@ -1188,6 +1222,7 @@ pub fn openai_ask_generator(
 }
 
 /// Build an Anthropic-backed ask generator using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn anthropic_ask_generator(
     api_key: impl Into<String>,
     base_url: Option<&str>,
@@ -1212,6 +1247,7 @@ pub fn anthropic_ask_generator(
 }
 
 /// Build a Gemini-backed ask generator using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn gemini_ask_generator(
     api_key: impl Into<String>,
     base_url: Option<&str>,
@@ -1234,6 +1270,7 @@ pub fn gemini_ask_generator(
 }
 
 /// Build an Ollama-backed ask generator using the pinned Rig client.
+#[cfg(feature = "cloud-planners")]
 pub fn ollama_ask_generator(
     api_key: impl Into<String>,
     base_url: Option<&str>,

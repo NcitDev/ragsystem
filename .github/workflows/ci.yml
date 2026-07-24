@@ -40,6 +40,22 @@ jobs:
       - name: Rust tests
         run: cargo test --workspace
 
+      # Second configuration, and it has to be run explicitly.
+      #
+      # rag-agent's cloud provider adapters (OpenAI/Anthropic/Gemini/Ollama via
+      # `rig`) sit behind the non-default `cloud-planners` feature, because the
+      # daemon never constructs them and `rig` cost 38 crates and a second
+      # reqwest major in the shipped binary -- see crates/rag-agent/Cargo.toml.
+      #
+      # tests/rust-compat/r5 is their only coverage. Gating them without also
+      # building this configuration would mean the constructors compile nowhere
+      # and are tested nowhere, which is deletion with extra steps.
+      - name: Rust clippy (cloud-planners)
+        run: cargo clippy --workspace --all-targets --features rag-agent/cloud-planners -- -D warnings
+
+      - name: Rust tests (cloud-planners)
+        run: cargo test --workspace --features rag-agent/cloud-planners
+
       # The test suite must be a pure function of the checkout. A test that
       # writes into a checked-in fixture (the rust-compat SQLite databases are
       # opened read-mostly, but nothing structurally prevents a write) leaves

@@ -55,19 +55,27 @@ ignore = [{ id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained compile
 # is denial): every copyleft and weak-copyleft family -- GPL, LGPL, AGPL, MPL,
 # CDDL, EPL, SSPL, BUSL. A dependency bump that pulls one in fails CI rather
 # than quietly changing our distribution obligations.
+#
+# MIT-0 and CC0-1.0 used to appear here, justified by aws-lc-sys and dunce.
+# Moving `rig` behind the non-default `cloud-planners` feature took aws-lc-sys
+# out of the default graph, and dunce is a multi-licensed crate that resolves
+# to Apache-2.0 without them -- so both entries stopped matching anything and
+# cargo-deny reported them as `license-not-encountered`. Removed rather than
+# left in place: this list is supposed to describe the tree, and an allowance
+# that matches nothing only widens what a future dependency may quietly
+# introduce. Verified green both ways, `cargo deny --workspace check licenses`
+# and the same with `--all-features` (which puts aws-lc-sys back).
 allow = [
     # The overwhelming majority: dual MIT OR Apache-2.0.
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception", # rustix, linux-raw-sys, wasi
-    "MIT-0",                          # aws-lc-sys, dunce
     "BSD-2-Clause",                   # zerocopy
-    "BSD-3-Clause",                   # encoding_rs, matchit, sha1_smol, subtle, aws-lc-sys
-    "ISC",                            # the rustls/ring/aws-lc TLS stack
+    "BSD-3-Clause",                   # matchit, sha1_smol, subtle
+    "ISC",                            # the rustls / ring TLS stack
     "0BSD",                           # adler2
     "Zlib",                           # foldhash, miniz_oxide
     "BSL-1.0",                        # ryu
-    "CC0-1.0",                        # dunce
     "Unlicense",                      # BurntSushi crates (aho-corasick, memchr, walkdir, ignore, globset)
     "Unicode-3.0",                    # the ICU / zerovec family, unicode-ident
     "CDLA-Permissive-2.0",            # webpki-roots, webpki-root-certs (Mozilla CA bundle data)
@@ -81,32 +89,38 @@ confidence-threshold = 0.8
 ignore = true
 
 [bans]
-# Cargo.lock holds 771 packages, 59 of which appear at more than one version.
-# Scoped to the targets above with default features, that collapses to 10
-# genuinely-built duplicates:
+# Cargo.lock still holds 771 packages, 59 of which appear at more than one
+# version -- an optional dependency stays in the lock file whether or not it
+# is built. Scoped to the targets above with default features, that now
+# collapses to 5 genuinely-built duplicates:
 #
-#   core-foundation 0.9.4  / 0.10.1            (macOS only)
-#   getrandom       0.2.17 / 0.3.4
-#   hashbrown       0.14.5 / 0.15.5
+#   getrandom       0.2.17 / 0.3.4 / 0.4.3
+#   hashbrown       0.14.5 / 0.15.5 / 0.17.1
 #   linux-raw-sys   0.4.15 / 0.12.1            (with rustix, below)
-#   reqwest         0.12.28 / 0.13.4           <-- the one that matters
 #   rustix          0.38.44 / 1.1.4
-#   toml_datetime   0.6.11 / 1.1.1
-#   toml_edit       0.22.27 / 0.25.12
 #   unicode-width   0.1.14 / 0.2.0             (both via ratatui 0.29)
-#   winnow          0.7.15 / 1.0.3
 #
-# All ten are transitive-dependency skew we do not control directly. The
-# significant one is reqwest: the workspace pins 0.12 while rig-core 0.40
-# pulls 0.13, so two HTTP client majors link into the binary (they do at
-# least share hyper 1.x). toml_edit/toml_datetime/winnow follow from the same
-# rig-derive -> proc-macro-crate edge.
+# It was 10. The previous note here said the reqwest 0.12/0.13 split was
+# unfixable pending rig, and that toml_edit/toml_datetime/winnow followed from
+# the same rig-derive -> proc-macro-crate edge. That was true but the
+# conclusion was wrong: the fix was not to unify the versions, it was to stop
+# linking rig at all. Nothing in the daemon ever constructed a rig provider --
+# `plan_query` dispatches on "ollama" and "agy" and falls through to the
+# heuristic planner for everything else -- so rig is now an optional
+# dependency behind rag-agent's non-default `cloud-planners` feature.
 #
-# Failing on this would make CI permanently red for reasons no single PR can
-# fix -- unifying reqwest means waiting on rig or on our own bump to 0.13.
-# "warn" keeps the count printed on every run so it stays visible and can be
-# ratcheted down; flip to "deny" (with a `skip` list for the residue) once
-# the reqwest majors converge.
+# That removed 38 crates from the shipped graph (277 -> 239), and with them
+# five of the ten duplicates: reqwest (0.13 gone, 0.12 is now the only HTTP
+# client), toml_datetime, toml_edit, winnow, and core-foundation -- the last
+# via rustls-platform-verifier, which was a rig-only macOS edge.
+#
+# The five that remain are transitive skew we do not control: getrandom and
+# hashbrown are mid-migration across the ecosystem, rustix/linux-raw-sys move
+# together, and ratatui 0.29 pulls both unicode-width majors by itself.
+# "warn" keeps the count printed on every run so it stays visible. Flipping to
+# "deny" now needs a `skip` list for those five and would additionally fail
+# under `--features cloud-planners`, which legitimately reintroduces reqwest
+# 0.13; revisit when the getrandom/hashbrown migrations land.
 multiple-versions = "warn"
 highlight = "all"
 

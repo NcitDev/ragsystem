@@ -5,10 +5,40 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Off by default, and deliberately so.
+#
+# `rig` provides the OpenAI/Anthropic/Gemini/Ollama planner and ask-generator
+# adapters in `lib.rs`. Nothing in the daemon constructs them: rag-server's
+# `plan_query` dispatches only on "ollama" (via rag-services' plain HTTP
+# client) and "agy" (a subprocess), and every other provider name falls
+# through to the deterministic `fallback_plan`. The only callers of
+# `*_planner` / `*_ask_generator` are the r5 compatibility tests.
+#
+# The cost of compiling it anyway was not small. `rig`'s own subtree spans 142
+# crates; 38 of those are needed by nothing else in the workspace, so making it
+# optional takes the shipped `rag-app` graph from 277 crates to 239. Among the
+# 38: a second major version of reqwest (0.13, against the workspace's 0.12),
+# which linked two complete HTTP client stacks into one binary, and aws-lc-rs /
+# aws-lc-sys, a C crypto library compiled from source on every clean build.
+#
+# Enable this to build and test the cloud provider adapters:
+#   cargo test  --workspace --features rag-agent/cloud-planners
+#   cargo build --release -p rag-app --features cloud-planners
+# (the second form goes through the passthrough features in rag-server and
+# rag-app: cargo rejects `--features rag-agent/...` when the build is scoped
+# to a single package with `-p`.)
+#
+# Wiring a provider into the daemon means enabling this feature *and* adding
+# the corresponding arm to `plan_query`; the feature alone changes no
+# behaviour.
+cloud-planners = ["dep:rig"]
+
 [dependencies]
 async-trait = "0.1"
 nix = { version = "0.30", features = ["signal", "process"] }
-rig = { version = "=0.40.0", default-features = true, features = ["reqwest"] }
+rig = { version = "=0.40.0", default-features = true, features = ["reqwest"], optional = true }
 schemars = { version = "1.2", features = ["derive"] }
 rag-contracts = { path = "../rag-contracts" }
 rag-retrieval = { path = "../rag-retrieval" }
