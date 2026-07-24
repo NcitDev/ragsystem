@@ -371,14 +371,60 @@ clean after a full test run.
 **Gate:** RSS after a full index of a 50k-chunk repo stays flat across a
 second run; `bench/` numbers unchanged or better after the recency decision.
 
-### Phase 3 — Make the core testable (about a week)
+### Phase 3 — Make the core testable — ✅ DONE 2026-07-24
 
-12. Fake Qdrant/Ollama doubles behind a cargo feature.
-13. Table tests for `index_route` and `smart_search_route` (P3.1).
-14. CI: services-container integration job + `cargo deny` (P3.2).
+12. ✅ **Deviation from this plan:** no cargo feature was added. The existing
+    r2 test already establishes the better pattern — spawn an in-process axum
+    mock per test file — and the dev-dependencies were already present, so a
+    shared feature-gated double would have added coupling for nothing.
+13. ✅ `15f6044` — 19 tests, 88 → 135 workspace total. Both suites drive the
+    real HTTP surface, and the Qdrant double is a real point store rather than
+    a call recorder, so invariants are asserted on surviving state.
+14. ✅ `138db9e` — `cargo deny` (`advisories ok, bans ok, licenses ok,
+    sources ok`), a live-Qdrant integration job, and clean-checkout hygiene
+    checks.
 
-**Gate:** mutating any of the six indexer invariants in `CLAUDE.md` turns a
-test red.
+**Gate:** ✅ exceeded. 36 mutations (19 indexer, 17 smart-search) were each
+confirmed to turn the relevant test red and then reverted. Clean clone of
+`18e6b31`: fmt clean, clippy 0 issues, 135 passing / 0 failed, release build
+and empty-env smoke pass, no tracked-but-ignored files, tree clean after a
+full test run.
+
+### Found during Phase 3
+
+- **Caller-controlled panic — fixed (`4b6cad8`).** `ast_index::resolve_symbols`
+  sized its over-fetch pool with `(limit * 3).clamp(limit, 200)`, and
+  `Ord::clamp` panics when min > max, so any limit above 200 panicked.
+  Reachable from `/smart-search` (`usages_limit` was read unclamped, unlike
+  every sibling limit) and `/resolve` (neither limit was). It surfaced as a
+  503 `BACKEND_NOT_READY` because `spawn_blocking`'s JoinError is absorbed as
+  a backend outage — so a bad request looked like an infrastructure failure.
+- **`repos` was validated but never read — fixed (`4b6cad8`).** A `repos`
+  request returned 200 having searched the *default* collection while
+  reporting `repos_searched: []`. Single-element `repos` now resolves; longer
+  lists get an explicit 422 until cross-repo is ported.
+- **The packaged default config cannot work.** `default.toml` ships
+  `model = "Qwen/Qwen3-Embedding-4B"`, `dim = 2560` — that is the HuggingFace
+  name, not an Ollama tag, so `model_is_present()` fails and a fresh install
+  reports `ollama: unavailable` with Ollama running perfectly. The failure
+  names the wrong component. **Not yet fixed.**
+- **`rig` is ~half the dependency graph, for code only tests call.** Confirmed
+  against P2.2: `reqwest 0.13.4`'s sole parent is `rig-core`, so the binary
+  links two `reqwest` majors; rig's subtree spans 142 of the 277 crates in
+  the shipped binary. `plan_query` still only wires `"ollama"` and `"agy"`.
+- **A flaky test was a test bug — fixed (`18e6b31`).**
+  `agy_timeout_cleans_up_process_tree` probed `kill -0` immediately after the
+  timeout, asserting the kernel had already run the group kill. It failed
+  under parallel load and passed alone, which is what "known flaky" was
+  recording. Now a bounded poll; still fails if `.process_group(0)` is removed.
+- **Three sharp edges reported, not fixed** (they are contract decisions):
+  a run-lock conflict returns 503 rather than 409 and loses its message; a
+  nonexistent `repo_path` also returns 503 rather than 4xx; and the per-repo
+  lock is process-local, so the "Python parity: flock" comment overstates it —
+  only the fail-fast semantics match, not the cross-process scope.
+- **`include_semantic: false` silently changes pagination** (it drops semantic
+  entries from `candidates` and shrinks `candidates_total`). Clients wanting
+  "links, not bodies" want `include_bodies: false`. Worth a doc line.
 
 ### Phase 4 — Retire the Node.js dependency (2–3 weeks, the big one)
 
