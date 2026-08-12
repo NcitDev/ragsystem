@@ -332,6 +332,26 @@ impl Default for LspSettings {
     }
 }
 
+/// Retrieval settings that are not planner-provider specific.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetrievalSettings {
+    /// Which symbol store answers symbol navigation: `auto`, `native` or
+    /// `ast_index`. Parsed by `rag_retrieval::symbol_index::SymbolBackend`.
+    pub symbol_backend: String,
+}
+
+impl Default for RetrievalSettings {
+    fn default() -> Self {
+        Self {
+            symbol_backend: "auto".to_owned(),
+        }
+    }
+}
+
+/// Accepted `retrieval.symbol_backend` values, in config-file order.
+pub const SYMBOL_BACKENDS: [&str; 3] = ["auto", "native", "ast_index"];
+
 /// Retrieval planner provider settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
