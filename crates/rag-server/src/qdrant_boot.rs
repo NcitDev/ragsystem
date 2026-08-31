@@ -4,7 +4,7 @@
 //! never enters this module — the daemon just connects to `qdrant.url`
 //! (typically the `rag qdrant-up` Docker container).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -40,15 +40,8 @@ pub async fn ensure_local_qdrant(paths: &RagPaths, url: &str) -> Result<(), Stri
         .map_err(|error| error.to_string())?;
 
     let mut command = tokio::process::Command::new(&binary);
+    configure_qdrant_process(&mut command, &storage, port);
     command
-        .env("QDRANT__STORAGE__STORAGE_PATH", &storage)
-        .env("QDRANT__SERVICE__HOST", "127.0.0.1")
-        .env("QDRANT__SERVICE__HTTP_PORT", port.to_string())
-        .env(
-            "QDRANT__SERVICE__GRPC_PORT",
-            port.saturating_add(1).to_string(),
-        )
-        .env("QDRANT__TELEMETRY_DISABLED", "true")
         .stdout(std::process::Stdio::from(
             log.try_clone().map_err(|error| error.to_string())?,
         ))
@@ -83,6 +76,22 @@ pub async fn ensure_local_qdrant(paths: &RagPaths, url: &str) -> Result<(), Stri
          (see {}/qdrant.log)",
         log_dir.display()
     ))
+}
+
+fn configure_qdrant_process(command: &mut tokio::process::Command, storage: &Path, port: u16) {
+    command
+        // Qdrant keeps snapshots and its initialization marker relative to
+        // the process working directory even when storage_path is absolute.
+        // launchd's default directory is `/`, which is read-only on macOS.
+        .current_dir(storage)
+        .env("QDRANT__STORAGE__STORAGE_PATH", storage)
+        .env("QDRANT__SERVICE__HOST", "127.0.0.1")
+        .env("QDRANT__SERVICE__HTTP_PORT", port.to_string())
+        .env(
+            "QDRANT__SERVICE__GRPC_PORT",
+            port.saturating_add(1).to_string(),
+        )
+        .env("QDRANT__TELEMETRY_DISABLED", "true");
 }
 
 /// Stop the managed child on graceful daemon shutdown.
@@ -195,7 +204,26 @@ pub(crate) fn parse_port(url: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_port, release_target};
+    use super::{configure_qdrant_process, parse_port, release_target};
+
+    #[tokio::test]
+    async fn qdrant_child_runs_from_writable_storage_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = temp.path().join("qdrant_server");
+        std::fs::create_dir(&storage).expect("storage directory");
+        let mut command = tokio::process::Command::new("/bin/pwd");
+        configure_qdrant_process(&mut command, &storage, 6333);
+
+        let output = command.output().await.expect("run pwd");
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("utf8").trim(),
+            storage
+                .canonicalize()
+                .expect("canonical storage")
+                .to_string_lossy()
+        );
+    }
 
     #[test]
     fn port_parsing_handles_common_urls() {

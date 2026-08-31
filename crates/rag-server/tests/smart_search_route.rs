@@ -6,7 +6,7 @@
 //!
 //! * Ollama and Qdrant are in-process `axum` mocks, so every dense hit the
 //!   route sees is one this file wrote.
-//! * `retrieval_agent.provider` is deliberately **not** `agy`, so
+//! * `retrieval_agent.provider` is deliberately neither `agy` nor `codex`, so
 //!   `infer_symbols` returns empty and symbol inference degrades to the
 //!   deterministic `rag_agent::grounded_symbols` path — the one most callers
 //!   actually hit.
@@ -210,7 +210,7 @@ impl Harness {
                 url: qdrant_url,
                 ..QdrantSettings::default()
             },
-            // Anything but `agy`: `infer_symbols` then returns empty without
+            // Anything but a CLI planner: `infer_symbols` returns empty without
             // ever shelling out, and the route falls back to the deterministic
             // `grounded_symbols` heuristic.
             retrieval_agent: RetrievalAgentSettings {

@@ -21,6 +21,7 @@ use axum::{Json, Router};
 use http::{header, Request, StatusCode};
 use rag_config::{EmbeddingSettings, LlmSettings, QdrantSettings, RagPaths, Settings};
 use rag_server::{router_with_state, RetrievalBackend, ServerState};
+use rag_storage::RepoRegistry;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -547,11 +548,15 @@ impl Harness {
 }
 
 async fn post_index(app: Router, body: Value) -> (StatusCode, Value) {
+    post_endpoint(app, "/index", body).await
+}
+
+async fn post_endpoint(app: Router, uri: &str, body: Value) -> (StatusCode, Value) {
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/index")
+                .uri(uri)
                 .header(header::HOST, "localhost:7891")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string()))
@@ -599,6 +604,81 @@ fn git(repo: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// CLI request-shape regressions.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn index_docs_embeds_into_qdrant_and_sqlite() {
+    let harness = Harness::new().await;
+    harness.write(
+        "guide.md",
+        "# Context packs\n\nOnly approved immutable revisions may enter a context pack.\n",
+    );
+
+    let (status, value) = post_endpoint(
+        harness.app.clone(),
+        "/index/docs",
+        json!({
+            "docs_path": harness.repo.to_string_lossy(),
+            "collection": "doc_fixture",
+            "full": true,
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "document index failed: {value}");
+    assert_eq!(value["files_processed"], 1);
+    assert!(value["chunks_indexed"].as_u64().unwrap_or(0) > 0);
+    assert!(harness.qdrant.has_collection("doc_fixture"));
+    assert_eq!(
+        harness.qdrant.stored_files("doc_fixture"),
+        BTreeSet::from(["guide.md".to_owned()])
+    );
+    assert!(harness.embed_calls.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        harness.sqlite_files("doc_fixture"),
+        BTreeSet::from(["guide.md".to_owned()])
+    );
+}
+
+#[tokio::test]
+async fn empty_language_list_indexes_all_supported_files() {
+    let harness = Harness::new().await;
+    harness.write("app.py", PY_ALPHA);
+    harness.write("lib.rs", RS_LIB);
+
+    let indexed = harness.index_ok(json!({"languages": []})).await;
+    assert_eq!(indexed["files_processed"], 2);
+    assert_eq!(
+        harness.qdrant.stored_files(COLLECTION),
+        BTreeSet::from(["app.py".to_owned(), "lib.rs".to_owned()])
+    );
+}
+
+#[tokio::test]
+async fn repo_name_registers_the_indexed_repository() {
+    let harness = Harness::new().await;
+    harness.write("app.py", PY_ALPHA);
+
+    harness.index_ok(json!({"repo_name": "fixture"})).await;
+    let registered = RepoRegistry::open(&harness.paths())
+        .expect("registry")
+        .get("fixture")
+        .expect("get repo")
+        .expect("registered repo");
+    assert_eq!(registered.collection, COLLECTION);
+    assert_eq!(
+        registered.path,
+        harness
+            .repo
+            .canonicalize()
+            .expect("canonical repo")
+            .to_string_lossy()
+    );
+    assert!(registered.chunks_count > 0);
 }
 
 // ---------------------------------------------------------------------------

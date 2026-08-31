@@ -653,6 +653,7 @@ async fn generic_post(State(state): State<ServerState>, request: Request) -> Res
                 "/smart-search" => Some(backend.smart_search_route(&paths, &body).await),
                 "/ask" => Some(backend.ask_route(&paths, &body).await),
                 "/index" => Some(indexing::index_route(&backend, &paths, &body).await),
+                "/index/docs" => Some(indexing::index_docs_route(&backend, &paths, &body).await),
                 "/vocab/build" => Some(indexing::vocab_build_route(&backend, &paths, &body).await),
                 "/diff" => Some(backend.diff_route(&paths, &body).await),
                 "/admin/export" => Some(backend.admin_export_route(&paths, &body).await),
@@ -1817,10 +1818,10 @@ fn sanitize_name(name: &str) -> String {
         .to_owned()
 }
 
+/// SQLite-only compatibility path for tests and deliberately unconfigured
+/// servers. Configured production servers dispatch `/index/docs` through
+/// `indexing::index_docs_route` before reaching this fallback.
 fn live_index_docs(paths: &RagPaths, body: &Value) -> Result<Value, String> {
-    // `discover_docs` accepts a file or a directory, so only existence is
-    // required here — but a `docs_path` that is not there is still the
-    // caller's mistake, not an outage.
     let docs_path = indexing::canonical_path("docs_path", required_string(body, "docs_path")?)?;
     std::fs::create_dir_all(&paths.home).map_err(|error| error.to_string())?;
     let collection = body
@@ -1842,11 +1843,17 @@ fn live_index_docs(paths: &RagPaths, body: &Value) -> Result<Value, String> {
     let mut chunks_indexed = 0_usize;
     let mut errors = Vec::new();
     for file in files {
-        let relative = file
-            .strip_prefix(&docs_path)
-            .unwrap_or(&file)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = if docs_path.is_file() {
+            file.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned()
+        } else {
+            file.strip_prefix(&docs_path)
+                .unwrap_or(&file)
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
         let source = match std::fs::read_to_string(&file) {
             Ok(source) => source,
             Err(error) => {
@@ -1875,10 +1882,13 @@ fn live_index_docs(paths: &RagPaths, body: &Value) -> Result<Value, String> {
             .map_err(|error| error.to_string())?;
         files_processed += 1;
     }
-    Ok(
-        json!({"files_processed": files_processed, "chunks_indexed": chunks_indexed,
-        "files_skipped": 0, "files_deleted": 0, "errors": errors}),
-    )
+    Ok(json!({
+        "files_processed": files_processed,
+        "chunks_indexed": chunks_indexed,
+        "files_skipped": 0,
+        "files_deleted": 0,
+        "errors": errors,
+    }))
 }
 
 fn discover_docs(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {

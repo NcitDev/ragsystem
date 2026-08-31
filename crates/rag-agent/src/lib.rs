@@ -23,7 +23,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
-use tokio::{process::Command, time::timeout};
+use tokio::{io::AsyncWriteExt as _, process::Command, time::timeout};
 
 const CHUNK_TYPES: &[&str] = &[
     "file_summary",
@@ -183,6 +183,112 @@ impl Planner for AgyPlanner {
         // Python parity: `_SYMBOL_PROMPT` verbatim, run from /tmp.
         let prompt = format!("{SYMBOL_PROMPT}{question}");
         let output = self.execute(&prompt, Some("/tmp")).await?;
+        extract_symbol_array(&output).ok_or(PlannerError::InvalidResponse)
+    }
+}
+
+/// OpenAI Codex CLI planner using subscription authentication.
+///
+/// The process runs ephemerally in the system temporary directory with a
+/// read-only sandbox and no user configuration. The adapter supplies neither
+/// a repository path nor code content, keeping normal planning prompt-only.
+#[derive(Debug, Clone)]
+pub struct CodexPlanner {
+    model: String,
+    timeout: Duration,
+    executable: String,
+}
+
+impl CodexPlanner {
+    /// Construct an adapter with the production-compatible 90 second deadline.
+    #[must_use]
+    pub fn new(model: impl Into<String>) -> Self {
+        let executable = std::env::var("CODEX_CLI_PATH")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "codex".to_owned());
+        Self {
+            model: model.into(),
+            timeout: Duration::from_secs(90),
+            executable,
+        }
+    }
+
+    /// Override the deadline, primarily for deterministic tests and operations.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Override the executable without invoking a shell.
+    #[must_use]
+    pub fn with_executable(mut self, executable: impl Into<String>) -> Self {
+        self.executable = executable.into();
+        self
+    }
+
+    async fn execute(&self, prompt: &str) -> Result<String, PlannerError> {
+        let mut command = Command::new(&self.executable);
+        command.arg("exec");
+        if !self.model.is_empty() {
+            command.arg("--model").arg(&self.model);
+        }
+        command.args([
+            "--sandbox",
+            "read-only",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--skip-git-repo-check",
+            "--color",
+            "never",
+            "-",
+        ]);
+        command
+            .current_dir(std::env::temp_dir())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true);
+
+        let mut child = command.spawn().map_err(|_| PlannerError::Unavailable)?;
+        let pid = child.id().ok_or(PlannerError::ProviderFailed)?;
+        let mut guard = ProcessTreeGuard::new(pid);
+        let mut stdin = child.stdin.take().ok_or(PlannerError::ProviderFailed)?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|_| PlannerError::ProviderFailed)?;
+        drop(stdin);
+
+        let output = timeout(self.timeout, async {
+            let output = child.wait_with_output().await;
+            guard.disarm();
+            output
+        })
+        .await
+        .map_err(|_| PlannerError::Timeout)?
+        .map_err(|_| PlannerError::ProviderFailed)?;
+        if !output.status.success() {
+            return Err(PlannerError::ProviderFailed);
+        }
+        String::from_utf8(output.stdout).map_err(|_| PlannerError::InvalidResponse)
+    }
+}
+
+#[async_trait]
+impl Planner for CodexPlanner {
+    async fn plan_search(&self, query: &str) -> Result<SearchPlan, PlannerError> {
+        let prompt = format!("{RETRIEVAL_INSTRUCTIONS}\n\nUser query: {query}\n\nJSON plan:");
+        let output = self.execute(&prompt).await?;
+        let data = extract_json_object(&output).ok_or(PlannerError::InvalidResponse)?;
+        plan_from_value(&data, query).ok_or(PlannerError::InvalidResponse)
+    }
+
+    async fn infer_symbols(&self, question: &str) -> Result<Vec<String>, PlannerError> {
+        let prompt = format!("{SYMBOL_PROMPT}{question}");
+        let output = self.execute(&prompt).await?;
         extract_symbol_array(&output).ok_or(PlannerError::InvalidResponse)
     }
 }
@@ -1334,10 +1440,69 @@ fn terminate_process_tree(pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
     use rag_contracts::SearchStrategy;
     use serde_json::json;
 
-    use super::{extract_json_object, fallback_plan, plan_from_value, sanitize_filters};
+    use super::{
+        extract_json_object, fallback_plan, plan_from_value, sanitize_filters, CodexPlanner,
+        Planner,
+    };
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_planner_uses_noninteractive_read_only_exec() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let executable = temp.path().join("fake-codex");
+        std::fs::write(
+            &executable,
+            r#"#!/bin/sh
+[ "$#" -eq 11 ] &&
+[ "$1" = "exec" ] &&
+[ "$2" = "--model" ] &&
+[ "$3" = "gpt-5.6-luna" ] &&
+[ "$4" = "--sandbox" ] &&
+[ "$5" = "read-only" ] &&
+[ "$6" = "--ephemeral" ] &&
+[ "$7" = "--ignore-user-config" ] &&
+[ "$8" = "--skip-git-repo-check" ] &&
+[ "$9" = "--color" ] &&
+[ "${10}" = "never" ] &&
+[ "${11}" = "-" ] || exit 23
+prompt=$(cat)
+case "$prompt" in
+  *"User query:"*) printf '%s\n' '{"queries":["authentication"],"filters":{},"strategy":"hybrid","top_k":7}' ;;
+  *) printf '%s\n' '["AuthenticationService","TokenProvider"]' ;;
+esac
+"#,
+        )
+        .expect("write fake codex");
+        let mut permissions = std::fs::metadata(&executable)
+            .expect("fake codex metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions).expect("make fake codex executable");
+
+        let planner = CodexPlanner::new("gpt-5.6-luna")
+            .with_executable(executable.to_string_lossy())
+            .with_timeout(std::time::Duration::from_secs(2));
+        let plan = planner
+            .plan_search("find authentication code")
+            .await
+            .expect("plan");
+        assert_eq!(plan.queries, vec!["authentication"]);
+        assert_eq!(plan.strategy, SearchStrategy::Hybrid);
+        assert_eq!(plan.top_k, 7);
+        assert_eq!(
+            planner
+                .infer_symbols("where are tokens validated?")
+                .await
+                .expect("symbols"),
+            vec!["AuthenticationService", "TokenProvider"]
+        );
+    }
 
     #[test]
     fn parses_fenced_and_prose_wrapped_objects() {

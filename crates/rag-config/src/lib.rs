@@ -357,8 +357,8 @@ pub const SYMBOL_BACKENDS: [&str; 3] = ["auto", "native", "ast_index"];
 #[serde(default)]
 pub struct RetrievalAgentSettings {
     /// Provider name. Validation accepts `gemini`, `openai`, `anthropic`,
-    /// `ollama` and `agy`, but the daemon's `plan_query` only constructs
-    /// `agy` and `ollama`; the other three silently degrade to the
+    /// `ollama`, `agy` and `codex`, but the daemon's `plan_query` only
+    /// constructs `agy`, `codex` and `ollama`; the other three degrade to the
     /// deterministic heuristic plan.
     pub provider: String,
     /// Model name (agy CLI display name, or an Ollama chat tag).
@@ -445,7 +445,7 @@ impl Settings {
         self.llm.ollama_url = trim_url(&self.llm.ollama_url, "ollama_url")?;
         if !matches!(
             self.retrieval_agent.provider.as_str(),
-            "gemini" | "openai" | "anthropic" | "ollama" | "agy"
+            "gemini" | "openai" | "anthropic" | "ollama" | "agy" | "codex"
         ) {
             return Err(ConfigError::InvalidSettings(
                 "retrieval_agent.provider is invalid".to_owned(),
@@ -718,7 +718,15 @@ fn normalize_host(raw: &str) -> Result<String, ConfigError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigError, ServerConfig, DEFAULT_HOST, DEFAULT_PORT};
+    use super::{ConfigError, ServerConfig, Settings, DEFAULT_HOST, DEFAULT_PORT};
+
+    #[test]
+    fn accepts_codex_retrieval_planner() {
+        let mut settings = Settings::default();
+        settings.retrieval_agent.provider = "codex".to_owned();
+        settings.retrieval_agent.model = "gpt-5.6-luna".to_owned();
+        assert!(settings.validate().is_ok());
+    }
 
     #[test]
     fn defaults_use_temporary_coexistence_address() {

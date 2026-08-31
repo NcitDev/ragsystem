@@ -256,22 +256,24 @@ pub async fn index_route(
 ) -> Result<Value, String> {
     let repo_path = canonical_directory("repo_path", crate::required_string(body, "repo_path")?)?;
     let repo_name = body
-        .get("name")
+        .get("repo_name")
+        .or_else(|| body.get("name"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(str::to_owned);
     let full = body.get("full").and_then(Value::as_bool).unwrap_or(false);
-    let languages: Option<Vec<String>> =
-        body.get("languages")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_ascii_lowercase)
-                    .collect()
-            });
+    let languages: Option<Vec<String>> = body
+        .get("languages")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .collect()
+        })
+        .filter(|items: &Vec<String>| !items.is_empty());
 
     let settings = rag_config::load_settings(paths).unwrap_or_default();
     // Python parity: an explicit `collection` in the request wins; otherwise
@@ -560,6 +562,86 @@ pub async fn index_route(
     }))
 }
 
+/// Embed Markdown-like documentation into Qdrant and mirror it into SQLite.
+///
+/// Document indexing intentionally shares [`flush_group`] with source-code
+/// indexing so cache keys, UUIDv5 point ids, vector validation and lexical
+/// mirroring cannot drift between the two write paths.
+pub async fn index_docs_route(
+    backend: &RetrievalBackend,
+    paths: &RagPaths,
+    body: &Value,
+) -> Result<Value, String> {
+    let docs_path = canonical_path("docs_path", crate::required_string(body, "docs_path")?)?;
+    let collection = body
+        .get("collection")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("doc_chunks")
+        .to_owned();
+    let full = body.get("full").and_then(Value::as_bool).unwrap_or(false);
+    let settings = rag_config::load_settings(paths).unwrap_or_default();
+
+    let scan_root = docs_path.clone();
+    let files = tokio::task::spawn_blocking(move || discover_docs(&scan_root))
+        .await
+        .map_err(|error| error.to_string())??;
+
+    if full {
+        let _ = backend.qdrant.drop_collection(&collection).await;
+        reset_code_index(paths, &collection, None).await?;
+    }
+    ensure_collection(backend, &collection).await?;
+
+    let mut files_processed = 0_usize;
+    let mut chunks_indexed = 0_usize;
+    let mut errors = Vec::new();
+    for group in files.chunks(FILES_PER_FLUSH) {
+        let group_paths = group.to_vec();
+        let root = docs_path.clone();
+        let target_collection = collection.clone();
+        let max_chars = settings.index.max_chunk_chars as usize;
+        let chunked = tokio::task::spawn_blocking(move || {
+            group_paths
+                .iter()
+                .map(|file| process_doc_file(&target_collection, &root, file, max_chars))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+        let mut group_files = Vec::new();
+        for outcome in chunked {
+            match outcome {
+                Ok(file) => group_files.push(file),
+                Err(error) => errors.push(error),
+            }
+        }
+        if group_files.is_empty() {
+            continue;
+        }
+        match flush_group(backend, paths, &collection, &group_files).await {
+            Ok(count) => {
+                chunks_indexed += count;
+                files_processed += group_files.len();
+            }
+            Err(error) => errors.push(format!(
+                "flush failed ({} files): {error}",
+                group_files.len()
+            )),
+        }
+    }
+
+    Ok(json!({
+        "files_processed": files_processed,
+        "chunks_indexed": chunks_indexed,
+        "files_skipped": 0,
+        "files_deleted": 0,
+        "errors": errors,
+    }))
+}
+
 /// Python `/vocab/build` parity: embed per-file summaries from a JSONL into
 /// the repo's `<collection>_vocab` collection. Idempotent via deterministic
 /// chunk ids (`repo:vocab:rel-path`).
@@ -827,6 +909,101 @@ fn process_file(
         file_hash,
         documents,
     })
+}
+
+fn process_doc_file(
+    collection: &str,
+    root: &Path,
+    absolute: &Path,
+    max_chars: usize,
+) -> Result<FileChunks, String> {
+    let rel_path = if root.is_file() {
+        absolute
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        absolute
+            .strip_prefix(root)
+            .unwrap_or(absolute)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let raw = std::fs::read(absolute).map_err(|error| format!("read {rel_path}: {error}"))?;
+    let file_hash = rag_index::file_hash(absolute).map_err(|error| error.to_string())?;
+    let content = String::from_utf8_lossy(&raw).into_owned();
+    let chunks = chunk_code(&content, &rel_path, Some("markdown"), max_chars);
+    let documents = chunks
+        .into_iter()
+        .map(|chunk| {
+            let chunk_id = chunk.chunk_id();
+            let content_hash = chunk.content_hash();
+            let mut payload = Map::new();
+            payload.insert("file_path".to_owned(), json!(chunk.file_path));
+            payload.insert("language".to_owned(), json!("markdown"));
+            payload.insert("chunk_type".to_owned(), json!("document"));
+            payload.insert("name".to_owned(), json!(chunk.name));
+            payload.insert("parent_name".to_owned(), json!(chunk.parent_name));
+            payload.insert("start_line".to_owned(), json!(chunk.start_line));
+            payload.insert("end_line".to_owned(), json!(chunk.end_line));
+            payload.insert("content_hash".to_owned(), json!(content_hash));
+            PendingDocument {
+                chunk_id: chunk_id.clone(),
+                content: chunk.content.clone(),
+                content_hash,
+                payload,
+                code_document: CodeDocument {
+                    chunk_id,
+                    collection: collection.to_owned(),
+                    file_path: chunk.file_path,
+                    name: chunk.name,
+                    parent_name: chunk.parent_name,
+                    chunk_type: "document".to_owned(),
+                    language: "markdown".to_owned(),
+                    start_line: chunk.start_line,
+                    end_line: chunk.end_line,
+                    code: chunk.content,
+                },
+            }
+        })
+        .collect();
+    Ok(FileChunks {
+        rel_path,
+        file_hash,
+        documents,
+    })
+}
+
+fn discover_docs(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(path) = pending.pop() {
+        if path.is_file() {
+            let supported = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "md" | "mdx" | "txt" | "rst"
+                    )
+                });
+            if supported {
+                files.push(path);
+            }
+            continue;
+        }
+        for entry in std::fs::read_dir(&path).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            pending.push(entry.path());
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 async fn flush_group(

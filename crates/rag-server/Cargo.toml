@@ -9,8 +9,8 @@ publish.workspace = true
 default = []
 # Pure passthrough to rag-agent's optional `rig` dependency. Enabling it
 # compiles the cloud provider adapters into the library but changes no
-# behaviour: `plan_query` in retrieval.rs dispatches on "ollama" and "agy"
-# only, and every other provider name falls through to `fallback_plan`.
+# behaviour: `plan_query` in retrieval.rs dispatches on "ollama", "agy" and
+# "codex" only, and every other provider name falls through to `fallback_plan`.
 # Wiring a rig provider in means adding an arm there as well.
 cloud-planners = ["rag-agent/cloud-planners"]
 

@@ -12,8 +12,8 @@ default = []
 # `rig` provides the OpenAI/Anthropic/Gemini/Ollama planner and ask-generator
 # adapters in `lib.rs`. Nothing in the daemon constructs them: rag-server's
 # `plan_query` dispatches only on "ollama" (via rag-services' plain HTTP
-# client) and "agy" (a subprocess), and every other provider name falls
-# through to the deterministic `fallback_plan`. The only callers of
+# client), "agy" and "codex" (subprocesses), and every other provider name
+# falls through to the deterministic `fallback_plan`. The only callers of
 # `*_planner` / `*_ask_generator` are the r5 compatibility tests.
 #
 # The cost of compiling it anyway was not small. `rig`'s own subtree spans 142
@@ -51,6 +51,7 @@ tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
 [dev-dependencies]
 axum = { workspace = true }
 http = { workspace = true }
+tempfile = "3.20"
 
 [lints]
 workspace = true

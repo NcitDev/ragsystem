@@ -921,16 +921,23 @@ impl RetrievalBackend {
         }))
     }
 
-    /// LLM symbol inference via the agy planner (Python parity: agy-only,
-    /// returns empty on any other provider / failure so callers degrade).
+    /// LLM symbol inference via a subscription-authenticated CLI planner.
+    /// Returns empty for non-CLI providers or any failure so callers degrade.
     async fn infer_symbols(&self, question: &str) -> Vec<String> {
-        if self.planner_provider != "agy" {
-            return Vec::new();
-        }
         use rag_agent::Planner;
-        let planner =
-            rag_agent::AgyPlanner::new(self.planner_model.clone()).with_timeout(PLANNER_TIMEOUT);
-        planner.infer_symbols(question).await.unwrap_or_default()
+        match self.planner_provider.as_str() {
+            "agy" => {
+                let planner = rag_agent::AgyPlanner::new(self.planner_model.clone())
+                    .with_timeout(PLANNER_TIMEOUT);
+                planner.infer_symbols(question).await.unwrap_or_default()
+            }
+            "codex" => {
+                let planner = rag_agent::CodexPlanner::new(self.planner_model.clone())
+                    .with_timeout(PLANNER_TIMEOUT);
+                planner.infer_symbols(question).await.unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// True if any indexed chunk in the collection is named `name` (Python
@@ -985,6 +992,12 @@ impl RetrievalBackend {
             "agy" => {
                 use rag_agent::Planner;
                 let planner = rag_agent::AgyPlanner::new(self.planner_model.clone())
+                    .with_timeout(PLANNER_TIMEOUT);
+                planner.plan_search(query).await.ok()
+            }
+            "codex" => {
+                use rag_agent::Planner;
+                let planner = rag_agent::CodexPlanner::new(self.planner_model.clone())
                     .with_timeout(PLANNER_TIMEOUT);
                 planner.plan_search(query).await.ok()
             }

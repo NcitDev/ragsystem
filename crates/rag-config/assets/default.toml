@@ -84,12 +84,14 @@ auto_detect = true
 timeout = 5000
 
 [retrieval_agent]
-# LLM provider for the search-strategy planner. The daemon wires exactly two:
+# LLM provider for the search-strategy planner. The daemon wires exactly three:
 #   "agy"    — shells out to the Antigravity CLI (subscription auth, no API
-#              key, no Gemini public-API 503s). Also the only provider that
-#              powers /smart-search symbol inference.
+#              key, no Gemini public-API 503s).
+#   "codex"  — shells out to `codex exec` with subscription authentication,
+#              an ephemeral session, and a read-only sandbox.
 #   "ollama" — plans through the local Ollama daemon at `llm.ollama_url`, using
 #              `model` below as the chat tag (e.g. "qwen3:8b").
+# The agy and codex providers also power /smart-search symbol inference.
 # "gemini", "openai" and "anthropic" pass config validation and have adapters
 # in rag-agent, but the daemon's `plan_query` never constructs them: selecting
 # one silently plans with the deterministic heuristic instead. Do not rely on
@@ -98,6 +100,7 @@ provider = "agy"
 # For agy: a CLI display-name model (see `agy models`). "High" reasoning infers
 # real symbol names more reliably (fewer hallucinations) at higher latency;
 # "Low" is faster and fine for plain query planning.
+# For codex: an OpenAI model id, e.g. "gpt-5.6-luna".
 # For ollama: an Ollama chat tag, e.g. "qwen3:8b".
 model = "Gemini 3.5 Flash (High)"
 # Parsed but never read: it would only matter for the gemini/openai/anthropic

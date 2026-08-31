@@ -111,7 +111,7 @@ A Cargo workspace producing one `rag` binary:
 | `rag-server` | Axum HTTP daemon, retrieval pipeline, indexer, web dashboard |
 | `rag-retrieval` | scoring, sanity filter, AST index bridge, repo-agent |
 | `rag-index` | tree-sitter chunking, enrichment, discovery, lexical index |
-| `rag-agent` | search planner (LLM via Rig + heuristic fallback), agy adapter |
+| `rag-agent` | search planner (LLM via Rig + heuristic fallback), agy and Codex CLI adapters |
 | `rag-services` | Ollama + Qdrant HTTP clients |
 | `rag-storage` | SQLite (code index, cache, repo registry), migrations |
 | `rag-config` | TOML config layering, paths, validation |
